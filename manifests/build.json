@@ -1,0 +1,20 @@
+[
+  {
+    "name": "setuptools",
+    "version": "75.8.2",
+    "format": "wheel",
+    "file": "setuptools-75.8.2-py3-none-any.whl",
+    "sha256": "558e47c15f1811c1fa7adbd0096669bf76c1d3f433f58324df69f3f5ecac4e8f",
+    "url": "https://files.pythonhosted.org/packages/a9/38/7d7362e031bd6dc121e5081d8cb6aa6f6fedf2b67bf889962134c6da4705/setuptools-75.8.2-py3-none-any.whl",
+    "license": null
+  },
+  {
+    "name": "wheel",
+    "version": "0.45.1",
+    "format": "wheel",
+    "file": "wheel-0.45.1-py3-none-any.whl",
+    "sha256": "708e7481cc80179af0e556bbf0cc00b8444c7321e2700b8d8580231d13017248",
+    "url": "https://files.pythonhosted.org/packages/0b/2c/87f3254fd8ffd29e4c02732eee68a83a1d3c346ae39bc6822dcbcb697f2b/wheel-0.45.1-py3-none-any.whl",
+    "license": null
+  }
+]

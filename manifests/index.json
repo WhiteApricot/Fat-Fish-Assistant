@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "project": "Fat-Fish-Assistant",
+  "catalog": {
+    "components": "components.json",
+    "source_dependencies": "sources.json",
+    "dashboard_assets": "dashboard.json",
+    "chat_packages": "chat.json",
+    "speech_packages": "speech.json",
+    "source_build_tools": "build.json",
+    "python_runtime": "python-runtime.json",
+    "optional_assets": "assets.json",
+    "model_file_integrity": "model-runtime-lock.json",
+    "napcat_file_integrity": "napcat-runtime-lock.json"
+  },
+  "compatibility": {
+    "os": "Windows x64",
+    "python": "3.12.3",
+    "management_schema": 1,
+    "instance_schema": 1,
+    "snapshot_schema": 2,
+    "livingmemory_native_db_version": 8,
+    "unknown_versions": "refuse before activation or data write"
+  },
+  "installation_state": "Outside the source repository: installation.json and component completion receipts",
+  "payloads_in_repository": false
+}

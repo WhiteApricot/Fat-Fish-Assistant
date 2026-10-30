@@ -1,0 +1,486 @@
+"""Version 1 local management contract. No GUI, HTTP listener or QQ sender."""
+import argparse
+import contextlib
+import getpass
+import hashlib
+import json
+import os
+import platform
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+import uuid
+from pathlib import Path
+
+from dependencies import PROJECT,acquire,build_release,clean_environment,digest,external,install_environment,load,profile_fingerprint,run_logged,unpack
+
+SCHEMA=1
+COMPONENTS=load('components.json')['components']
+EXIT={'ok':0,'invalid':20,'needs_input':21,'missing':22,'integrity':23,'busy':24,'incompatible':25,'read_only':26,'failed':30}
+
+class Fault(Exception):
+    def __init__(self,kind,message,hint=''):super().__init__(message);self.kind=kind;self.hint=hint
+
+class Parser(argparse.ArgumentParser):
+    def error(self,message):raise Fault('invalid',message,'Run the command with --help for accepted options.')
+
+def read(path):return json.loads(Path(path).read_text(encoding='utf-8-sig'))
+def atomic(path,data):
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    temp=path.with_name(path.name+'.pending-'+secrets.token_hex(4))
+    temp.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n',encoding='utf-8');temp.replace(path)
+
+def progress(step,item):print(f'[Fat-Fish-Assistant] {step}: {item}',file=sys.stderr,flush=True)
+
+def default_root():return Path(os.environ.get('LOCALAPPDATA',str(Path.home()/'.local/share')))/'Fat-Fish-Assistant'
+
+def owned_root(root,create=False):
+    root=external(root)
+    marker=root/'.ffa-managed.json'
+    if not marker.exists():
+        if not create:raise Fault('read_only','Root is not a managed Fat-Fish-Assistant installation','Use install with a new empty root; external components remain read-only.')
+        if root.exists() and any(root.iterdir()):raise Fault('read_only','Refusing to adopt a nonempty unmanaged directory')
+        root.mkdir(parents=True,exist_ok=True)
+        atomic(marker,{'schema_version':SCHEMA,'project':'Fat-Fish-Assistant','deployment_id':uuid.uuid4().hex})
+    identity=read(marker)
+    if identity.get('schema_version')!=SCHEMA or identity.get('project')!='Fat-Fish-Assistant':raise Fault('incompatible','Unknown installation marker')
+    return root
+
+def state(root):
+    value=read(root/'installation.json') if (root/'installation.json').exists() else {'schema_version':SCHEMA,'project':'Fat-Fish-Assistant','components':{}}
+    if value.get('schema_version')!=SCHEMA:raise Fault('incompatible','Unknown management state version')
+    return value
+
+def resolve(root,value):
+    path=Path(value)
+    if path.is_absolute():return path
+    target=(root/path).resolve();target.relative_to(root.resolve());return target
+
+def rel(root,path):
+    try:return Path(path).resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:return str(Path(path).resolve())
+
+def chat_python(root,record):
+    value=record.get('chat_python')
+    if not value:raise Fault('missing','Chat Python environment is not installed')
+    return resolve(root,value)
+
+def instance(root,record):
+    value=record.get('instance')
+    if not value:raise Fault('needs_input','No initialized instance','Install with --owner, or restore into a new empty instance.')
+    path=resolve(root,value)
+    if root.resolve() not in path.resolve().parents:raise Fault('read_only','Instance is outside this managed root')
+    return path
+
+def invoke(root,python,script,*args,json_output=False):
+    logfile=root/'logs'/(script.replace('.py','')+'-management.log');logfile.parent.mkdir(exist_ok=True)
+    proc=subprocess.run([str(python),str(PROJECT/'scripts'/script),*map(str,args)],capture_output=True,text=True,env=clean_environment())
+    with logfile.open('a',encoding='utf-8') as log:log.write(proc.stdout+'\n'+proc.stderr)
+    if proc.returncode:raise Fault('failed',f'{script} failed (exit {proc.returncode})',f'Inspect the private log: {logfile}')
+    return json.loads(proc.stdout) if json_output else {'completed':True}
+
+def shell(root,script,*args,json_output=False):
+    executable=Path(os.environ.get('SystemRoot','C:/Windows'))/'System32/WindowsPowerShell/v1.0/powershell.exe'
+    if os.name!='nt':raise Fault('incompatible','Windows service management requires Windows')
+    env=clean_environment();env['PSMODULEPATH']=str(executable.parent/'Modules')
+    proc=subprocess.run([str(executable),'-NoProfile','-File',str(PROJECT/'scripts'/script),*map(str,args)],capture_output=True,text=True,env=env)
+    log=root/'logs'/(script+'.log');log.parent.mkdir(exist_ok=True)
+    with log.open('a',encoding='utf-8') as stream:stream.write(proc.stdout+'\n'+proc.stderr)
+    if proc.returncode:raise Fault('failed',script+' failed',f'Inspect the private log: {log}')
+    if json_output:
+        text=proc.stdout.strip()
+        if text in {'True','False'}:return text=='True'
+        return json.loads(text)
+    return {'completed':True}
+
+def inspect_environment(root,network=False):
+    checks=[]
+    def add(name,ok,detail,hint='',severity='error'):checks.append({'name':name,'ok':bool(ok),'severity':severity,'detail':detail,'hint':hint})
+    add('windows_x64',os.name=='nt' and platform.machine().lower() in {'amd64','x86_64'},platform.platform(),'Use Windows x64; this release does not claim Linux validation.')
+    add('python',sys.version_info[:3]==(3,12,3),platform.python_version(),'Use the pinned bootstrap interpreter or explicitly provide Python 3.12.3 x64.')
+    parent=root
+    while not parent.exists():parent=parent.parent
+    free=shutil.disk_usage(parent).free
+    add('disk_space',free>=2*1024**3,{'free_bytes':free,'minimum_core_bytes':2*1024**3},'Allow additional disk space for optional models and retained failed stages.')
+    add('permissions',os.access(parent,os.W_OK),{'parent_writable':os.access(parent,os.W_OK)},'Choose a directory owned by your user; no administrator privileges are required for core files.')
+    if os.name=='nt':
+        import ctypes
+        missing=[]
+        for name in ['VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll']:
+            try:ctypes.WinDLL(str(Path(os.environ['SystemRoot'])/'System32'/name))
+            except OSError:missing.append(name)
+        add('microsoft_runtime',not missing,{'missing':missing},'Review the pinned official Microsoft x64 runtime in manifests/assets.json; install manually if needed.')
+    ports={}
+    for port in [6185,6199,6202,6203,6099]:
+        try:
+            with socket.create_connection(('127.0.0.1',port),timeout=.15):ports[str(port)]='occupied'
+        except ConnectionRefusedError:ports[str(port)]='available'
+        except OSError:ports[str(port)]='unknown (permission, timeout or network error)'
+    add('ports',not any(v=='occupied' for v in ports.values()),ports,'Use config apply with another dashboard port; never kill a process just because its port is occupied.','warning')
+    if network:
+        for host in ['https://pypi.org/simple/','https://codeload.github.com/']:
+            try:
+                with urllib.request.urlopen(urllib.request.Request(host,method='HEAD'),timeout=10) as r:ok=r.status<500
+            except urllib.error.HTTPError as exc:ok=exc.code<500
+            except OSError:ok=False
+            add('network:'+host,ok,{'reachable':ok},'Check DNS, proxy and TLS settings, or prepare a complete offline cache.','warning')
+    return {'checks':checks,'ready':all(x['ok'] for x in checks if x['severity']=='error'),'network_tested':network,'installed':state(root).get('components',{}) if (root/'installation.json').exists() else {}}
+
+@contextlib.contextmanager
+def installation_lock(root):
+    # Kernel lock, released even if the installer is interrupted.
+    path=root/'.installation-lock';stream=path.open('a+b');stream.seek(0);stream.write(b'0');stream.flush();stream.seek(0)
+    try:
+        if os.name=='nt':
+            import msvcrt
+            try:msvcrt.locking(stream.fileno(),msvcrt.LK_NBLCK,1)
+            except OSError:raise Fault('busy','Another installation or configuration operation is running')
+        else:
+            import fcntl
+            try:fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except OSError:raise Fault('busy','Another operation is running')
+        yield
+    finally:stream.close()
+
+def selection(text):
+    values=set(text.split(','))
+    if 'chat' in values:values.remove('chat');values.update(['python','astrbot','plugins'])
+    if not values or values-set(COMPONENTS):raise Fault('invalid','Unknown component selection')
+    if any(COMPONENTS[x].get('reserved') for x in values):raise Fault('incompatible','Dagu and Work are reserved descriptors, not installed functionality')
+    while True:
+        expanded=values|{dep for x in values for dep in COMPONENTS[x]['depends']}
+        if expanded==values:return values
+        values=expanded
+
+def install_asset(root,name,spec,target,cache,offline=False,notify=progress):
+    """Only a verified, completed stage can become an installed asset."""
+    marker=root/'asset-receipts'/(name+'.json')
+    def contents(path):
+        if path.is_file():return {'.':digest(path)}
+        return {p.relative_to(path).as_posix():digest(p) for p in sorted(path.rglob('*')) if p.is_file()}
+    if marker.exists():
+        receipt=read(marker)
+        if receipt.get('sha256')!=spec['sha256'] or not target.exists() or receipt.get('files')!=contents(target):
+            raise Fault('integrity','Installed asset receipt or content mismatch')
+        return
+    pending=marker.with_suffix('.pending.json')
+    if target.exists():
+        if pending.exists():
+            receipt=read(pending)
+            if receipt.get('id')==spec['id'] and receipt.get('sha256')==spec['sha256'] and receipt.get('path')==rel(root,target) and receipt.get('files')==contents(target):
+                atomic(marker,receipt);return
+        raise Fault('read_only','Unmanaged asset target exists; no overwrite')
+    archive=acquire(spec,cache,offline,notify)
+    target.parent.mkdir(parents=True,exist_ok=True)
+    stage=target.with_name(target.name+'.staging-'+secrets.token_hex(5))
+    if spec['format']=='file':shutil.copy2(archive,stage)
+    else:unpack(archive,stage)
+    receipt={'id':spec['id'],'sha256':spec['sha256'],'path':rel(root,target),'license_accepted':True,'files':contents(stage)}
+    # Resume a completed rename only when pending receipt and all bytes match.
+    atomic(pending,receipt)
+    stage.rename(target)
+    atomic(marker,receipt)
+
+def install(root,args):
+    root=owned_root(root,True)
+    with installation_lock(root):
+        from instance import protect_boundary
+        protect_boundary(root)
+        record=state(root);cache=Path(args.cache).resolve() if args.cache else root/'cache'
+        if record.get('instance'):
+            runtime=instance(root,record)
+            if any((runtime/'private'/name).exists() for name in ['RUNNING','DIRTY','upgrade-journal.json']):
+                raise Fault('busy','Stop the owned instance cleanly before installation or component changes')
+        chosen=selection(args.components);record.setdefault('components',{})
+        journal=root/'install-journal.json'
+        if journal.exists():atomic(root/'install-history'/(uuid.uuid4().hex+'.json'),read(journal))
+        atomic(journal,{'schema_version':SCHEMA,'requested':sorted(chosen),'state':'running','started_at':time.time()})
+        def save():atomic(root/'installation.json',record)
+        progress('1/5','preflight and pinned component plan')
+        check=inspect_environment(root)
+        if not check['ready']:raise Fault('needs_input','Environment preflight failed','Run check and resolve the error checks. Optional port warnings do not stop installation.')
+        base=Path(args.python).resolve() if args.python else Path(sys.executable)
+        probe=subprocess.run([str(base),'-I','-c','import sys,struct; assert sys.version_info[:3]==(3,12,3) and struct.calcsize("P")==8'],capture_output=True)
+        if probe.returncode:raise Fault('incompatible','Base interpreter must be Python 3.12.3 x64')
+        record['components']['python']={'installed':True,'version':'3.12.3','path':rel(root,base),'ownership':'managed' if root in base.parents else 'external-readonly','depends':[]}
+        progress('2/5','independent Python environments')
+        if 'astrbot' in chosen:
+            tag=profile_fingerprint('chat')[:12]
+            python=install_environment(base,root/'envs'/('chat-'+tag),cache,'chat',args.offline,progress)
+            record['chat_python']=rel(root,python);save()
+        if 'speech' in chosen:
+            tag=profile_fingerprint('speech')[:12]
+            python=install_environment(base,root/'envs'/('speech-'+tag),cache,'speech',args.offline,progress)
+            record['speech_python']=rel(root,python);save()
+        progress('3/5','verified upstream sources and compatibility patches')
+        if 'astrbot' in chosen:
+            plugins=args.plugins.split(',') if args.plugins else []
+            if 'plugins' not in chosen:plugins=[]
+            h=hashlib.sha256((PROJECT/'manifests/sources.json').read_bytes()+(PROJECT/'manifests/dashboard.json').read_bytes()+','.join(plugins).encode())
+            for path in sorted((PROJECT/'src').rglob('*')):
+                if path.is_file() and '__pycache__' not in path.parts:h.update(path.read_bytes())
+            release=root/'releases'/('chat-'+h.hexdigest()[:16])
+            if release.exists():
+                from instance import verify_release
+                verify_release(release)
+            else:build_release(release,cache,plugins,args.offline,progress)
+            if record.get('instance'):
+                active=Path(read(instance(root,record)/'instance.json')['release']).resolve()
+                if active!=release:raise Fault('busy','Existing instance uses a different release','Use upgrade after a clean stop; install never silently switches existing instances.')
+            record['release']=rel(root,release)
+            record['components']['astrbot']={'installed':True,'version':load('sources.json')[0]['commit'],'path':rel(root,release/'astrbot'),'ownership':'managed','depends':['python']}
+            record['components']['plugins']={'installed':bool(plugins),'version':{x['name']:x['commit'] for x in load('sources.json') if x['name'] in plugins},'path':rel(root,release/'plugins'),'ownership':'managed','depends':['astrbot']}
+            save()
+        progress('4/5','optional external assets')
+        specs={x['id']:x for x in load('assets.json')}
+        wanted=[]
+        if 'napcat' in chosen:wanted.append(('napcat',specs['napcat-shell-v4.18.41'],root/'services/napcat-v4.18.41'))
+        if 'embedding' in chosen:
+            wanted.extend([('embedding-engine',specs['llama-b11946-win-cpu'],root/'assets/llama-b11946'),('embedding-model',specs['embedding-bge-small-zh-v1.5'],root/'assets/bge-small-zh-v1.5-f16.gguf')])
+        if 'speech' in chosen:wanted.append(('speech-model',specs['sensevoice-int8-20250909'],root/'assets/sensevoice-int8-20250909'))
+        for name,spec,target in wanted:
+            if not args.accept_external_licenses:raise Fault('needs_input','Optional asset requires review: '+spec['id'],'Review manifests/assets.json and use --accept-external-licenses only after accepting applicable external conditions.')
+            install_asset(root,name,spec,target,cache,args.offline)
+            record['components'][name]={'installed':True,'version':spec['id'],'path':rel(root,target),'ownership':'managed','depends':[]};save()
+        for component in ['embedding','speech']:
+            if component in chosen:
+                record['components'][component]={'installed':True,'version':COMPONENTS[component].get('asset',COMPONENTS[component].get('assets')),'path':'assets','ownership':'managed','depends':COMPONENTS[component]['depends']}
+        progress('5/5','independent instance initialization')
+        if 'astrbot' in chosen and not args.no_instance:
+            if not record.get('instance'):
+                if not args.owner:raise Fault('needs_input','A new instance needs your own QQ owner identity','Repeat install with --owner; downloaded software will be reused.')
+                target=root/'instance'
+                if target.exists():raise Fault('read_only','Unregistered instance directory exists; no overwrite')
+                stage=root/('instance.staging-'+secrets.token_hex(5))
+                invoke(root,chat_python(root,record),'instance.py','init','--destination',stage,'--release',resolve(root,record['release']),'--owner',args.owner)
+                stage.rename(target);record['instance']=rel(root,target);save()
+            if 'embedding' in chosen or 'speech' in chosen:
+                runtime=instance(root,record)
+                invoke(root,chat_python(root,record),'configure_local_models.py','--instance',runtime,'--components',','.join(x for x in ['embedding','speech'] if x in chosen))
+                for source,target in [('embedding-engine','engines/llama'),('embedding-model','models/embedding/bge-small-zh-v1.5-f16.gguf'),('speech-model','models/sensevoice')]:
+                    if source not in record['components']:continue
+                    origin=resolve(root,record['components'][source]['path']);destination=runtime/target
+                    if destination.exists():continue
+                    destination.parent.mkdir(parents=True,exist_ok=True)
+                    if origin.is_dir():shutil.copytree(origin,destination)
+                    else:shutil.copy2(origin,destination)
+                for component in ['embedding','speech']:
+                    if component in chosen:record['components'][component]={'installed':True,'version':COMPONENTS[component].get('asset',COMPONENTS[component].get('assets')),'path':rel(root,runtime),'ownership':'managed','depends':COMPONENTS[component]['depends']}
+        save();atomic(journal,{'schema_version':SCHEMA,'state':'completed','requested':sorted(chosen)})
+        return {'components':sorted(chosen),'instance_initialized':bool(record.get('instance')),'next_steps':guidance(root,record),'repeated_install_preserves_instance':True}
+
+def guidance(root,record):
+    if not record.get('instance'):return ['Software is ready; initialize with your own QQ identity or restore a verified backup into a new instance.']
+    target=instance(root,record);cfg=read(target/'data/cmd_config.json');port=cfg['dashboard']['port']
+    return [f'肥鱼助手 / Fat-Fish-Assistant: start opens only the local service at http://127.0.0.1:{port}.',
+            'Read the independent dashboard password from instance/private/dashboard-password.txt; configure your own provider in the native AstrBot UI.',
+            'QQ client installation and NapCat login are manual. Never copy another user\'s login session, owner identity, key or approved groups.',
+            'No group is approved by default. Dagu, Work and the P6 GUI are not implemented in this stage.']
+
+def component_status(root,record,name):
+    definition=COMPONENTS.get(name,{})
+    info=dict(record.get('components',{}).get(name,{}))
+    result={'id':name,'installed':bool(info.get('installed')),'running':None,'version':info.get('version'),'path':info.get('path'),'ownership':info.get('ownership'),'depends':definition.get('depends',[]),'reserved':definition.get('reserved',False)}
+    result['manifest_refs']=['manifests/components.json','manifests/sources.json' if name in {'astrbot','plugins'} else 'manifests/python-runtime.json' if name=='python' else 'manifests/assets.json']
+    if not result['installed']:return result
+    if name=='python':
+        result['environments']=[{'profile':profile,'path':record[profile+'_python'],'completion_receipt':(resolve(root,record[profile+'_python']).parents[1]/'ffa-environment.json').exists()} for profile in ['chat','speech'] if record.get(profile+'_python')]
+    if name=='astrbot' and record.get('instance'):
+        active=Path(read(instance(root,record)/'instance.json')['release'])
+        metadata=read(active/'release.json')
+        result['path']=rel(root,active/'astrbot');result['version']=next(x['commit'] for x in metadata['vendor'] if x['name']=='astrbot')
+        result.update(invoke(root,chat_python(root,record),'manage.py','status','--instance',instance(root,record),json_output=True))
+        result['maintenance_pending']=(instance(root,record)/'private/upgrade-journal.json').exists()
+    elif name=='napcat':
+        result.update(shell(root,'NapCat.ps1','-Action','Status','-Root',resolve(root,info['path']),json_output=True))
+    elif name in {'embedding','speech'}:
+        if not record.get('instance'):
+            result.update({'running':False,'ready':False,'needs_input':'Initialize an instance before configuring local provider credentials.'});return result
+        marker=instance(root,record)/'private'/(name.title()+'.pid')
+        if marker.exists():
+            result['running']=bool(shell(root,'Local-Models.ps1','-Action','Status','-Runtime',instance(root,record),'-Component',name.title(),json_output=True))
+        else:result['running']=False
+    if name=='plugins':
+        if record.get('instance'):
+            active=Path(read(instance(root,record)/'instance.json')['release'])
+            result['path']=rel(root,instance(root,record)/'data/plugins')
+            result['version']={x['name']:x['commit'] for x in read(active/'release.json')['vendor'] if x['name']!='astrbot'}
+        result['capabilities']=['status','version','integrity','upgrade-with-release','rollback-with-release']
+    return result
+
+def operate(root,record,action,selected=None):
+    selected=selected or [x for x in ['napcat','embedding','speech','astrbot'] if record.get('components',{}).get(x,{}).get('installed')]
+    if not selected:raise Fault('needs_input','No service components are installed')
+    if action=='restart':
+        operate(root,record,'stop',selected)
+        return operate(root,record,'start',selected)
+    if action=='stop':selected=list(reversed(selected))
+    results=[]
+    for name in selected:
+        info=record.get('components',{}).get(name,{})
+        if info.get('ownership')=='external-readonly':raise Fault('read_only','External component cannot be modified: '+name)
+        if not info.get('installed'):raise Fault('missing','Component is not installed: '+name)
+        current=component_status(root,record,name)
+        if current['running'] is (action=='start'):
+            results.append({'id':name,'already_in_requested_state':True});continue
+        if name=='astrbot':result=invoke(root,chat_python(root,record),'manage.py',action,'--instance',instance(root,record))
+        elif name=='napcat':
+            argv=['-Action',action.title(),'-Root',resolve(root,info['path'])]
+            if action=='start':
+                if not record.get('qq_executable'):raise Fault('needs_input','NapCat needs an explicit QQ executable and manual login','Use config apply with qq_executable; this API never automates login.')
+                argv+=['-QQExecutable',record['qq_executable']]
+            result=shell(root,'NapCat.ps1',*argv)
+        elif name in {'embedding','speech'}:
+            argv=['-Action',action.title(),'-Runtime',instance(root,record),'-Component',name.title()]
+            if name=='speech' and action=='start':argv+=['-SpeechPython',resolve(root,record['speech_python'])]
+            result=shell(root,'Local-Models.ps1',*argv)
+        else:raise Fault('incompatible','This component has no service lifecycle: '+name)
+        results.append({'id':name,**result})
+    return {'operations':results}
+
+def config_view(root,record):
+    target=instance(root,record);cfg=read(target/'data/cmd_config.json');identity=read(target/'private/instance-identity.json');access=read(target/'private/p2c-access.json')
+    return {'project':'Fat-Fish-Assistant','dashboard':{'host':cfg['dashboard']['host'],'port':cfg['dashboard']['port']},'identity_valid':identity['owner']==access['owner'],
+            'approved_group_count':len(access.get('approved_groups',[])),'providers':[{'id':x.get('id'),'type':x.get('type')} for x in cfg.get('provider',[])],
+            'dashboard_password_file':rel(root,target/'private/dashboard-password.txt'),'secrets_redacted':True,'qq_executable_configured':bool(record.get('qq_executable'))}
+
+def configure(root,record,args):
+    view=config_view(root,record)
+    if args.config_action=='show':return view
+    if args.config_action=='validate':
+        if not view['identity_valid'] or view['dashboard']['host']!='127.0.0.1':raise Fault('integrity','Identity or loopback configuration mismatch')
+        return {'configuration_valid':True,'secrets_redacted':True}
+    data=json.load(sys.stdin) if args.file=='-' else read(args.file)
+    if set(data)-{'dashboard_port','deepseek_api_key','qq_executable'}:raise Fault('invalid','Only dashboard_port, deepseek_api_key and qq_executable are writable here; owner/groups are not generic settings')
+    target=instance(root,record)
+    with installation_lock(root):
+        from lifecycle_lock import exclusive
+        with exclusive(target):
+            if any((target/'private'/x).exists() for x in ['RUNNING','DIRTY','upgrade-journal.json']):raise Fault('busy','Stop cleanly before changing configuration')
+            if 'dashboard_port' in data and (type(data['dashboard_port']) is not int or not 1024<=data['dashboard_port']<=65535):raise Fault('invalid','Dashboard port must be an integer from 1024 to 65535')
+            if 'qq_executable' in data and (not Path(data['qq_executable']).is_file() or Path(data['qq_executable']).name.lower()!='qq.exe'):raise Fault('invalid','Provide an existing QQ.exe path')
+            if 'deepseek_api_key' in data and (not isinstance(data['deepseek_api_key'],str) or not data['deepseek_api_key'].strip()):raise Fault('invalid','API key must be a nonempty string')
+            history=target/'private/config-history'/uuid.uuid4().hex;history.mkdir(parents=True)
+            shutil.copy2(target/'data/cmd_config.json',history/'cmd_config.json')
+            if (target/'private/deepseek-key.txt').exists():shutil.copy2(target/'private/deepseek-key.txt',history/'deepseek-key.txt')
+            cfg=read(target/'data/cmd_config.json')
+            if 'dashboard_port' in data:cfg['dashboard']['port']=data['dashboard_port'];atomic(target/'data/cmd_config.json',cfg)
+            if 'deepseek_api_key' in data:(target/'private/deepseek-key.txt').write_text(data['deepseek_api_key'].strip(),encoding='utf-8')
+            if 'qq_executable' in data:record['qq_executable']=str(Path(data['qq_executable']).resolve());atomic(root/'installation.json',record)
+    return {'changed_fields':sorted(data),'secrets_redacted':True,'restart_required':True}
+
+def parser():
+    p=Parser(description='肥鱼助手 / Fat-Fish-Assistant management API v1')
+    p.add_argument('--root',type=Path,default=default_root());p.add_argument('--json',action='store_true',help='JSON is already the default output contract')
+    sub=p.add_subparsers(dest='command',required=True)
+    check=sub.add_parser('check');check.add_argument('--network',action='store_true')
+    setup=sub.add_parser('install');setup.add_argument('--components',default='chat');setup.add_argument('--plugins',default='astrbot_plugin_livingmemory,astrbot_plugin_continuous_message,meme_manager')
+    setup.add_argument('--owner');setup.add_argument('--python',type=Path);setup.add_argument('--cache',type=Path);setup.add_argument('--offline',action='store_true');setup.add_argument('--accept-external-licenses',action='store_true');setup.add_argument('--no-instance',action='store_true')
+    for name in ['status','components','start','stop','restart','health','diagnose','wizard','rollback']:sub.add_parser(name)
+    component=sub.add_parser('component');component.add_argument('name',choices=list(COMPONENTS));component.add_argument('action',choices=['status','version','dependencies','start','stop','restart','health','integrity'])
+    conf=sub.add_parser('config');conf.add_argument('config_action',choices=['show','validate','apply']);conf.add_argument('--file',default='-')
+    backup=sub.add_parser('backup');backup.add_argument('--destination',required=True,type=Path)
+    restore=sub.add_parser('restore');restore.add_argument('--snapshot',required=True,type=Path);restore.add_argument('--destination',type=Path)
+    upgrade=sub.add_parser('upgrade');upgrade.add_argument('--release',required=True,type=Path)
+    recover=sub.add_parser('recover-upgrade')
+    register=sub.add_parser('register-external');register.add_argument('name',choices=list(COMPONENTS));register.add_argument('--path',required=True,type=Path);register.add_argument('--version',required=True)
+    return p
+
+def dispatch(args):
+    root=args.root.resolve()
+    if args.command=='check':return inspect_environment(root,args.network)
+    if args.command=='install':return install(root,args)
+    root=owned_root(root);record=state(root)
+    if args.command in {'status','components'}:return {'components':[component_status(root,record,x) for x in COMPONENTS],'schema_version':SCHEMA}
+    if args.command=='register-external':
+        if not args.path.exists():raise Fault('missing','External path does not exist')
+        with installation_lock(root):
+            if args.name in record.get('components',{}):raise Fault('read_only','Existing component record will not be replaced')
+            record.setdefault('components',{})[args.name]={'installed':True,'ownership':'external-readonly','version':args.version,'path':str(args.path.resolve())};atomic(root/'installation.json',record)
+        return {'registered_read_only':True,'id':args.name}
+    if args.command in {'start','stop','restart'}:return operate(root,record,args.command)
+    if args.command=='component':
+        if args.action in {'status','version','dependencies'}:return component_status(root,record,args.name)
+        if args.action in {'start','stop','restart'}:return operate(root,record,args.action,[args.name])
+        if args.name in {'dagu','work'}:raise Fault('incompatible','Reserved component has no implementation')
+        if not record.get('components',{}).get(args.name,{}).get('installed'):raise Fault('missing','Component is not installed: '+args.name)
+        if args.action=='health' and args.name=='astrbot':
+            return invoke(root,chat_python(root,record),'authenticated_health.py','--instance',instance(root,record),json_output=True)
+        if args.action=='health' and args.name in {'embedding','speech'}:
+            return invoke(root,chat_python(root,record),'service_health.py','--component',args.name,'--instance',instance(root,record),json_output=True)
+        if args.action=='health' and args.name=='napcat':
+            return invoke(root,chat_python(root,record),'napcat_health.py','--root',resolve(root,record['components']['napcat']['path']),json_output=True)
+        if args.name in {'astrbot','plugins'}:
+            return invoke(root,chat_python(root,record),'doctor.py','--instance',instance(root,record),json_output=True)
+        if args.name=='napcat':
+            return shell(root,'NapCat.ps1','-Action','Diagnose','-Root',resolve(root,record['components']['napcat']['path']))
+        if args.name in {'embedding','speech'}:
+            runtime=instance(root,record)
+            for row in load('model-runtime-lock.json'):
+                if row['component'].lower()!=args.name:continue
+                path=(runtime/row['path']).resolve();path.relative_to(runtime.resolve())
+                if digest(path)!=row['sha256']:raise Fault('integrity','Model artifact hash mismatch')
+            return {'component':args.name,'pinned_artifact_integrity':'pass'}
+        if args.name=='python':
+            profiles=[x for x in ['chat','speech'] if record.get(x+'_python')]
+            if 'chat' in profiles:
+                argv=['-ChatPython',resolve(root,record['chat_python'])]
+                if 'speech' in profiles:argv+=['-SpeechPython',resolve(root,record['speech_python'])]
+                return shell(root,'Check-Environment.ps1',*argv)
+            base=resolve(root,record['components']['python']['path'])
+            run_logged([base,'-I','-c','import sys,ssl,sqlite3; assert sys.version_info[:3]==(3,12,3)'],root/'logs/python-probe.log')
+            return {'python_stdlib_probe':'pass','scope':'Base interpreter only; no Chat environment installed'}
+        raise Fault('incompatible','Unsupported probe for this component')
+    if args.command=='config':return configure(root,record,args)
+    if args.command=='wizard':return {'manual_steps':guidance(root,record),'secret_input':'Use config apply --file - with JSON on stdin; secrets are never command-line arguments or echoed in results.'}
+    if args.command in {'health','diagnose'}:
+        result={'components':[component_status(root,record,x) for x in COMPONENTS]}
+        if args.command=='diagnose':result['environment']=inspect_environment(root)
+        if record.get('instance'):
+            result['configuration']=config_view(root,record)
+            if component_status(root,record,'astrbot')['running']:result['dashboard']=invoke(root,chat_python(root,record),'authenticated_health.py','--instance',instance(root,record),json_output=True)
+            else:raise Fault('needs_input','AstrBot is stopped; configuration checks do not imply service health','Use start, then health.')
+        else:raise Fault('needs_input','No instance is initialized; health is not passed')
+        for component in ['embedding','speech']:
+            if record.get('components',{}).get(component,{}).get('installed'):
+                result[component]=invoke(root,chat_python(root,record),'service_health.py','--component',component,'--instance',instance(root,record),json_output=True)
+        if record.get('components',{}).get('napcat',{}).get('installed'):
+            result['napcat']=invoke(root,chat_python(root,record),'napcat_health.py','--root',resolve(root,record['components']['napcat']['path']),json_output=True)
+        return result
+    if args.command=='backup':return invoke(root,chat_python(root,record),'instance.py','backup','--instance',instance(root,record),'--destination',args.destination.resolve())
+    if args.command=='restore':
+        destination=args.destination.resolve() if args.destination else root/'instance'
+        if root not in destination.parents:raise Fault('read_only','Restore destination must be inside this managed root')
+        result=invoke(root,chat_python(root,record),'instance.py','restore','--snapshot',args.snapshot.resolve(),'--destination',destination,'--release',resolve(root,record['release']))
+        record['instance']=rel(root,destination);atomic(root/'installation.json',record);return result
+    if args.command=='upgrade':
+        release=args.release.resolve()
+        if root not in release.parents:raise Fault('read_only','Upgrade release must be inside this managed root')
+        result=invoke(root,chat_python(root,record),'manage.py','upgrade','--instance',instance(root,record),'--release',release)
+        record['release']=rel(root,release);atomic(root/'installation.json',record);return result
+    if args.command in {'rollback','recover-upgrade'}:
+        result=invoke(root,chat_python(root,record),'manage.py',args.command,'--instance',instance(root,record))
+        release=Path(read(instance(root,record)/'instance.json')['release']);record['release']=rel(root,release);atomic(root/'installation.json',record);return result
+    raise Fault('invalid','Unknown operation')
+
+def main(argv=None):
+    request=uuid.uuid4().hex
+    try:
+        args=parser().parse_args(argv);data=dispatch(args)
+        value={'schema_version':SCHEMA,'project':'Fat-Fish-Assistant','request_id':request,'ok':True,'code':0,'data':data,'errors':[]}
+    except Fault as exc:value={'schema_version':SCHEMA,'project':'Fat-Fish-Assistant','request_id':request,'ok':False,'code':EXIT[exc.kind],'data':None,'errors':[{'type':exc.kind,'message':str(exc),'hint':exc.hint}]}
+    except Exception as exc:
+        kind='integrity' if 'hash' in str(exc).lower() else 'missing' if isinstance(exc,FileNotFoundError) else 'invalid' if isinstance(exc,(ValueError,KeyError)) else 'failed'
+        value={'schema_version':SCHEMA,'project':'Fat-Fish-Assistant','request_id':request,'ok':False,'code':EXIT[kind],'data':None,'errors':[{'type':kind,'message':str(exc),'hint':'Inspect local logs and retained failed stages; current instances are never overwritten by retry.'}]}
+    if not value['ok'] and 'args' in locals() and args.command=='install':
+        try:
+            journal=args.root.resolve()/'install-journal.json'
+            if journal.exists():
+                details=read(journal);details.update(state='failed',error_code=value['code'],errors=value['errors'],failed_at=time.time());atomic(journal,details)
+        except OSError:pass
+    print(json.dumps(value,ensure_ascii=True))
+    return value['code']

@@ -1,0 +1,13 @@
+{
+  "name": "astrbot-dashboard",
+  "version": "v4.29.3",
+  "core_commit": "f61a7f42696da6df25dc7a249ec9b8d54ed9da18",
+  "filename": "astrbot-dashboard-v4.29.3.zip",
+  "url": "https://github.com/AstrBotDevs/AstrBot/releases/download/v4.29.3/AstrBot-v4.29.3-dashboard.zip",
+  "sha256": "a09f560c4140b930180f63a4929c885da80e24fb9bbda56619727bd25e985a11",
+  "strip_prefix": "dist/",
+  "target": "astrbot/astrbot/dashboard/dist",
+  "license": "AGPL-3.0 and bundled frontend dependency notices",
+  "source": "https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/astrbot/core/dashboard_assets.py",
+  "license_source": "https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/LICENSE"
+}

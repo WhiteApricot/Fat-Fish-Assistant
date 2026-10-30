@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Fat-Fish-Assistant management response v1",
+  "type": "object",
+  "required": ["schema_version", "project", "request_id", "ok", "code", "data", "errors"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "project": {"const": "Fat-Fish-Assistant"},
+    "request_id": {"type": "string", "minLength": 1},
+    "ok": {"type": "boolean"},
+    "code": {"enum": [0, 20, 21, 22, 23, 24, 25, 26, 30]},
+    "data": {},
+    "errors": {"type": "array", "items": {"type": "object", "required": ["type", "message", "hint"], "properties": {"type": {"type": "string"}, "message": {"type": "string"}, "hint": {"type": "string"}}, "additionalProperties": false}}
+  }
+}

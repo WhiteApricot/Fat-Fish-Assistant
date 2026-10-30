@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "project": "Fat-Fish-Assistant",
+  "platform": "windows-x64",
+  "python": "3.12.3",
+  "components": {
+    "python": {
+      "depends": []
+    },
+    "astrbot": {
+      "depends": [
+        "python"
+      ],
+      "source": "astrbot"
+    },
+    "plugins": {
+      "depends": [
+        "astrbot"
+      ],
+      "sources": [
+        "astrbot_plugin_livingmemory",
+        "astrbot_plugin_continuous_message",
+        "meme_manager",
+        "selfreply-decision"
+      ]
+    },
+    "napcat": {
+      "depends": [],
+      "asset": "napcat-shell-v4.18.41",
+      "manual": [
+        "QQ official client",
+        "QQ account login"
+      ]
+    },
+    "embedding": {
+      "depends": [],
+      "assets": [
+        "llama-b11946-win-cpu",
+        "embedding-bge-small-zh-v1.5"
+      ]
+    },
+    "speech": {
+      "depends": [
+        "python"
+      ],
+      "asset": "sensevoice-int8-20250909"
+    },
+    "dagu": {
+      "reserved": true,
+      "installed": false
+    },
+    "work": {
+      "reserved": true,
+      "installed": false
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "project": "Fat-Fish-Assistant",
+  "date": "2026-10-30",
+  "status": "P2E 工程实现完成，待 Windows 虚拟机迁移验收。",
+  "vm_install": "not-executed",
+  "cross-host-migration": "not-executed",
+  "published": false,
+  "real-second-group": "deferred",
+  "full-private-merge-matrix": "incomplete",
+  "license-review": "Recorded source and distribution risks; maintainer review required before publication"
+}

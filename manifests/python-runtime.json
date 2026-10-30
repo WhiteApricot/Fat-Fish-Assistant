@@ -1,0 +1,9 @@
+{
+  "version": "3.12.3",
+  "architecture": "x64",
+  "filename": "python.3.12.3.nupkg",
+  "url": "https://api.nuget.org/v3-flatcontainer/python/3.12.3/python.3.12.3.nupkg",
+  "sha256": "03c935cd2f2eceb7de3cfb2eb98e163ab21eec12dce78eb833d15bc4dd3ecbf3",
+  "source": "https://docs.python.org/3.12/using/windows.html#the-nuget-org-packages",
+  "license_source": "https://docs.python.org/3.12/license.html"
+}

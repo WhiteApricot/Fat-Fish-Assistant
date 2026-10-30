@@ -1,0 +1,81 @@
+{
+  "non_migration_groups": [
+    {
+      "test": "test_decision_adapter.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_group_media.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_participation.py",
+      "exit_code": 0
+    },
+    {
+      "test": "Verify-P2C-Gateway.py",
+      "exit_code": 0
+    },
+    {
+      "test": "Verify-P2C-Scoped.py",
+      "exit_code": 0
+    },
+    {
+      "test": "Verify-P2C.py",
+      "exit_code": 0
+    },
+    {
+      "test": "Verify-P2C-NativeBoundary.py",
+      "exit_code": 0
+    },
+    {
+      "test": "Verify-P2C-Pipeline.py",
+      "exit_code": 0
+    },
+    {
+      "test": "Verify-P2C-Cancellation.py",
+      "exit_code": 0
+    },
+    {
+      "test": "Verify-P2C-NativeGroups.py",
+      "exit_code": 0
+    },
+    {
+      "test": "Verify-P2C-GroupQuotes.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_lock.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_upgrade.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_management.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_dependencies.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_service_health.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_audit.py",
+      "exit_code": 0
+    }
+  ],
+  "source_unchanged": true,
+  "lifecycle_checks": 17,
+  "dashboard": {
+    "passed": true,
+    "fixed_archive_sha256": "a09f560c4140b930180f63a4929c885da80e24fb9bbda56619727bd25e985a11",
+    "explicit_sealed_directory_used": true,
+    "native_clean_stop": true,
+    "real_qq_connected": false
+  }
+}

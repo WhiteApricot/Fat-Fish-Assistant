@@ -1,0 +1,80 @@
+[
+  {
+    "name": "astrbot",
+    "commit": "f61a7f42696da6df25dc7a249ec9b8d54ed9da18",
+    "archive_sha256": "be20f687f9c0c5964bfaa806ed4ad6ec01c8db5d3f08f9c146d3fdd18839a33b",
+    "changes": 11,
+    "repository": "https://github.com/AstrBotDevs/AstrBot",
+    "url": "https://codeload.github.com/AstrBotDevs/AstrBot/zip/f61a7f42696da6df25dc7a249ec9b8d54ed9da18",
+    "filename": "astrbot-f61a7f42696da6df25dc7a249ec9b8d54ed9da18.zip",
+    "license": "AGPL-3.0",
+    "target": "astrbot",
+    "license_source": "https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/LICENSE",
+    "strip_prefix": "AstrBot-f61a7f42696da6df25dc7a249ec9b8d54ed9da18/",
+    "patches": "patches/astrbot/changes.json",
+    "patch_sha256": "48ab060e53723c3b5f320c6085073d87ac432510a014ba356700db6e1dab313d"
+  },
+  {
+    "name": "astrbot_plugin_livingmemory",
+    "commit": "e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b",
+    "archive_sha256": "343ca1c45bffa79c006096de966f0233a0368e36f76d060531c3501617d780e2",
+    "changes": 3,
+    "repository": "https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory",
+    "url": "https://codeload.github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory/zip/e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b",
+    "filename": "astrbot_plugin_livingmemory-e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b.zip",
+    "license": "AGPL-3.0",
+    "target": "plugins/astrbot_plugin_livingmemory",
+    "license_source": "https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory/blob/e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b/LICENSE",
+    "strip_prefix": "astrbot_plugin_livingmemory-e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b/",
+    "patches": "patches/astrbot_plugin_livingmemory/changes.json",
+    "patch_sha256": "77ecabeea6b288758c6b1ea4584fbbedb2a377471563ee231a0761a29bc0585f"
+  },
+  {
+    "name": "astrbot_plugin_continuous_message",
+    "commit": "4a2a52ba90544d1527a72602762ae5ce3ae27dca",
+    "archive_sha256": "bfefb9ef7cb61c739c092f14c088716564b0fb8dce1e50f67e323108055bb7fc",
+    "changes": 4,
+    "repository": "https://github.com/aliveriver/astrbot_plugin_continuous_message",
+    "url": "https://codeload.github.com/aliveriver/astrbot_plugin_continuous_message/zip/4a2a52ba90544d1527a72602762ae5ce3ae27dca",
+    "filename": "astrbot_plugin_continuous_message-4a2a52ba90544d1527a72602762ae5ce3ae27dca.zip",
+    "license": "AGPL-3.0",
+    "target": "plugins/astrbot_plugin_continuous_message",
+    "license_source": "https://github.com/aliveriver/astrbot_plugin_continuous_message/blob/4a2a52ba90544d1527a72602762ae5ce3ae27dca/LICENSE",
+    "strip_prefix": "astrbot_plugin_continuous_message-4a2a52ba90544d1527a72602762ae5ce3ae27dca/",
+    "patches": "patches/astrbot_plugin_continuous_message/changes.json",
+    "patch_sha256": "3c24c6ea166fcbdcfcd6f1ffd162e1b9805d1e013bce3da9e08c2727b018c4c5"
+  },
+  {
+    "name": "meme_manager",
+    "commit": "5cec301481b8b99682ba2a0021a432656a3a92ec",
+    "archive_sha256": "82b28165b52557af3cfcbd4e454d1a87bdcdb1e439de41d72248b5701b69e732",
+    "changes": 0,
+    "repository": "https://github.com/anka-afk/astrbot_plugin_meme_manager",
+    "url": "https://codeload.github.com/anka-afk/astrbot_plugin_meme_manager/zip/5cec301481b8b99682ba2a0021a432656a3a92ec",
+    "filename": "meme_manager-5cec301481b8b99682ba2a0021a432656a3a92ec.zip",
+    "license": "MIT",
+    "target": "plugins/meme_manager",
+    "license_source": "https://github.com/anka-afk/astrbot_plugin_meme_manager/blob/5cec301481b8b99682ba2a0021a432656a3a92ec/LICENSE",
+    "strip_prefix": "astrbot_plugin_meme_manager-5cec301481b8b99682ba2a0021a432656a3a92ec/",
+    "patches": "patches/meme_manager/changes.json",
+    "patch_sha256": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f"
+  },
+  {
+    "name": "selfreply-decision",
+    "commit": "11be8206a6bb26b9ebeccf301213e2654087d512",
+    "repository": "https://github.com/chengzhi-c/astrbot_plugin_self_initiated_reply",
+    "url": "https://codeload.github.com/chengzhi-c/astrbot_plugin_self_initiated_reply/zip/11be8206a6bb26b9ebeccf301213e2654087d512",
+    "filename": "selfreply-11be8206.zip",
+    "license": "GPL-3.0",
+    "target": "src/p2d/upstream_selfreply",
+    "select": [
+      "decision.py",
+      "models.py",
+      "utils.py",
+      "LICENSE"
+    ],
+    "license_source": "https://github.com/chengzhi-c/astrbot_plugin_self_initiated_reply/blob/11be8206a6bb26b9ebeccf301213e2654087d512/LICENSE",
+    "strip_prefix": "astrbot_plugin_self_initiated_reply-11be8206a6bb26b9ebeccf301213e2654087d512/",
+    "archive_sha256": "a1fac6b5a4b990e79ea8264c7b0676e8f80ced19e7f8a12b7aebd96f28d0aac5"
+  }
+]
