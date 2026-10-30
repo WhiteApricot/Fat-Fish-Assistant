@@ -87,12 +87,15 @@ def shell(root,script,*args,json_output=False):
     executable=Path(os.environ.get('SystemRoot','C:/Windows'))/'System32/WindowsPowerShell/v1.0/powershell.exe'
     if os.name!='nt':raise Fault('incompatible','Windows service management requires Windows')
     env=clean_environment();env['PSMODULEPATH']=str(executable.parent/'Modules')
-    proc=subprocess.run([str(executable),'-NoProfile','-File',str(PROJECT/'scripts'/script),*map(str,args)],capture_output=True,text=True,env=env)
-    log=root/'logs'/(script+'.log');log.parent.mkdir(exist_ok=True)
-    with log.open('a',encoding='utf-8') as stream:stream.write(proc.stdout+'\n'+proc.stderr)
+    # .NET Start-Process can leave a captured pipe inherited by the detached
+    # service after PowerShell exits. Wait for the launcher, never for pipe EOF.
+    log=root/'logs'/(script+'-'+uuid.uuid4().hex+'.log');log.parent.mkdir(exist_ok=True)
+    with log.open('wb') as stream:
+        proc=subprocess.run([str(executable),'-NoProfile','-File',str(PROJECT/'scripts'/script),*map(str,args)],stdout=stream,stderr=subprocess.STDOUT,env=env,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    output=log.read_text(encoding='utf-8-sig',errors='replace')
     if proc.returncode:raise Fault('failed',script+' failed',f'Inspect the private log: {log}')
     if json_output:
-        text=proc.stdout.strip()
+        text=output.strip()
         if text in {'True','False'}:return text=='True'
         return json.loads(text)
     return {'completed':True}
@@ -159,12 +162,16 @@ def selection(text):
 def install_asset(root,name,spec,target,cache,offline=False,notify=progress):
     """Only a verified, completed stage can become an installed asset."""
     marker=root/'asset-receipts'/(name+'.json')
+    def mutable(relative):
+        parts=Path(relative).parts
+        return name=='napcat' and (parts[0].lower() in {'config','logs','cache','temp'} or relative in {'.feiyu-process.json','guild1.db','guild1.db-shm','guild1.db-wal'})
     def contents(path):
         if path.is_file():return {'.':digest(path)}
-        return {p.relative_to(path).as_posix():digest(p) for p in sorted(path.rglob('*')) if p.is_file()}
+        return {p.relative_to(path).as_posix():digest(p) for p in sorted(path.rglob('*')) if p.is_file() and not mutable(p.relative_to(path).as_posix())}
     if marker.exists():
         receipt=read(marker)
-        if receipt.get('sha256')!=spec['sha256'] or not target.exists() or receipt.get('files')!=contents(target):
+        expected={key:value for key,value in receipt.get('files',{}).items() if not mutable(key)}
+        if receipt.get('sha256')!=spec['sha256'] or not target.exists() or expected!=contents(target):
             raise Fault('integrity','Installed asset receipt or content mismatch')
         return
     pending=marker.with_suffix('.pending.json')
@@ -260,7 +267,9 @@ def install(root,args):
                 stage.rename(target);record['instance']=rel(root,target);save()
             if 'embedding' in chosen or 'speech' in chosen:
                 runtime=instance(root,record)
-                invoke(root,chat_python(root,record),'configure_local_models.py','--instance',runtime,'--components',','.join(x for x in ['embedding','speech'] if x in chosen))
+                existing_ids={x.get('id') for x in read(runtime/'data/cmd_config.json').get('provider',[])}
+                missing=[x for x in ['embedding','speech'] if x in chosen and ('feiyu-local-embedding' if x=='embedding' else 'feiyu-local-stt') not in existing_ids]
+                if missing:invoke(root,chat_python(root,record),'configure_local_models.py','--instance',runtime,'--components',','.join(missing))
                 for source,target in [('embedding-engine','engines/llama'),('embedding-model','models/embedding/bge-small-zh-v1.5-f16.gguf'),('speech-model','models/sensevoice')]:
                     if source not in record['components']:continue
                     origin=resolve(root,record['components'][source]['path']);destination=runtime/target
@@ -350,12 +359,20 @@ def config_view(root,record):
 
 def configure(root,record,args):
     view=config_view(root,record)
+    if args.config_action=='initialize-chat':
+        with installation_lock(root):
+            return invoke(root,chat_python(root,record),'configure_chat.py','--instance',instance(root,record),'--onebot-port',args.onebot_port,'--model',args.model,json_output=True)
+    if args.config_action=='initialize-onebot':
+        if not args.bot_id:raise Fault('needs_input','Provide your own Bot identity with --bot-id; no default account is imported')
+        if component_status(root,record,'napcat')['running']:raise Fault('busy','Stop owned NapCat before connection initialization')
+        with installation_lock(root):
+            return invoke(root,chat_python(root,record),'configure_onebot.py','--root',root,'--bot-id',args.bot_id,json_output=True)
     if args.config_action=='show':return view
     if args.config_action=='validate':
         if not view['identity_valid'] or view['dashboard']['host']!='127.0.0.1':raise Fault('integrity','Identity or loopback configuration mismatch')
         return {'configuration_valid':True,'secrets_redacted':True}
     data=json.load(sys.stdin) if args.file=='-' else read(args.file)
-    if set(data)-{'dashboard_port','deepseek_api_key','qq_executable'}:raise Fault('invalid','Only dashboard_port, deepseek_api_key and qq_executable are writable here; owner/groups are not generic settings')
+    if set(data)-{'dashboard_port','deepseek_api_key','qq_executable','napcat_webui_port'}:raise Fault('invalid','Only dashboard_port, deepseek_api_key, qq_executable and napcat_webui_port are writable here; owner/groups are not generic settings')
     target=instance(root,record)
     with installation_lock(root):
         from lifecycle_lock import exclusive
@@ -364,6 +381,15 @@ def configure(root,record,args):
             if 'dashboard_port' in data and (type(data['dashboard_port']) is not int or not 1024<=data['dashboard_port']<=65535):raise Fault('invalid','Dashboard port must be an integer from 1024 to 65535')
             if 'qq_executable' in data and (not Path(data['qq_executable']).is_file() or Path(data['qq_executable']).name.lower()!='qq.exe'):raise Fault('invalid','Provide an existing QQ.exe path')
             if 'deepseek_api_key' in data and (not isinstance(data['deepseek_api_key'],str) or not data['deepseek_api_key'].strip()):raise Fault('invalid','API key must be a nonempty string')
+            if 'napcat_webui_port' in data:
+                if type(data['napcat_webui_port']) is not int or not 1024<=data['napcat_webui_port']<=65535:raise Fault('invalid','Invalid NapCat WebUI port')
+                info=record.get('components',{}).get('napcat',{})
+                if not info.get('installed') or info.get('ownership')!='managed':raise Fault('read_only','Only an owned NapCat installation can be configured')
+                if component_status(root,record,'napcat')['running']:raise Fault('busy','Stop the owned NapCat before configuration')
+                nap_root=resolve(root,info['path']);nap_root.resolve().relative_to(root.resolve())
+                nap_path=nap_root/'config/webui.json'
+                nap_cfg=read(nap_path) if nap_path.exists() else {'token':secrets.token_hex(32),'loginRate':10,'autoLoginAccount':''}
+                nap_cfg.update(host='127.0.0.1',port=data['napcat_webui_port'],disableWebUI=False,accessControlMode='whitelist',ipWhitelist=['127.0.0.1','::1'],enableXForwardedFor=False)
             history=target/'private/config-history'/uuid.uuid4().hex;history.mkdir(parents=True)
             shutil.copy2(target/'data/cmd_config.json',history/'cmd_config.json')
             if (target/'private/deepseek-key.txt').exists():shutil.copy2(target/'private/deepseek-key.txt',history/'deepseek-key.txt')
@@ -371,6 +397,9 @@ def configure(root,record,args):
             if 'dashboard_port' in data:cfg['dashboard']['port']=data['dashboard_port'];atomic(target/'data/cmd_config.json',cfg)
             if 'deepseek_api_key' in data:(target/'private/deepseek-key.txt').write_text(data['deepseek_api_key'].strip(),encoding='utf-8')
             if 'qq_executable' in data:record['qq_executable']=str(Path(data['qq_executable']).resolve());atomic(root/'installation.json',record)
+            if 'napcat_webui_port' in data:
+                if nap_path.exists():shutil.copy2(nap_path,history/'napcat-webui.json')
+                atomic(nap_path,nap_cfg)
     return {'changed_fields':sorted(data),'secrets_redacted':True,'restart_required':True}
 
 def parser():
@@ -382,7 +411,7 @@ def parser():
     setup.add_argument('--owner');setup.add_argument('--python',type=Path);setup.add_argument('--cache',type=Path);setup.add_argument('--offline',action='store_true');setup.add_argument('--accept-external-licenses',action='store_true');setup.add_argument('--no-instance',action='store_true')
     for name in ['status','components','start','stop','restart','health','diagnose','wizard','rollback']:sub.add_parser(name)
     component=sub.add_parser('component');component.add_argument('name',choices=list(COMPONENTS));component.add_argument('action',choices=['status','version','dependencies','start','stop','restart','health','integrity'])
-    conf=sub.add_parser('config');conf.add_argument('config_action',choices=['show','validate','apply']);conf.add_argument('--file',default='-')
+    conf=sub.add_parser('config');conf.add_argument('config_action',choices=['show','validate','apply','initialize-chat','initialize-onebot']);conf.add_argument('--file',default='-');conf.add_argument('--onebot-port',type=int,default=6199);conf.add_argument('--model',choices=['deepseek-chat','deepseek-reasoner'],default='deepseek-chat');conf.add_argument('--bot-id')
     backup=sub.add_parser('backup');backup.add_argument('--destination',required=True,type=Path)
     restore=sub.add_parser('restore');restore.add_argument('--snapshot',required=True,type=Path);restore.add_argument('--destination',type=Path)
     upgrade=sub.add_parser('upgrade');upgrade.add_argument('--release',required=True,type=Path)

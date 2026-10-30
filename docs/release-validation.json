@@ -67,15 +67,26 @@
     {
       "test": "test_audit.py",
       "exit_code": 0
+    },
+    {
+      "test": "test_chat_configuration.py",
+      "exit_code": 0
+    },
+    {
+      "test": "test_onebot_configuration.py",
+      "exit_code": 0
     }
   ],
-  "source_unchanged": true,
-  "lifecycle_checks": 17,
-  "dashboard": {
-    "passed": true,
-    "fixed_archive_sha256": "a09f560c4140b930180f63a4929c885da80e24fb9bbda56619727bd25e985a11",
-    "explicit_sealed_directory_used": true,
-    "native_clean_stop": true,
-    "real_qq_connected": false
-  }
+  "source_unchanged_during_run": true,
+  "final_runtime_code_matches_test_manifest": true,
+  "repeat_install_preserved_instance_files": 559,
+  "manual_group_smoke": {
+    "at_reply": "passed",
+    "ordinary_nontrigger": "passed",
+    "test_account_no_duplicate": "passed"
+  },
+  "complete_authenticated_health": "passed",
+  "embedding_dimensions": 512,
+  "QQ_login": "Manual; platform risk control caused one logout, user restored login; no automatic bypass",
+  "vm_and_cross_host_migration": "not-executed"
 }

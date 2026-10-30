@@ -35,6 +35,10 @@ foreach($file in $lock.files){
 }
 if($Action -eq 'Diagnose'){'External pinned NapCat runtime integrity passed';exit 0}
 if($running.Count -gt 0){throw 'External NapCat already running; refusing duplicate launch'}
+$webuiPath=Join-Path $napRoot 'config\webui.json'
+if(-not(Test-Path -LiteralPath $webuiPath)){throw 'Initialize owned NapCat loopback WebUI configuration before launch'}
+$webui=Get-Content -Raw -LiteralPath $webuiPath|ConvertFrom-Json
+if($webui.host -ne '127.0.0.1'){throw 'NapCat WebUI must bind loopback; refusing launch'}
 if(-not $QQExecutable){throw 'Provide an explicit dedicated QQ executable; login remains manual'}
 $qqPath=(Resolve-Path -LiteralPath $QQExecutable).Path
 $values=@{NAPCAT_PATCH_PACKAGE=(Join-Path $napRoot 'qqnt.json');NAPCAT_LOAD_PATH=(Join-Path $napRoot 'loadNapCat.js');NAPCAT_INJECT_PATH=(Join-Path $napRoot 'NapCatWinBootHook.dll');NAPCAT_LAUNCHER_PATH=$executable;NAPCAT_MAIN_PATH=(Join-Path $napRoot 'napcat.mjs')}

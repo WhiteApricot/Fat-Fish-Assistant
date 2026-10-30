@@ -72,6 +72,26 @@ class Management(unittest.TestCase):
     def test_different_owner_config_detected(self):
         c.atomic(self.root/'instance/private/instance-identity.json',{'owner':'200'})
         code,_=self.call('config','validate');self.assertEqual(code,23)
+    def test_napcat_config_requires_owned_stopped_component(self):
+        code,_=self.call('config','apply',stdin=json.dumps({'napcat_webui_port':16099}));self.assertEqual(code,26)
+        napcat=self.root/'services/napcat';napcat.mkdir(parents=True)
+        self.record['components']['napcat']={'installed':True,'ownership':'managed','path':'services/napcat','version':'synthetic'};c.atomic(self.root/'installation.json',self.record)
+        with patch.object(c,'component_status',return_value={'running':False}):
+            code,_=self.call('config','apply',stdin=json.dumps({'napcat_webui_port':16099}));self.assertEqual(code,0)
+        cfg=c.read(napcat/'config/webui.json');self.assertEqual(cfg['host'],'127.0.0.1');self.assertTrue(cfg['token'])
+        with patch.object(c,'component_status',return_value={'running':True}):
+            code,_=self.call('config','apply',stdin=json.dumps({'napcat_webui_port':16199}));self.assertEqual(code,24)
+    def test_napcat_mutable_config_does_not_hide_code_tampering(self):
+        source=Path(self.temp.name)/'napcat-fixture';source.write_bytes(b'synthetic')
+        spec={'id':'synthetic-napcat','sha256':c.digest(source),'format':'zip'};target=self.root/'services/fixture'
+        def unpack(archive,stage):
+            stage.mkdir();(stage/'napcat.mjs').write_text('synthetic immutable code');(stage/'config').mkdir();(stage/'config/webui.json').write_text('{}')
+        with patch.object(c,'acquire',return_value=source),patch.object(c,'unpack',side_effect=unpack):c.install_asset(self.root,'napcat',spec,target,self.root/'cache')
+        (target/'config/webui.json').write_text('{"host":"127.0.0.1"}');(target/'logs').mkdir();(target/'logs/runtime.txt').write_text('synthetic')
+        for name in ['guild1.db','guild1.db-wal','guild1.db-shm']:(target/name).write_bytes(b'synthetic native runtime cache')
+        c.install_asset(self.root,'napcat',spec,target,self.root/'cache')
+        (target/'napcat.mjs').write_text('corrupt')
+        with self.assertRaises(c.Fault):c.install_asset(self.root,'napcat',spec,target,self.root/'cache')
     def test_install_running_instance_refused_before_dependencies(self):
         (self.root/'instance/private/RUNNING').write_text('synthetic')
         with patch.object(c,'install_environment') as install:
@@ -82,7 +102,9 @@ class Management(unittest.TestCase):
         command=[sys.executable,str(script),'--instance',str(self.root/'instance'),'--components','embedding']
         subprocess.run(command,check=True,capture_output=True)
         before=(self.root/'instance/private/local-embedding-key.txt').read_bytes()
+        config_before=(self.root/'instance/data/cmd_config.json').read_bytes();history_before=set((self.root/'instance/private/config-history').iterdir())
         subprocess.run(command,check=True,capture_output=True)
+        self.assertEqual(config_before,(self.root/'instance/data/cmd_config.json').read_bytes());self.assertEqual(history_before,set((self.root/'instance/private/config-history').iterdir()))
         cfg=c.read(self.root/'instance/data/cmd_config.json')
         self.assertEqual([x['provider_type'] for x in cfg['provider']],['embedding'])
         self.assertNotIn('provider_stt_settings',cfg)

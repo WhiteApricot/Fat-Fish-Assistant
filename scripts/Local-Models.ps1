@@ -29,7 +29,7 @@ if($Action -eq 'Stop'){
  exit 0
 }
 if($existing){throw 'Service already running'}
-$lockedFiles=@(Get-Content -Raw -LiteralPath $ModelLock|ConvertFrom-Json|Where-Object component -eq $Component)
+$lockedFiles=@((Get-Content -Raw -LiteralPath $ModelLock|ConvertFrom-Json)|Where-Object {$_.component -eq $Component})
 if($lockedFiles.Count -eq 0){throw 'No locked artifacts for component'}
 foreach($artifact in $lockedFiles){
  $artifactPath=[IO.Path]::GetFullPath((Join-Path $instanceRoot $artifact.path))

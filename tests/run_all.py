@@ -24,7 +24,7 @@ env=dict(os.environ,FEIYU_TEST_RELEASE=str(a.release.resolve()),FFA_TEST_RELEASE
 env.pop('PYTHONPATH',None)
 tests=['test_decision_adapter.py','test_group_media.py','test_participation.py','Verify-P2C-Gateway.py','Verify-P2C-Scoped.py','Verify-P2C.py',
        'Verify-P2C-NativeBoundary.py','Verify-P2C-Pipeline.py','Verify-P2C-Cancellation.py','Verify-P2C-NativeGroups.py','Verify-P2C-GroupQuotes.py',
-       'test_lock.py','test_upgrade.py','test_management.py','test_dependencies.py','test_service_health.py','test_audit.py']
+       'test_lock.py','test_upgrade.py','test_management.py','test_dependencies.py','test_service_health.py','test_audit.py','test_chat_configuration.py','test_onebot_configuration.py']
 if a.include_migration:tests.append('test_migration.py')
 rows=[]
 for name in tests:

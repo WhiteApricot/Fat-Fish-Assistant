@@ -1,5 +1,9 @@
 # 管理接口 v1
 
+收口新增配置入口：`config initialize-chat [--onebot-port 6199] [--model deepseek-chat]` 初始化原生 Chat 与带鉴权的回环 OneBot；`config initialize-onebot --bot-id <自己的Bot账号>` 只在已停止、由本安装根管理的 NapCat 中生成原生反向连接配置。它们不登录、不发送、不变更主人或群权限；不兼容的既有配置拒绝覆盖。`config apply` 另支持 `napcat_webui_port`，强制回环、随机私有令牌并拒绝修改外部只读或运行中的 NapCat。
+
+PowerShell 5 的生命周期输出写入每次独立私密日志，避免后台服务继承捕获管道导致命令挂起。NapCat 可变配置/日志和不可变程序载荷分别校验：配置可由用户保存，代码篡改或未知代码载荷仍拒绝复用。
+
 入口：`python -I ffa.py --root <安装根> <命令>`。Python 接口 stdout 始终为单个 JSON 对象，stderr 为进度；PowerShell 入口默认显示人类可读结果，`-Json` 返回同一 JSON。无 GUI、无对外 HTTP 端口。P6 调用进程并读取 JSON/退出码即可。
 
 响应字段固定为 schema_version=1、project、request_id、ok、code、data、errors。errors 为 type/message/hint 数组。`ok` 表示该操作完成；检测结果须同时读 data.ready 和各项 severity。端口占用是警告，不会按端口杀进程；未知权限/网络错误不能误报端口可用。

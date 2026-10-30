@@ -17,6 +17,8 @@ foreach($name in @('napcat.mjs','loadNapCat.js','NapCatWinBootHook.dll','qqnt.js
 $files=@('napcat.mjs','loadNapCat.js','NapCatWinBootMain.exe','NapCatWinBootHook.dll','qqnt.json')|ForEach-Object {@{path=$_;sha256=(Get-FileHash -LiteralPath (Join-Path $fixture $_)).Hash.ToLowerInvariant()}}
 @{version='synthetic-process-fixture';files=@($files)}|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $fixture 'lock.json')
 $manager=Join-Path $PSScriptRoot '..\scripts\NapCat.ps1'
+New-Item -ItemType Directory -Path (Join-Path $fixture 'config')|Out-Null
+@{host='127.0.0.1';port=16099}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $fixture 'config\webui.json')
 & $manager -Action Start -Root $fixture -QQExecutable (Join-Path $fixture 'QQ.exe') -LockFile (Join-Path $fixture 'lock.json')
 Start-Sleep -Milliseconds 500
 $before=@(Get-CimInstance Win32_Process | Where-Object {$_.ExecutablePath -in @((Join-Path $fixture 'QQ.exe'),(Join-Path $fixture 'NapCatWinBootMain.exe'))})

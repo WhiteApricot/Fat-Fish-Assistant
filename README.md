@@ -1,10 +1,12 @@
 # 肥鱼助手 / Fat-Fish-Assistant
 
-可自行部署的 QQ AI 助手集成框架。AstrBot 是唯一聊天主体；本项目提供权限适配、必要兼容补丁、可复现安装与命令行管理。GitHub 仓库建议名称为 **Fat-Fish-Assistant**。
+可自行部署的 QQ AI 助手集成框架。AstrBot 是唯一聊天主体；本项目提供权限适配、必要兼容补丁、可复现安装与命令行管理。正式仓库为 [WhiteApricot/Fat-Fish-Assistant](https://github.com/WhiteApricot/Fat-Fish-Assistant)，也是唯一正式开发和发布入口。
 
 仓库只保存自有代码、最小补丁、依赖清单、模板、测试和文档。AstrBot、插件、Python 包、NapCat 与模型从固定官方/可信来源获取，放在仓库以外；不携带第三方源码 ZIP、wheel、模型、QQ 登录态或私人数据库。
 
 ## 一键检测与安装
+
+完整安装、原生连接初始化与扫码步骤见 [快速开始](docs/QUICK_START.md)。所有外部组件由清单获取；QQ 官方客户端及扫码按其许可由用户操作，已有客户端须显式选择。
 
 Windows x64。在审阅并信任本项目源码后，从项目目录运行：
 
@@ -44,6 +46,8 @@ python -I ffa.py --root ../assistant-local component astrbot status
 重复安装复用通过校验的缓存和已完成环境，不覆盖实例。中断阶段留在内部日志/失败目录；只对带本项目构建标记的未完成环境归档重试。Windows 虚拟环境在最终版本路径构建，避免破坏命令启动器。两个仅有源码的 Python 包由固定 sdist 和固定构建工具在独立构建环境生成 wheel，产物和本地解析锁留在私密安装目录。[pip 哈希安装说明](https://pip.pypa.io/en/stable/topics/repeatable-installs/)
 
 ## 文档与验收
+
+- [完整阶段规划](docs/ROADMAP.md)、[总体工程设计](docs/ENGINEERING_DESIGN.md)、[P2F 插件条件审查](docs/P2F_PLUGIN_REVIEW.md)。Linux 最小适配从 P3 开始，本轮不实现。
 
 - [架构与兼容标识](docs/ARCHITECTURE.md)、[更名记录](docs/RENAMING.md)。
 - [解耦、废弃入口与回滚记录](docs/GOVERNANCE.md)、[实际验证范围](docs/VALIDATION.md)。

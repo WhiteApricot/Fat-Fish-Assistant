@@ -1,11 +1,17 @@
 {
   "project": "Fat-Fish-Assistant",
   "date": "2026-10-30",
-  "status": "P2E 工程实现完成，待 Windows 虚拟机迁移验收。",
-  "vm_install": "not-executed",
+  "status": "P2E 工程实现完成，等待必要的人工验收及后续阶段启动。",
+  "engineering_closure": "passed",
+  "single_group_manual_smoke": "passed",
+  "complete_runtime": "passed-with-manual-QQ-login",
+  "clean_windows_vm": "not-executed",
   "cross-host-migration": "not-executed",
-  "published": false,
-  "real-second-group": "deferred",
-  "full-private-merge-matrix": "incomplete",
-  "license-review": "Recorded source and distribution risks; maintainer review required before publication"
+  "second_group": "deferred",
+  "full_private_merge_matrix": "incomplete",
+  "P2F": "conditional-foundation-only-not-started",
+  "P3_linux": "planned-not-implemented",
+  "repository": "https://github.com/WhiteApricot/Fat-Fish-Assistant",
+  "distribution": "private repository only; no public release",
+  "license_review": "Source/notice audit completed with recorded unresolved external terms; not unconditional legal clearance"
 }

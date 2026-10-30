@@ -33,6 +33,9 @@ with exclusive(root):
         elif speech.get('type')!='openai_whisper_api':raise ValueError('Existing speech provider type mismatch')
         speech['api_base']=f'http://127.0.0.1:{a.speech_port}/v1'
         cfg.setdefault('provider_stt_settings',{})['provider_id']=speech['id']
+    if cfg==json.loads(before.decode('utf-8-sig')):
+        print('Local provider configuration already matches; no files changed')
+        raise SystemExit(0)
     history=root/'private/config-history';history.mkdir(exist_ok=True)
     (history/(secrets.token_hex(8)+'.json')).write_bytes(before)
     pending=path.with_suffix('.pending');pending.write_text(json.dumps(cfg,ensure_ascii=False),encoding='utf-8');pending.replace(path)

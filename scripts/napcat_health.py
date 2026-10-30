@@ -5,9 +5,10 @@ import json
 import urllib.request
 from pathlib import Path
 
-p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--port',type=int,default=6099);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--port',type=int);a=p.parse_args()
 cfg=json.loads((a.root/'config/webui.json').read_text(encoding='utf-8-sig'))
-base='http://127.0.0.1:'+str(a.port)+'/api'
+if cfg.get('host')!='127.0.0.1':raise ValueError('Managed NapCat WebUI must bind loopback')
+base='http://127.0.0.1:'+str(a.port or cfg.get('port',6099))+'/api'
 opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def call(path,body,token=None):
     headers={'Content-Type':'application/json'}
