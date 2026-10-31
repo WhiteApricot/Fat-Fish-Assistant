@@ -1,7 +1,7 @@
 {
   "project": "Fat-Fish-Assistant",
-  "date": "2026-10-30",
-  "status": "P2E 工程实现完成，等待必要的人工验收及后续阶段启动。",
+  "date": "2026-10-31",
+  "status": "P2E-UX 本机实现、人工体验和最终25组冻结回归通过；干净Windows及真正跨主机待验收",
   "engineering_closure": "passed",
   "single_group_manual_smoke": "passed",
   "complete_runtime": "passed-with-manual-QQ-login",
@@ -13,5 +13,24 @@
   "P3_linux": "planned-not-implemented",
   "repository": "https://github.com/WhiteApricot/Fat-Fish-Assistant",
   "distribution": "private repository only; no public release",
-  "license_review": "Source/notice audit completed with recorded unresolved external terms; not unconditional legal clearance"
+  "license_review": "Source/notice audit completed with recorded unresolved external terms; not unconditional legal clearance",
+  "p2e_baseline_date": "2026-10-30",
+  "p2e_ux": {
+    "git_checkpoint": "single-delivery-node-recorded-by-Git-and-final-delivery-report",
+    "final_delivery_record": "../Fat-Fish-Assistant.local/ux-validation/P2E_UX_DELIVERY.md",
+    "state": "implemented-current-host-validated-external-acceptance-pending",
+    "migration": "same-host-new-environment-passed-cross-host-not-executed",
+    "source_artifacts": "bytecode-archived-cache-moved-to-instance-no-runtime-payload-in-final-source",
+    "final_regression": "25-groups-passed-source-frozen-final-regression-20261031-i",
+    "qq_native_profile_isolation": "upstream-native-directory-not-fully-isolated",
+    "napcat_runtime": "official-pinned-node-bundle-and-real-qr-ready-passed",
+    "report": "docs/P2E_UX_REPORT.md",
+    "qq_login_recovery": "actual-stuck-service-recovered-controlled-owned-restart",
+    "latest_manual_qq": "user-accepted-scan-split-reply-starter-image",
+    "native_crash_history": "one-access-violation-in-e-not-reproduced-in-f-g-h-i-root-cause-unresolved",
+    "workflow": "implemented",
+    "lifecycle": "actual-native-fault-matrix-passed",
+    "double_click_install": "current-host-manually-accepted-clean-windows-not-executed",
+    "daily_start": "real-cmd-and-services-passed"
+  }
 }

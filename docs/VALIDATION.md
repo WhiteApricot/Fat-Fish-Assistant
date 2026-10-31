@@ -1,4 +1,38 @@
-# P2E 收口实测与边界（2026-10-30）
+# P2E-UX 验证（2026-10-31）
+
+工程规则见 WORKFLOW.md。最终状态与 Git 记录见 P2E_UX_REPORT.md。下方旧 P2E 记录只作为历史基线，不代表本轮新增功能或当前人工验收通过。
+
+## 本轮证据分类
+
+|层级|执行内容|当前状态|
+|---|---|---|
+|回归卡顿诊断|周期栈显示 asyncio/socketpair 本机连接初始化阻塞；允许回环连接后原断言正常运行|原因已确认并保留 hang-diagnostic.log|
+|基础原回归|19/20 组首轮通过，升级首轮因缓存路径不符失败；改用真实公共缓存后升级/回滚通过|首轮源码曾变化，不能作为最终冻结通过|
+|独立安装|新 CPython、全新 Chat/Speech 环境、固定源码/插件/模型；重复安装不改变身份|实际执行通过；使用已校验缓存，不等于无缓存新 Windows VM|
+|实际服务|Chat、Embedding、Speech 鉴权健康、复用、正常停止/重启、突然终止、失效 RUNNING、健康 DIRTY、并发启动|actual-services-20261031-a/results.json 通过|
+|实际恢复故障|本地真实 Embedding、原生 FAISS 损坏重建/原件保留、检索/作用域/聊天、SQLite 损坏拒绝、Embedding 缺失/恢复、graph_memory、OS 锁、PID 复用|native-recovery-20261031-c/results.json 全部通过；a/b 失败证据保留|
+|同机加密迁移|导出一个包、SHA、暂停源、新独立环境自动准备、迁入新路径、身份/权限/Key/插件资源/用户资产/SQL 记录、恢复后实际服务|actual-services-20261031-a/results.json 通过；不等于跨主机|
+|协议健康|真实 Chat 对本机合成 OneBot 对端，仅 get_status/get_login_info；断线不再报连接|protocol-migration-20261031-a/results.json 通过，real_qq_used=false|
+|负向迁入|错误密码、标签篡改、依赖版本不符、manifest SHA 不符、已有目标保护|同上通过；失败不创建/覆盖实例|
+|桌面传输/CMD|JSON/stderr、Unicode隐藏口令stdin、配置子命令、自动填写及一次登录恢复请求；实际CMD启停，无界面点击|l 实际启动停止通过；m 新增登录恢复前端分支通过；g/h 的旧失败日志保留|
+|官方独立 QQ 程序|实际PowerShell前端准备/重复准备、配置保留、真实二维码就绪、正确页面HTTP200且不丢参、复用/停止/完整性|napcat-node-20261031-f/results.json 通过；未代替扫码；QQ原生个人文件夹未保证完全隔离|
+|最终冻结回归|原回归与UX、加密原生迁移及基础体验，25组|final-regression-20261031-i：25组退出0，源码冻结true；e 曾有一次Windows底层崩溃，后续多轮通过但未宣称根因已解决|
+|真实人工体验|安装、QQ扫码/OneBot/消息，修复后的自动填写、分条及基础图片|用户已确认通过；实际当前健康另见actual-final-health-20261031.json|
+|登录卡死恢复|连续确认reconnecting后受控重启本实例QQ，不碰其他服务或代替扫码|actual-login-recovery-20261031.json：真实waiting_qrcode且QR就绪；7项UX测试覆盖扫码中/已登录/外部服务不重启|
+|当前API Key日志检查|共享只读读取当前安装及instance/logs，不输出密钥或聊天|41份均可读取，未命中当前真实Key；不扩展为所有第三方秘密都未记录|
+|新主机/运行库|干净Windows下载、UAC与重启、真正跨主机导入|未执行，明确待验收|
+
+证据均位于 Fat-Fish-Assistant.local/ux-validation，不进入 Git。最终迁移夹具把上游 Unicode FAISS 临时文件工厂定向到 local，保留真实读写器、索引算法和断言；这不等于实际中文 Windows 用户系统临时目录权限验收。
+
+## 如何复验
+
+维护者使用独立安装的 Chat Python，设置 FFA_CACHE 为实际固定下载缓存，调用 tests/run_all.py，传入仓库外 local 工作区中的 --release 与 --output，并加 --include-migration。执行器自动将 TEMP/TMP 和字节码缓存指向输出目录，逐组输出开始/结束、耗时和周期栈；超时/失败保留原日志，不能标为通过。
+
+实际安装与服务用 tests/test_ux_installation.py；故障矩阵用 test_native_lifecycle.py；桌面传输/命令入口用 test_desktop_contract.py；只读协议与负向迁入用 test_ux_protocol_migration.py。它们只接受 local/ux-validation 的新目录和合成 owner=100（QQ 测试除外），不会接管正式实例。脚本参数和对应结果以测试代码与本轮报告为准，不要求普通用户运行它们。
+
+语音健康验证模型加载、身份及鉴权，不代表识别准确率；Embedding 健康验证固定模型/512 维和鉴权，不代表所有语义召回质量。合成 OneBot 对端和同机跨路径恢复不能替代真实 QQ 或跨 Windows 主机验收。
+
+## 历史基线：P2E 收口（2026-10-30）
 
 **P2E 工程实现完成，等待必要的人工验收及后续阶段启动。**
 

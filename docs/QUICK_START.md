@@ -1,46 +1,37 @@
-# 克隆、安装与日常运行
+# 快速开始：双击操作
 
-正式工程仅为本仓库。安装根放在仓库外，以下示例使用 `../Fat-Fish-Assistant.local/instance`；不需要旧 feiyu 目录、旧数据库或他人的配置。Windows VM 尚待独立验收。
+适用 Windows 10/11 x64。先审阅项目和第三方许可，准备自己的主人 QQ、机器人 QQ、DeepSeek API Key ；无需预装 QQ 客户端。无需输入 Python 或 PowerShell 命令。
 
-## 第一次安装
+## 首次安装
 
-从仓库目录运行统一入口，按提示填写自己的主人 QQ。缺少固定解释器时自动获取，不修改系统 Python：
+双击根目录 **Install-Fat-Fish-Assistant.cmd**，按提示操作：
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Fat-Fish-Assistant.ps1 -Action install -Root ..\Fat-Fish-Assistant.local\instance --components 'chat,napcat,embedding,speech' --accept-external-licenses
-```
+1. 确认默认安装位置；需要更改时输入 C，使用文件夹选择器。目录必须是新的空目录或已受管理的安装目录，不能选正式源码目录。
+2. 阅读并接受所选组件的外部许可。选择 QQ 连接（NapCat）、长期记忆检索（Embedding）及可选语音识别（Speech）。
+3. 输入主人 QQ。主人与机器人账号可以不同，不会从维护者机器复制身份或群白名单。
+4. 等待固定解释器、独立环境、固定上游源码/补丁、插件和模型安装。进度与日志会持续显示，下载或初次构建可能较慢，请保留窗口。
+5. 在隐藏输入提示中填写 **DeepSeek API Key**。输入不回显，不出现在命令行参数或普通管理日志。
+6. 若安装了 QQ 连接，自动获取 NapCat 官方固定版本 Node/QQ 包，无需选择 QQ.exe；填写机器人 QQ。连接配置及随机令牌由程序准备，不需要复制命令或自行编辑数据库。
+7. 程序会打开管理页和 QQ 登录页。QQ 登录页的 token 自动填写，按提示手动扫码及完成设备确认即可，不需要到 JSON 文件里找凭据。
 
-运行前须审阅 THIRD_PARTY_NOTICES 与可选资产条款。基本 Chat 可用 `--components chat`，不强制所有模型。安装器完成版本/哈希校验、独立 Python 环境、固定源码补丁和固定 WebUI、组件下载与空白实例。系统 Microsoft 运行库缺失会明确提示，安装官方系统运行库需用户操作。
+普通短回复默认按换行分成多条发送，代码块和长篇说明保持完整。新安装自带六张原创基础小鱼表情，每次回复最多一张；可以在表情包管理页继续添加或替换自己的素材。表情功能通过现有插件实现，不要求开通额外图床或语义模型。
 
-上面的执行策略只作用于本次进程，不修改系统策略。先审阅并信任源码；不要为运行脚本更改机器全局策略。
+只有缺少 Microsoft 运行库时，才会获取固定哈希的官方运行库安装程序并可能请求必要的 Windows 系统确认。拒绝确认会安全停止，已有数据保留。脚本不操作 QQ 窗口，不代替扫码，不改变全局 PowerShell 策略或系统 Python。
 
-QQ 官方客户端安装和账号扫码遵循其许可，由用户完成；已有 QQ 客户端可以显式选择为外部运行依赖，脚本不修改其文件。不是让用户自行寻找 AstrBot、插件、Python 包或模型：这些均由清单自动获取。不要双开同一 Bot 账号的两个 NapCat 消费者。
-
-## 初始化连接
-
-统一接口支持以下配置操作，`--root` 均指相同安装根；PowerShell 入口等价使用 `-Action config` 并传递后续参数。下列 Python 指安装根内 `bootstrap-python-3.12.3/tools/python.exe`，不是任意系统 Python。
-
-```text
-config initialize-chat --onebot-port 6199
-config apply --file <本机私密配置.json>
-config initialize-onebot --bot-id <自己的BotQQ>
-```
-
-私密配置支持 `dashboard_port`、`napcat_webui_port`、`qq_executable`、`deepseek_api_key`。密钥只通过本机私密文件或 stdin 提供，不作为命令行参数，不提交 Git。`initialize-chat` 使用环境引用加载实例私密 Key，保留独立人格与记忆设置；`initialize-onebot` 自动生成原生反向连接和匹配的随机鉴权令牌，不复制旧登录态。它们拒绝覆盖不兼容配置，不授权主人或群。
-
-完成配置后 start。先到 NapCat 的本机 WebUI 手动扫码，再用 health 验证。WebUI 令牌位于该安装根的 `services/napcat-v4.18.41/config/webui.json`，只在本机读取。新用户不默认批准任何群；群开放必须由主人明确批准。机器人不应因初始化或安装而擅自扩大白名单。
+初始 AstrBot 管理密码位于安装根 instance/private/dashboard-password.txt，屏幕只显示文件位置。安装后群白名单仍为空；不要因管理页打开就认为模型回答、群权限或真实消息已验收。
 
 ## 日常启动
 
-```powershell
-.\Fat-Fish-Assistant.ps1 -Action start -Root ..\Fat-Fish-Assistant.local\instance
-.\Fat-Fish-Assistant.ps1 -Action status -Root ..\Fat-Fish-Assistant.local\instance
-.\Fat-Fish-Assistant.ps1 -Action health -Root ..\Fat-Fish-Assistant.local\instance
-.\Fat-Fish-Assistant.ps1 -Action stop -Root ..\Fat-Fish-Assistant.local\instance
-```
+只需双击 **Start-Fat-Fish-Assistant.cmd**。安装位置从当前用户的本地登记读取；已有服务直接复用，未安装的可选组件跳过。可选服务失败会单独报告，核心 Chat 会继续尝试启动；涉及脏记忆数据时，若恢复所需 Embedding 不可用，则保留保护并拒绝 Chat 启动。
 
-首次安装会下载和初始化，日常 start 不重新安装。重复 start 复用当前状态，不重复启动。完整停止会请求 Chat 原生终止和索引落盘，再停止模型与受控 NapCat/QQ；重启后可能需要用户再次扫码，不承诺自动登录。缺失登录时 health 返回失败而不是假通过。
+需要重新扫码时，脚本打开本机 NapCat 页面并等待。不要同时在两台主机启动同一个机器人身份。失败窗口会保留；按屏幕显示到安装根 logs 和 instance/logs 查看诊断，不要直接上传私人日志。
 
-日志位于安装根 `instance/logs/chat.stdout.log`、`chat.stderr.log`、模型日志和 `logs/` 下的独立维护日志。可在本机使用 `Get-Content <日志路径> -Tail 60`；不要直接上传私人日志。
+## 重复安装与修复
 
-维护者当前机器的确切、已经执行过的运行路径和命令保存在受限收口运行说明中。此处是参数化用户指南，不能将示例路径误写为已在任意新 Windows 上执行通过。
+再次双击安装脚本时，可选择重复检查，或选择修复/继续中断安装。修复会先正常停止受管理服务，复用已校验的软件、保留聊天/记忆/身份/权限和已有 Key。同一依赖版本下的自有代码修复使用既有事务升级与回滚；上游版本、补丁或依赖清单改变时拒绝当作普通修复。
+
+安装中断后重新运行向导，选择同一受管理目录。未知目录和无归属证明的实例不接管。错误密码、损坏包、数据库损坏或不支持状态都不能通过删除标记解决。
+
+## 迁移到新主机
+
+使用 **Migrate-Fat-Fish-Assistant.cmd**，正常流程只需选择迁出/导入、包、密码及新位置。具体范围、暂停源实例、目标重新扫码和拒绝条件见 [迁移清单](MIGRATION_CHECKLIST.md)。完整验收范围见 [P2E-UX 报告](P2E_UX_REPORT.md)，新 Windows 主机及真实 QQ 人工验收未执行的项目不得视为通过。

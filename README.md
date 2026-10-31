@@ -1,61 +1,29 @@
 # 肥鱼助手 / Fat-Fish-Assistant
 
-可自行部署的 QQ AI 助手集成框架。AstrBot 是唯一聊天主体；本项目提供权限适配、必要兼容补丁、可复现安装与命令行管理。正式仓库为 [WhiteApricot/Fat-Fish-Assistant](https://github.com/WhiteApricot/Fat-Fish-Assistant)，也是唯一正式开发和发布入口。
+可自行部署的 Windows QQ AI 助手。AstrBot 是唯一聊天主体；项目提供权限适配、固定依赖、独立实例及统一管理接口。正式工程和 Git 根仅为本目录，现有远端为 [WhiteApricot/Fat-Fish-Assistant](https://github.com/WhiteApricot/Fat-Fish-Assistant)。本轮不改变仓库可见性，不进入 P2F/P3。
 
-仓库只保存自有代码、最小补丁、依赖清单、模板、测试和文档。AstrBot、插件、Python 包、NapCat 与模型从固定官方/可信来源获取，放在仓库以外；不携带第三方源码 ZIP、wheel、模型、QQ 登录态或私人数据库。
+## 普通用户从这里开始
 
-## 一键检测与安装
+1. 首次安装：双击 **Install-Fat-Fish-Assistant.cmd**。确认位置、许可和功能，填写主人 QQ、机器人 QQ 及隐藏的 DeepSeek API Key。专用 QQ 组件自动准备，登录页自动填写 token，你只需手动扫码。分条回复和六张原创基础表情随安装准备好。
+2. 日常使用：只需双击 **Start-Fat-Fish-Assistant.cmd**。复用已有服务，按顺序启动已安装组件并检查健康；需要扫码时会打开 NapCat 页面。失败保留窗口，并给出原因和日志位置。
+3. 换主机：双击 **Migrate-Fat-Fish-Assistant.cmd**，选择迁出或导入。迁出会正常停止并暂停源实例；导入选择一个加密包、密码和新的空安装位置，自动获取匹配依赖并恢复支持的数据。目标必须手动重新登录 QQ。
 
-完整安装、原生连接初始化与扫码步骤见 [快速开始](docs/QUICK_START.md)。所有外部组件由清单获取；QQ 官方客户端及扫码按其许可由用户操作，已有客户端须显式选择。
+完整操作见 [快速开始](docs/QUICK_START.md)、[运维](docs/OPERATIONS.md) 和 [迁移清单](docs/MIGRATION_CHECKLIST.md)。初始管理密码只保存在实例 private 目录，不在屏幕显示。初始群白名单为空；安装、健康检查和迁移都不会扩大权限。
 
-Windows x64。在审阅并信任本项目源码后，从项目目录运行：
+双击入口、实际服务测试与人工验收是不同层级。当前执行结果和待验收项以 [P2E-UX 报告](docs/P2E_UX_REPORT.md) 和 [验证记录](docs/VALIDATION.md) 为准；尚不能把同机独立实例恢复称作新 Windows 主机验收。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Fat-Fish-Assistant.ps1
-```
+## 工程与依赖
 
-该执行策略仅作用于这次脚本进程，不改系统策略。向导询问**你自己的 QQ 主人身份**，自动准备固定 CPython、独立环境、外部源码与补丁、插件及空白实例。进度持续显示；必要时给出错误码、日志和修复建议。QQ 客户端及登录、模型服务密钥由你手动配置，脚本不会操作 QQ 窗口或导入别人的身份。
+工程边界及 Git、开发、测试规则统一见 [WORKFLOW](docs/WORKFLOW.md)。维护者的运行、缓存和测试仅写入相邻 Fat-Fish-Assistant.local；正式工程不启动服务、不下载依赖、不生成数据库。普通安装可使用用户 LocalAppData 或自行选择的仓库外目录。Backup 仅供历史恢复，不参与构建。
 
-默认安装 Chat 和已验收的三个功能插件，不强制下载 Embedding/语音模型或 NapCat。缺少 Microsoft x64 运行库时先提示用户安装；不会擅自修改系统。CPython NuGet 版没有升级 UI，升级需新版本目录，不替换系统 Python。[Python 官方说明](https://docs.python.org/3.12/using/windows.html#the-nuget-org-packages)
+仓库只保存自有代码、最小补丁、依赖清单、模板、测试和文档。解释器、AstrBot、第三方插件、NapCat、模型和 Python 包从固定来源按 SHA256 获取；不携带登录态、真实 Key、聊天和私人数据库。不直接编辑上游核心，既有兼容补丁继续通过 patches 和前后哈希管理。
 
-仅检测、启停或查看配置向导：
+默认推荐 QQ 连接与长期记忆检索组件，语音可选；可跳过可选组件使用核心管理页面。缺少 Microsoft 运行库时，在明确接受外部许可后获取固定哈希的官方安装程序；只有此必要步骤可能请求 Windows 系统确认。不修改系统 Python 或全局 PowerShell 执行策略。
 
-```powershell
-.\Fat-Fish-Assistant.ps1 -Action check
-.\Fat-Fish-Assistant.ps1 -Action start
-.\Fat-Fish-Assistant.ps1 -Action health
-.\Fat-Fish-Assistant.ps1 -Action stop
-.\Fat-Fish-Assistant.ps1 -Action wizard
-```
+## 维护者资料
 
-默认安装目录是当前用户 LocalAppData 下的 Fat-Fish-Assistant，可用 `-Root` 指定仓库外的新目录。初始管理密码在实例 `private/dashboard-password.txt`，不在终端输出。实例初始没有 QQ 平台、云模型密钥、群白名单、旧聊天和记忆。默认人格只更名，不重写既有风格和行为。
+双击入口复用原有 JSON 管理 API，未建立第二套服务管理器。高级命令及兼容契约见 [MANAGEMENT_API](docs/MANAGEMENT_API.md)。代码升级、回滚和故障恢复见 [OPERATIONS](docs/OPERATIONS.md)。测试入口见 [VALIDATION](docs/VALIDATION.md)，历史 P2E 基线记录保留在同一文档的历史章节。
 
-## 模块化与自动化
-
-高级用户及未来 P6 调用同一个稳定 JSON 接口：
-
-```powershell
-python -I ffa.py --root ../assistant-local check --network
-python -I ffa.py --root ../assistant-local install --components chat --owner YOUR_QQ_ID
-python -I ffa.py --root ../assistant-local components
-python -I ffa.py --root ../assistant-local component astrbot status
-```
-
-安装组件可选 `python,astrbot,plugins,napcat,embedding,speech`；`chat` 是前三项的快捷组合。`--plugins` 可选择固定清单中的子集，空值表示不装功能插件；安全适配始终安装。只下载安装模型资产时，可以暂不初始化实例，启动前仍需完成实例配置。受限外部资产须先审阅对应许可，再明确选择 `--accept-external-licenses`。这不构成对模型或 NapCat 的再分发授权。
-
-重复安装复用通过校验的缓存和已完成环境，不覆盖实例。中断阶段留在内部日志/失败目录；只对带本项目构建标记的未完成环境归档重试。Windows 虚拟环境在最终版本路径构建，避免破坏命令启动器。两个仅有源码的 Python 包由固定 sdist 和固定构建工具在独立构建环境生成 wheel，产物和本地解析锁留在私密安装目录。[pip 哈希安装说明](https://pip.pypa.io/en/stable/topics/repeatable-installs/)
-
-## 文档与验收
-
-- [完整阶段规划](docs/ROADMAP.md)、[总体工程设计](docs/ENGINEERING_DESIGN.md)、[P2F 插件条件审查](docs/P2F_PLUGIN_REVIEW.md)。Linux 最小适配从 P3 开始，本轮不实现。
-
-- [架构与兼容标识](docs/ARCHITECTURE.md)、[更名记录](docs/RENAMING.md)。
-- [解耦、废弃入口与回滚记录](docs/GOVERNANCE.md)、[实际验证范围](docs/VALIDATION.md)。
-- [管理契约、组件能力与错误码](docs/MANAGEMENT_API.md)。
-- [安装、维护、备份、恢复及回滚](docs/OPERATIONS.md)。
-- [依赖与补丁](patches/README.md)、[第三方声明](THIRD_PARTY_NOTICES.md)。
-- [Windows 虚拟机安装表](docs/VM_INSTALL_CHECKLIST.md)、[跨主机迁移表](docs/MIGRATION_CHECKLIST.md)。
-
-本轮不执行新的完整迁移或换盘模拟。已有迁移夹具与原生恢复工具保留，VM 项均需用户后续实际填写。第二真实群测试暂缓；普通私聊和两条连续文字合并已有用户确认，完整私聊图文/顺序/打断/工具专项仍未全覆盖。Dagu、Work 仅保留描述项，不开发 P3–P6 功能。
-
-这是本地开源候选，没有自动推送/上传步骤。自有代码及必要派生补丁按 AGPL-3.0 组织，外部组件各自许可独立适用；许可证歧义与未分发资产见第三方声明，不能因使用下载器而忽略义务。
+- [架构](docs/ARCHITECTURE.md)、[工程设计](docs/ENGINEERING_DESIGN.md)、[治理](docs/GOVERNANCE.md)、[补丁](patches/README.md)。
+- [阶段规划](docs/ROADMAP.md)、[更名记录](docs/RENAMING.md)、[Windows VM 检查表](docs/VM_INSTALL_CHECKLIST.md)。
+- [第三方声明](THIRD_PARTY_NOTICES.md)、[LICENSE](LICENSE)。自有代码及必要派生补丁按 AGPL-3.0 组织，外部组件独立遵守各自许可；下载能力不代表再分发授权。

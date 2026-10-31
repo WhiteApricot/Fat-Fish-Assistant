@@ -1,6 +1,8 @@
 # 第三方来源、许可与分发边界
 
-本仓库公开候选仅分发自有集成代码、必要派生补丁、清单/模板/测试和文档。根 LICENSE 为 AGPL-3.0；不是对整个外部依赖栈重新授权。源码、wheel、模型、NapCat、QQ 与个人素材均不捆绑，也不进入新候选 Git 历史。
+本轮仅在既有私有仓库维护自有集成代码、必要派生补丁、清单/模板/测试和文档，不公开发布。根 LICENSE 为 AGPL-3.0；不是对整个外部依赖栈重新授权。外部源码、wheel、模型、NapCat、QQ 与个人素材均不捆绑，也不进入本工程 Git 历史。
+
+基础小鱼表情由本项目自有绘图代码在实例中生成，使用项目许可，不使用私人素材或外部图片；通过现有表情包导入接口安装。
 
 |依赖|固定版本与来源|许可与处理|
 |---|---|---|
@@ -15,7 +17,8 @@
 |aiocqhttp/jieba|1.4.4 / 0.42.1，官方 PyPI sdist|MIT；固定哈希及构建工具，生成 wheel 只留本机|
 |llama.cpp / Sherpa|b11946 / 1.12.40，见 assets 和 speech 清单|代码许可与权重分开，二进制 NOTICE 需按下载版本保留；不捆绑|
 |NapCat|4.18.41，[固定 LICENSE](https://github.com/NapNeko/NapCatQQ/blob/v4.18.41/LICENSE)|Limited Redistribution License 含非商业/修改分发限制，不称 OSI 开源；仅外部用户自行获取并审阅|
-|QQ / Microsoft runtime|独立官方安装|专有条款；本项目不分发、不自动安装系统运行库或操作登录|
+|QQ / Node.js|NapCat 官方 Windows Node v4.18.41 发布包：QQ 9.9.31-49738、Node 22.11.0；版本及包哈希见 assets.json|QQ 专有条款、Node MIT 及附带声明；用户接受后外部下载，不捆绑到本仓库、不修改系统 QQ、不操作扫码或设备认证|
+|Microsoft runtime|固定官方安装程序，版本与哈希见 assets.json|用户接受条款后仅在缺失时启动官方安装程序；必要的系统确认由用户完成|
 
 AstrBot 同时含 [AGPL LICENSE](https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/LICENSE) 与 [EULA](https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/EULA.md)。其中用途及不可转让/不可再许可表述的适用关系仍需解释。本轮不删除原文、不作法律效力裁定，也不把一般解释歧义当作停止工程的理由。分发方式已改为自有代码+必要补丁+外部获取，未发现已证实必须通过削弱安全或更换内核才能解决的重大冲突；实际公开前仍须维护者复核适用义务。下载器不能规避条款。
 

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+sys.dont_write_bytecode=True
 from pathlib import Path
 from lifecycle_lock import exclusive
 
@@ -51,5 +52,12 @@ async def run():
         else:(instance/'private/DIRTY').write_text('Native shutdown incomplete; recover before migration')
 
 with exclusive(instance):
+    # All subsequent application imports live in the independent local release
+    # and environment. Reuse their caches without writing into formal scripts/.
+    cache=str(instance/'data/temp/python-cache')
+    sys.pycache_prefix=cache
+    os.environ['PYTHONPYCACHEPREFIX']=cache
+    sys.dont_write_bytecode=False
+    os.environ.pop('PYTHONDONTWRITEBYTECODE',None)
     import main
     asyncio.run(run())

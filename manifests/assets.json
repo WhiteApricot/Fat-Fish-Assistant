@@ -44,5 +44,16 @@
     "format": "file",
     "license_status": "external-microsoft-runtime-user-install",
     "license_source": "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist"
+  },
+  {
+    "id": "napcat-node-v4.18.41",
+    "filename": "NapCat.Shell.Windows.Node.zip",
+    "url": "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.41/NapCat.Shell.Windows.Node.zip",
+    "sha256": "51fbb10e7bcd56b0c2a6de86c37811e7518330e48a137ac689ab1e4d8627d3f0",
+    "format": "zip",
+    "license_status": "external-qq-node-napcat-user-acceptance",
+    "license_source": "https://github.com/NapNeko/NapCatQQ/blob/v4.18.41/.github/workflows/release-publish.yml",
+    "qq_version": "9.9.31-49738",
+    "node_version": "22.11.0"
   }
 ]

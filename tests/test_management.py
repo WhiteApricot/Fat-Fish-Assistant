@@ -3,6 +3,9 @@ import argparse
 import contextlib
 import io
 import json
+import re
+import socket
+import urllib.parse
 import sys
 import tempfile
 import subprocess
@@ -14,6 +17,12 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 import controller as c
 
 class Management(unittest.TestCase):
+    def test_powershell_frontend_accepts_every_public_json_command(self):
+        source=(c.PROJECT/'Fat-Fish-Assistant.ps1').read_text(encoding='utf-8-sig')
+        allowed=set(re.findall(r"'([^']+)'",re.search(r'\[ValidateSet\((.*?)\)\]',source).group(1)))
+        commands=next(x for x in c.parser()._actions if isinstance(x,argparse._SubParsersAction)).choices
+        self.assertEqual(allowed,set(commands))
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)/'managed';c.owned_root(self.root,True)
         target=self.root/'instance';(target/'private').mkdir(parents=True);(target/'data').mkdir()
@@ -81,6 +90,38 @@ class Management(unittest.TestCase):
         cfg=c.read(napcat/'config/webui.json');self.assertEqual(cfg['host'],'127.0.0.1');self.assertTrue(cfg['token'])
         with patch.object(c,'component_status',return_value={'running':True}):
             code,_=self.call('config','apply',stdin=json.dumps({'napcat_webui_port':16199}));self.assertEqual(code,24)
+    def test_independent_qq_retains_config_and_does_not_use_system_executable(self):
+        old=self.root/'services/old';(old/'config').mkdir(parents=True)
+        c.atomic(old/'config/webui.json',{'host':'127.0.0.1','token':'synthetic-private-token','autoLoginAccount':'100'})
+        c.atomic(old/'config/onebot11_100.json',{'synthetic':'private-config'})
+        self.record['components']['napcat']={'installed':True,'ownership':'managed','path':'services/old'}
+        self.record['qq_executable']='C:/synthetic-system/QQ.exe'
+        target=self.root/'services/node';(target/'napcat').mkdir(parents=True)
+        for name in ['node.exe','index.js','wrapper.node','package.json','config.json']:(target/name).write_bytes(b'synthetic-program')
+        with patch.object(c,'component_status',return_value={'running':False}):c.activate_napcat_node(self.root,self.record,target)
+        self.assertNotIn('qq_executable',self.record)
+        self.assertEqual(self.record['components']['napcat']['runtime'],'node')
+        self.assertEqual(c.read(target/'napcat/config/webui.json')['token'],'synthetic-private-token')
+        self.assertEqual(c.read(target/'napcat/config/webui.json')['autoLoginAccount'],'')
+        self.assertEqual(c.read(old/'config/webui.json')['autoLoginAccount'],'100')
+        self.assertEqual((old/'config/onebot11_100.json').read_bytes(),(target/'napcat/config/onebot11_100.json').read_bytes())
+        with patch.object(c,'component_status',return_value={'running':True}),self.assertRaises(c.Fault):c.activate_napcat_node(self.root,self.record,target)
+
+    def test_foreign_model_port_relocated_without_changing_private_key(self):
+        target=self.root/'instance'
+        with socket.socket() as foreign:
+            foreign.bind(('127.0.0.1',0));foreign.listen();port=foreign.getsockname()[1]
+            subprocess.run([sys.executable,'-B',str(c.PROJECT/'scripts/configure_local_models.py'),'--instance',str(target),'--components','embedding','--embedding-port',str(port)],check=True,capture_output=True)
+            key=(target/'private/local-embedding-key.txt').read_bytes()
+            self.record['components']['embedding']={'installed':True,'ownership':'managed','path':'instance'};c.atomic(self.root/'installation.json',self.record)
+            with patch.object(c,'component_status',return_value={'running':False}):
+                code,result=self.call('config','initialize-local-models')
+            self.assertEqual(code,0,result)
+            cfg=c.read(target/'data/cmd_config.json');provider=next(x for x in cfg['provider'] if x['id']=='feiyu-local-embedding')
+            self.assertNotEqual(urllib.parse.urlsplit(provider['embedding_api_base']).port,port)
+            self.assertEqual(key,(target/'private/local-embedding-key.txt').read_bytes())
+            self.assertEqual(foreign.getsockname()[1],port)
+
     def test_napcat_mutable_config_does_not_hide_code_tampering(self):
         source=Path(self.temp.name)/'napcat-fixture';source.write_bytes(b'synthetic')
         spec={'id':'synthetic-napcat','sha256':c.digest(source),'format':'zip'};target=self.root/'services/fixture'

@@ -26,10 +26,10 @@
     },
     "napcat": {
       "depends": [],
-      "asset": "napcat-shell-v4.18.41",
+      "asset": "napcat-node-v4.18.41",
       "manual": [
-        "QQ official client",
-        "QQ account login"
+        "Accept QQ, Node and NapCat licenses",
+        "QQ QR login and device authorization"
       ]
     },
     "embedding": {

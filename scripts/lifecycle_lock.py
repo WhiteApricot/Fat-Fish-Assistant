@@ -3,8 +3,8 @@ from contextlib import contextmanager
 import os
 
 @contextmanager
-def exclusive(instance):
-    path=instance/'private/.instance-lock'
+def exclusive(instance, name='.instance-lock'):
+    path=instance/'private'/name
     with path.open('a+b') as stream:
         stream.seek(0);stream.write(b'0');stream.flush();stream.seek(0)
         try:

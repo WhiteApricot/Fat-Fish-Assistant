@@ -4,13 +4,14 @@
  [string]$Manifest
 )
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
 if(-not $Manifest){$Manifest=Join-Path $PSScriptRoot '..\manifests\python-runtime.json'}
-$spec=Get-Content -Raw -LiteralPath $Manifest|ConvertFrom-Json
+$spec=Get-Content -Raw -Encoding UTF8 -LiteralPath $Manifest|ConvertFrom-Json
 $target=[IO.Path]::GetFullPath($Destination)
 if(Test-Path -LiteralPath $target){
  $receipt=Join-Path $target 'ffa-bootstrap.json'
  $existingPython=Join-Path $target 'tools\python.exe'
- if(-not(Test-Path -LiteralPath $receipt) -or (Get-Content -Raw -LiteralPath $receipt|ConvertFrom-Json).sha256 -ne $spec.sha256){throw 'Existing Python target is unmanaged or incompatible; no overwrite'}
+ if(-not(Test-Path -LiteralPath $receipt) -or (Get-Content -Raw -Encoding UTF8 -LiteralPath $receipt|ConvertFrom-Json).sha256 -ne $spec.sha256){throw 'Existing Python target is unmanaged or incompatible; no overwrite'}
  & $existingPython -I -c "import sys,venv,ensurepip,ssl,sqlite3; assert sys.version_info[:3]==(3,12,3)"
  if($LASTEXITCODE -ne 0){throw 'Existing managed interpreter failed validation'}
  $existingPython

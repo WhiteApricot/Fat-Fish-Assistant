@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+from unittest.mock import patch
 from pathlib import Path
 
 project=Path(__file__).resolve().parents[1]
@@ -63,6 +64,10 @@ async def main():
         access.write_text(json.dumps(permissions))
         asset=first/'data/plugin_data/meme_manager/packs/temp/fixture.txt';asset.parent.mkdir(parents=True);asset.write_text('synthetic retained asset')
         cache=first/'data/temp/cache.txt';cache.parent.mkdir(parents=True);cache.write_text('synthetic disposable cache')
+        plugin_private=first/'data/plugins/meme_manager/image_host/config.json'
+        plugin_private.write_text('{"synthetic_private_key":"synthetic-plugin-key-not-real"}')
+        historical=first/'data/plugin_data/astrbot_plugin_livingmemory/backups/vunknown'
+        historical.mkdir(parents=True);(historical/'livingmemory.index').write_bytes(b'opaque original historical index')
         chat=SQLiteDatabase(str(first/'data/data_v4.db'));await chat.initialize()
         conversation=await chat.create_conversation('111','fixture',content=[{'role':'user','content':'synthetic chat about tea'}],persona_id='fixture')
         cid=conversation.conversation_id
@@ -78,9 +83,18 @@ async def main():
         await close(eng,db);await chat.engine.dispose();running.unlink()
         (first/'private/embedding.pid').write_text('123456')
         ops.backup(first,snapshot)
+        from migration_package import pack,unpack
+        package=base/'native-synthetic.ffa.zip'
+        pack(snapshot,package,'synthetic-native-migration-password')
+        decoded=base/'decoded-snapshot'
+        unpack(package,decoded,'synthetic-native-migration-password')
+        checks['encrypted_native_snapshot_roundtrip']=True
+        snapshot=decoded
         ops.restore(snapshot,second,release)
         checks['schema_scoped_cache_exclusion']=(second/asset.relative_to(first)).read_text()=='synthetic retained asset' and not (second/'data/temp/cache.txt').exists()
         checks['runtime_pid_not_migrated']=not (second/'private/Embedding.pid').exists()
+        checks['plugin_directory_private_config_retained']=(second/plugin_private.relative_to(first)).read_bytes()==plugin_private.read_bytes()
+        checks['historical_index_retained_without_active_confusion']=(second/historical.relative_to(first)/'livingmemory.index').read_bytes()==b'opaque original historical index'
         eng,db=await open_engine(second)
         found=await eng.search_memories('茶',session_id=a,persona_id='fixture')
         checks['recall_after_move']=any(x.doc_id==ids[0] for x in found)
@@ -151,8 +165,14 @@ async def main():
               'native_index_rebuild','recall_after_rebuild','sqlite_integrity','version_mismatch_no_destination',
               'failed_restore_no_destination','newer_chats_not_overwritten','second_fresh_instance_empty','software_version_mismatch_no_destination',
               'failed_rebuild_restores_index','recovery_clears_dirty_after_validation','native_data_version_mismatch_no_destination','unicode_faiss_read_before_corruption',
-              'schema_scoped_cache_exclusion','runtime_pid_not_migrated'}
+              'schema_scoped_cache_exclusion','runtime_pid_not_migrated','encrypted_native_snapshot_roundtrip',
+              'plugin_directory_private_config_retained','historical_index_retained_without_active_confusion'}
     assert set(checks)==expected and all(checks.values()),checks
     print('MIGRATION_RESULT='+json.dumps(checks))
 
-asyncio.run(main())
+from astrbot.core.db.vec_db.faiss_impl import embedding_storage as native_embedding_storage
+from astrbot_plugin_livingmemory.core.utils import faiss_path_bridge as native_bridge
+# Only redirect native temporary storage for test isolation; retain the actual
+# FAISS reader/writer, Unicode path bridge and all persistence assertions.
+with patch.object(native_embedding_storage,'_safe_temp_dir',return_value=tempfile.gettempdir()),patch.object(native_bridge,'safe_temp_dir',return_value=tempfile.gettempdir()):
+    asyncio.run(main())

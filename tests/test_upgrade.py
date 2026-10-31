@@ -19,10 +19,14 @@ with tempfile.TemporaryDirectory(prefix='feiyu-upgrade-') as tmp:
     pointer=instance/'instance.json';before=pointer.read_bytes()
     before_database=(instance/'data/data_v4.db').read_bytes()
     plugin=instance/'data/plugins/astrbot_plugin_livingmemory/main.py';before_plugin=plugin.read_bytes()
+    resource=instance/'data/plugins/astrbot_plugin_livingmemory/user-resource.txt';resource.write_text('synthetic retained plugin resource')
+    private_config=instance/'data/plugins/meme_manager/image_host/config.json';private_config.write_text('{"synthetic_key":"synthetic-plugin-key-not-real"}')
     try:activate(instance,candidate,True)
     except RuntimeError:pass
     assert pointer.read_bytes()==before
     assert plugin.read_bytes()==before_plugin
+    assert resource.read_text()=='synthetic retained plugin resource'
+    assert json.loads(private_config.read_text())['synthetic_key']=='synthetic-plugin-key-not-real'
     activate(instance,candidate)
     previous=json.loads((instance/'private/previous-release.json').read_text())
     assert previous['release']==str(release)
@@ -44,6 +48,8 @@ with tempfile.TemporaryDirectory(prefix='feiyu-upgrade-') as tmp:
     assert (instance/'data/data_v4.db').read_bytes()==before_database
     assert plugin.read_bytes()==before_plugin
     assert not (instance/'private/upgrade-journal.json').exists()
+    assert resource.read_text()=='synthetic retained plugin resource'
+    assert json.loads(private_config.read_text())['synthetic_key']=='synthetic-plugin-key-not-real'
     source=candidate/'src/p2c/scoped_gateway.py';source.write_text('corrupt fixture')
     try:activate(instance,candidate)
     except ValueError:pass

@@ -1,5 +1,6 @@
-﻿param(
- [ValidateSet('check','install','start','stop','restart','status','components','health','diagnose','wizard','config','backup','restore','upgrade','rollback','component','recover-upgrade','register-external')][string]$Action='install',
+﻿[CmdletBinding(PositionalBinding=$false)]
+param(
+ [Parameter(Position=0)][ValidateSet('check','install','prepare-napcat','start','daily-start','stop','restart','status','components','health','diagnose','wizard','config','backup','restore','upgrade','rollback','component','recover-upgrade','resume-source','register-external','migration-export','migration-import')][string]$Action='install',
  [string]$Root=(Join-Path $env:LOCALAPPDATA 'Fat-Fish-Assistant'),
  [string]$Python,
  [switch]$Json,
@@ -7,6 +8,7 @@
  [Parameter(ValueFromRemainingArguments=$true)][string[]]$Options
 )
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
 $projectRoot=$PSScriptRoot
 try{
  if(-not $Python){
@@ -32,7 +34,7 @@ try{
     New-Item -ItemType Directory -Path $Root -Force|Out-Null
     @{schema_version=1;project='Fat-Fish-Assistant';deployment_id=[guid]::NewGuid().ToString('N')}|ConvertTo-Json|Set-Content -LiteralPath $marker -Encoding UTF8
    }
-   $identity=Get-Content -Raw -LiteralPath $marker|ConvertFrom-Json
+   $identity=Get-Content -Raw -Encoding UTF8 -LiteralPath $marker|ConvertFrom-Json
    if($identity.project -ne 'Fat-Fish-Assistant' -or $identity.schema_version -ne 1){throw 'Unknown management root marker; refusing bootstrap'}
    [Console]::Error.WriteLine('[Fat-Fish-Assistant] Preparing pinned independent Python; no registry or system Python changes.')
    & (Join-Path $projectRoot 'scripts\Bootstrap-Python.ps1') -Destination $runtime -Cache (Join-Path $Root 'cache') 1>$null
@@ -57,9 +59,10 @@ try{
  }
  $start=New-Object Diagnostics.ProcessStartInfo
  $start.FileName=$Python
- $start.Arguments=(@('-I',(Join-Path $projectRoot 'ffa.py'))+$forward+@($Options)|Where-Object {$null -ne $_}|ForEach-Object {Quote-Argument $_}) -join ' '
+ $start.Arguments=(@('-X','utf8','-I',(Join-Path $projectRoot 'ffa.py'))+$forward+@($Options)|Where-Object {$null -ne $_}|ForEach-Object {Quote-Argument $_}) -join ' '
  $start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.WindowStyle='Hidden'
  $start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+ $start.StandardOutputEncoding=New-Object Text.UTF8Encoding($false);$start.StandardErrorEncoding=New-Object Text.UTF8Encoding($false)
  $process=New-Object Diagnostics.Process;$process.StartInfo=$start
  [void]$process.Start()
  $outputTask=$process.StandardOutput.ReadToEndAsync()

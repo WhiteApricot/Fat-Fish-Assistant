@@ -4,6 +4,7 @@ __pycache__/
 .env.*
 !.env.example
 Backup/
+Fat-Fish-Assistant.local/
 private/
 instances/
 cache/

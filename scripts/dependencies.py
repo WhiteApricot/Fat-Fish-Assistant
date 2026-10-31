@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import tarfile
 import urllib.parse
 import urllib.request
@@ -124,6 +125,7 @@ def build_release(destination,cache,plugins=None,offline=False,progress=None):
         if (target/'assets/version').read_text(encoding='utf-8').strip()!=dashboard['version'] or not (target/'index.html').is_file():
             raise ValueError('Pinned dashboard version/content mismatch')
         shutil.copytree(PROJECT/'src/fat_fish_guard',stage/'plugins/fat_fish_guard',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+        shutil.copytree(PROJECT/'src/fat_fish_health',stage/'plugins/fat_fish_health',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         vendor=[x for x in selected if x['name']!='selfreply-decision']
         (stage/'release.json').write_text(json.dumps({'schema':1,'project':'Fat-Fish-Assistant','vendor':vendor,'external_sources':selected,'dashboard':dashboard}),encoding='utf-8')
         from instance import seal_release
@@ -134,7 +136,7 @@ def build_release(destination,cache,plugins=None,offline=False,progress=None):
         raise
 
 def clean_environment():
-    env=dict(os.environ,PYTHONNOUSERSITE='1',SOURCE_DATE_EPOCH='1704067200')
+    env=dict(os.environ,PYTHONNOUSERSITE='1',PYTHONUTF8='1',PYTHONIOENCODING='utf-8',SOURCE_DATE_EPOCH='1704067200')
     env.pop('PYTHONHOME',None);env.pop('PYTHONPATH',None)
     return env
 
@@ -148,7 +150,14 @@ def profile_fingerprint(profile):
 def run_logged(args,log,env=None):
     log.parent.mkdir(parents=True,exist_ok=True)
     with log.open('ab') as f:
-        proc=subprocess.run(list(map(str,args)),stdout=f,stderr=subprocess.STDOUT,env=env or clean_environment())
+        command=list(map(str,args))
+        if Path(command[0]).name.lower() in {'python.exe','pythonw.exe','python','python3','python3.12'}:command[1:1]=['-X','utf8']
+        proc=subprocess.Popen(command,stdout=f,stderr=subprocess.STDOUT,env=env or clean_environment(),creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        started=time.monotonic()
+        while True:
+            try:proc.wait(timeout=30);break
+            except subprocess.TimeoutExpired:
+                print(f'[Fat-Fish-Assistant] 依赖处理仍在运行（{int(time.monotonic()-started)} 秒）；日志：{log.name}',file=sys.stderr,flush=True)
     if proc.returncode:raise RuntimeError('Subprocess failed; inspect '+str(log))
 
 def verify_environment_versions(python,rows,log):
@@ -175,6 +184,7 @@ def install_environment(base_python,destination,cache,profile='chat',offline=Fal
             return python
         partial=destination/'ffa-environment-building.json'
         if not marker.exists() and partial.exists() and json.loads(partial.read_text()).get('lock_sha256')==fingerprint:
+            ensure_build_quiet(destination)
             destination.rename(destination.with_name(destination.name+'.failed-'+secrets.token_hex(5)))
         else:raise ValueError('Existing environment is unmanaged or incompatible; no overwrite')
     stage=destination;stage.mkdir(parents=True)
@@ -219,3 +229,12 @@ def install_environment(base_python,destination,cache,profile='chat',offline=Fal
     verify_environment_versions(python,rows,log)
     (stage/'ffa-environment.json').write_text(json.dumps({'schema_version':1,'profile':profile,'lock_sha256':fingerprint,'activation_layout':'final-versioned-path','locally_built':built}),encoding='utf-8')
     return destination/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+
+def ensure_build_quiet(destination):
+    """An interrupted install must not archive a directory still used by an orphan builder."""
+    if os.name!='nt':raise RuntimeError('Interrupted environment recovery needs a supported writer probe')
+    powershell=Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
+    proc=subprocess.run([str(powershell),'-NoProfile','-ExecutionPolicy','Bypass','-File',str(PROJECT/'scripts/Test-Build-Writers.ps1'),'-Destination',str(destination),'-ControllerPid',str(os.getpid())],capture_output=True,text=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    if proc.returncode:raise RuntimeError('Cannot verify interrupted build writers; partial environment retained')
+    if json.loads(proc.stdout.removeprefix('\ufeff'))['active_count']:
+        raise RuntimeError('An interrupted build still has active Python workers; wait for it to exit before retry; nothing was moved')

@@ -11,7 +11,8 @@
     "python_runtime": "python-runtime.json",
     "optional_assets": "assets.json",
     "model_file_integrity": "model-runtime-lock.json",
-    "napcat_file_integrity": "napcat-runtime-lock.json"
+    "napcat_file_integrity": "napcat-runtime-lock.json",
+    "napcat_node_integrity": "napcat-node-lock.json"
   },
   "compatibility": {
     "os": "Windows x64",

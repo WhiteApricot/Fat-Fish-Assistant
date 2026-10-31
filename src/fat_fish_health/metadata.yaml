@@ -1,0 +1,5 @@
+name: fat_fish_health
+desc: Private read-only managed OneBot protocol health, without message handlers
+author: Fat-Fish-Assistant
+version: 0.1.0
+astrbot_version: ">=4.29.3,<5"

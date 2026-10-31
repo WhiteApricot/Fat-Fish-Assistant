@@ -5,14 +5,15 @@ import hashlib
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-p=argparse.ArgumentParser();p.add_argument('--release',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--include-migration',action='store_true',help='Explicit future VM/data-migration validation only');p.add_argument('--timeout',type=int,default=600,help='Per test process, including cold Windows imports and source assembly');a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--release',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--include-migration',action='store_true',help='Opt-in encrypted native migration fixture, not cross-host acceptance');p.add_argument('--timeout',type=int,default=600,help='Per test process, including cold Windows imports and source assembly');a=p.parse_args()
 a.output.mkdir(parents=True,exist_ok=True)
 project=Path(__file__).resolve().parents[1]
 def source_state():
     rows={}
-    for name in ['ffa.py','Fat-Fish-Assistant.ps1']:
+    for name in ['ffa.py','Fat-Fish-Assistant.ps1','Install-Fat-Fish-Assistant.cmd','Start-Fat-Fish-Assistant.cmd','Migrate-Fat-Fish-Assistant.cmd']:
         rows[name]=hashlib.sha256((project/name).read_bytes()).hexdigest()
     for name in ['scripts','src','tests','examples','manifests','patches']:
         for path in (project/name).rglob('*'):
@@ -21,19 +22,26 @@ def source_state():
     return rows
 before=source_state()
 env=dict(os.environ,FEIYU_TEST_RELEASE=str(a.release.resolve()),FFA_TEST_RELEASE=str(a.release.resolve()))
+env['TEMP']=env['TMP']=str(a.output.resolve()/'temp')
+Path(env['TEMP']).mkdir(parents=True,exist_ok=True)
+env['PYTHONPYCACHEPREFIX']=str(a.output.resolve()/'pycache')
+env.pop('PYTHONDONTWRITEBYTECODE',None)
 env.pop('PYTHONPATH',None)
 tests=['test_decision_adapter.py','test_group_media.py','test_participation.py','Verify-P2C-Gateway.py','Verify-P2C-Scoped.py','Verify-P2C.py',
        'Verify-P2C-NativeBoundary.py','Verify-P2C-Pipeline.py','Verify-P2C-Cancellation.py','Verify-P2C-NativeGroups.py','Verify-P2C-GroupQuotes.py',
-       'test_lock.py','test_upgrade.py','test_management.py','test_dependencies.py','test_service_health.py','test_audit.py','test_chat_configuration.py','test_onebot_configuration.py']
+       'test_lock.py','test_upgrade.py','test_management.py','test_dependencies.py','test_service_health.py','test_audit.py','test_chat_configuration.py','test_onebot_configuration.py',
+       'test_lifecycle_recovery.py','test_migration_package.py','test_ux_management.py','test_connection_health.py','test_experience.py']
 if a.include_migration:tests.append('test_migration.py')
 rows=[]
 for name in tests:
-    args=[sys.executable,str(Path(__file__).with_name(name))]
+    args=[sys.executable,'-u',str(Path(__file__).with_name('test_worker.py')),str(Path(__file__).with_name(name))]
     if name in {'test_migration.py','test_upgrade.py'}:args.append(str(a.release.resolve()))
+    print('Starting',name,time.strftime('%Y-%m-%dT%H:%M:%S%z'),flush=True)
+    started=time.monotonic()
     with (a.output/(name+'.log')).open('wb') as log:
         try:run=subprocess.run(args,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=a.timeout);code=run.returncode
         except subprocess.TimeoutExpired:code=124
-    rows.append({'test':name,'exit_code':code})
+    rows.append({'test':name,'exit_code':code,'elapsed_seconds':round(time.monotonic()-started,2)})
     (a.output/'results.json').write_text(json.dumps(rows,indent=2))
     print(name,code,flush=True)
 unchanged=before==source_state()

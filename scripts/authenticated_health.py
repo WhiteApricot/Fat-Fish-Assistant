@@ -19,4 +19,5 @@ assert login.get('status')=='ok'
 result=call('/api/platform/stats',token=login['data']['token'])
 assert result.get('status')=='ok'
 data=result.get('data')
-print(json.dumps({'authenticated_dashboard':'pass','platform_statistics_type':type(data).__name__,'configured_platforms':len(cfg['platform'])}))
+from connection_health import read_connection
+print(json.dumps({'authenticated_dashboard':'pass','platform_statistics_type':type(data).__name__,'configured_platforms':len(cfg['platform']),'onebot_connection':read_connection(a.instance)}))

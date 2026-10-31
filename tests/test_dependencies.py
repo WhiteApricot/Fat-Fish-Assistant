@@ -6,6 +6,9 @@ import tempfile
 import unittest
 import zipfile
 import importlib.metadata
+import os
+import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +25,23 @@ class Dependencies(unittest.TestCase):
             with self.assertRaises(ValueError):dep.acquire(spec,cache)
             network.assert_not_called()
         self.assertEqual(payload.read_bytes(),b'wrong')
+    def test_orphan_build_blocks_partial_environment_rename(self):
+        target=self.root/'env';target.mkdir()
+        marker=target/'ffa-environment-building.json'
+        marker.write_text(json.dumps({'lock_sha256':dep.profile_fingerprint('chat')}))
+        with patch.object(dep,'ensure_build_quiet',side_effect=RuntimeError('synthetic active builder')):
+            with self.assertRaises(RuntimeError):dep.install_environment(Path(sys.executable),target,self.root/'cache','chat',True)
+        self.assertTrue(marker.exists());self.assertEqual(list(self.root.glob('env.failed-*')),[])
+    @unittest.skipUnless(os.name=='nt','Windows build writer probe')
+    def test_actual_build_writer_probe(self):
+        destination=self.root/'interrupted-env';destination.mkdir()
+        child=subprocess.Popen([getattr(sys,'_base_executable',sys.executable),'-c','import time;time.sleep(120)',str(destination)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        try:
+            time.sleep(.3)
+            with self.assertRaises(RuntimeError):dep.ensure_build_quiet(destination)
+        finally:
+            child.terminate();child.wait(timeout=15)
+        dep.ensure_build_quiet(destination)
     def test_offline_missing_never_connects(self):
         with patch.object(dep.urllib.request,'urlopen') as network:
             with self.assertRaises(FileNotFoundError):dep.acquire({'file':'missing.zip','sha256':'0'*64},self.root/'cache',True)

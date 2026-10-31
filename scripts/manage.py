@@ -11,8 +11,64 @@ import time
 from pathlib import Path
 
 import psutil
-from instance import verify_release,verify_plugins
+from instance import verify_release,verify_plugins,copy_plugin_resources
 from lifecycle_lock import exclusive
+
+def recover_stale(instance):
+    """Caller holds the lifecycle lock; never clear an unverified dirty state."""
+    import sqlite3
+    from contextlib import closing
+    if (instance/'private/upgrade-journal.json').exists():
+        raise ValueError('Interrupted upgrade; use recover-upgrade before lifecycle recovery')
+    marker=instance/'private/RUNNING'
+    if marker.exists():
+        # Even a reused PID is ambiguous: leave evidence and never control it.
+        if psutil.pid_exists(int(marker.read_text())):
+            process(instance)  # Verify identity even when the lock is unexpectedly free.
+            raise ValueError('Recorded PID still exists; identity requires investigation')
+    dirty=instance/'private/DIRTY'
+    if not marker.exists() and not dirty.exists():return
+    from data_integrity import validate,sqlite_checks,active_indexes
+    pointer=instance/'instance.json'
+    if not pointer.exists():raise ValueError('Instance metadata missing; lifecycle markers retained')
+    release=Path(json.loads(pointer.read_text())['release'])
+    verify_release(release)
+    sqlite_checks(instance)
+    try:validate(instance,release)
+    except (ValueError,RuntimeError):
+        # A failed vector check may be repaired only through the native adapter.
+        cfgpath=instance/'data/config/astrbot_plugin_livingmemory_config.json'
+        cfg=json.loads(cfgpath.read_text(encoding='utf-8-sig')) if cfgpath.exists() else {}
+        if cfg.get('graph_memory',{}).get('enabled'):raise ValueError('graph_memory recovery is unsupported; original state retained')
+        if not (instance/'data/plugin_data/astrbot_plugin_livingmemory/livingmemory.db').exists():raise
+        expected_index=instance/'data/plugin_data/astrbot_plugin_livingmemory/livingmemory.index'
+        if any(p!=expected_index for p in active_indexes(instance)):
+            raise ValueError('Unsupported vector state; originals retained')
+        import asyncio
+        from rebuild_memory import repair_index
+        from service_health import probe
+        try:probe(instance,'embedding')
+        except Exception as exc:raise ValueError('Embedding health unavailable; native recovery blocked; original data retained') from exc
+        provider_id=cfg.get('provider_settings',{}).get('embedding_provider_id')
+        providers=json.loads((instance/'data/cmd_config.json').read_text(encoding='utf-8-sig')).get('provider',[])
+        selected=next((p for p in providers if p.get('id')==provider_id and p.get('type')=='openai_embedding'),None)
+        if selected is None:raise ValueError('Configured Embedding provider unavailable; state retained')
+        sys.path[:0]=[str(release/'astrbot'),str(release/'plugins')]
+        os.environ.update(ASTRBOT_ROOT=str(instance),FEIYU_RUNTIME_ROOT=str(instance))
+        from astrbot.core.provider.sources.openai_embedding_source import OpenAIEmbeddingProvider
+        async def repair():
+            provider=OpenAIEmbeddingProvider(selected,{})
+            try:await repair_index(instance,provider,already_locked=True,clear_markers=False)
+            finally:await provider.client.close()
+        asyncio.run(repair())
+        validate(instance,release)
+    history=instance/'private/lifecycle-history'/secrets.token_hex(12)
+    history.mkdir(parents=True)
+    modified={name:(instance/'private'/name).stat().st_mtime for name in ['RUNNING','DIRTY'] if (instance/'private'/name).exists()}
+    (history/'reason.json').write_text(json.dumps({'recovered_at':time.time(),'marker_modified_at':modified,'fault_time':'unknown; marker modification times retained','reason':'dead PID; exclusive OS lock; SQLite checks passed; native data consistency verified'}))
+    for name in ['RUNNING','DIRTY']:
+        path=instance/'private'/name
+        if path.exists():path.rename(history/name)
 
 def process(instance):
     marker=instance/'private/RUNNING'
@@ -26,6 +82,13 @@ def process(instance):
     except psutil.NoSuchProcess:return None
 
 def start(instance,python):
+    with exclusive(instance,'.start-lock'):
+        with exclusive(instance):
+            recover_stale(instance)
+        return _start_locked(instance,python)
+
+def _start_locked(instance,python):
+    if (instance/'private/MIGRATED-OUT.json').exists():raise ValueError('Source is suspended after migration export; do not run the same QQ identity on both hosts')
     if (instance/'private/upgrade-journal.json').exists():raise ValueError('Interrupted upgrade; recover-upgrade before launch')
     release=Path(json.loads((instance/'instance.json').read_text())['release'])
     verify_release(release)
@@ -46,14 +109,19 @@ def start(instance,python):
     environment=dict(os.environ)
     environment.pop('PYTHONPATH',None);environment.pop('PYTHONHOME',None)
     environment['PYTHONNOUSERSITE']='1'
+    environment['PYTHONDONTWRITEBYTECODE']='1'
     with (instance/'logs/chat.stdout.log').open('ab') as stdout,(instance/'logs/chat.stderr.log').open('ab') as stderr:
-        proc=subprocess.Popen([str(python),'-u',str(Path(__file__).with_name('run_chat.py')),'--instance',str(instance)],cwd=instance,stdout=stdout,stderr=stderr,creationflags=flags,env=environment)
+        proc=subprocess.Popen([str(python),'-X','utf8','-u',str(Path(__file__).with_name('run_chat.py')),'--instance',str(instance)],cwd=instance,stdout=stdout,stderr=stderr,creationflags=flags,env=environment)
     # Locked native dependencies can take over a minute on a cold Windows cache.
-    for _ in range(360):
+    for attempt in range(1200):
+        if attempt and attempt%60==0:print('[Fat-Fish-Assistant] 正在等待 Chat 冷启动及生命周期锁交接；请保留窗口，详细日志在 instance/logs。',file=sys.stderr,flush=True)
         if proc.poll() is not None:raise RuntimeError('Chat failed startup; inspect private logs')
         try:
-            with socket.create_connection(('127.0.0.1',port),timeout=.2):return
-        except OSError:time.sleep(.5)
+            with socket.create_connection(('127.0.0.1',port),timeout=.2):
+                owner=process(instance)
+                if owner is not None and (owner.pid==proc.pid or any(parent.pid==proc.pid for parent in owner.parents())):return
+        except OSError:pass
+        time.sleep(.5)
     raise RuntimeError('Chat readiness timed out; use stop and inspect private logs')
 
 def stop(instance,force=False):
@@ -79,11 +147,12 @@ def _activate_locked(instance,release,fail=False,crash=False):
     journal=instance/'private/upgrade-journal.json'
     if journal.exists():raise ValueError('Interrupted upgrade requires recovery')
     suffix=secrets.token_hex(6)
-    journal.write_text(json.dumps({'previous':json.loads(before),'requested':str(release),'transaction':suffix}))
     stage=instance/('.plugin-stage-'+suffix)
     previous_plugins=instance/('.plugin-rollback-'+suffix)
     current_plugins=instance/'data/plugins'
     shutil.copytree(release/'plugins',stage)
+    copy_plugin_resources(current_plugins,stage,Path(json.loads(before)['release']))
+    journal.write_text(json.dumps({'previous':json.loads(before),'requested':str(release),'transaction':suffix}))
     current_plugins.rename(previous_plugins)
     try:stage.rename(current_plugins)
     except Exception:
@@ -113,8 +182,13 @@ def recover_upgrade(instance):
         record=json.loads(journal.read_text())
         previous=Path(record['previous']['release']);verify_release(previous)
         suffix=secrets.token_hex(6);plugins=instance/'data/plugins'
+        staged=instance/('.plugin-recovery-'+suffix)
+        shutil.copytree(previous/'plugins',staged)
+        rollback=instance/('.plugin-rollback-'+record['transaction'])
+        resource_source=rollback if rollback.exists() else plugins
+        copy_plugin_resources(resource_source,staged,previous)
         if plugins.exists():plugins.rename(instance/('.plugin-quarantine-'+suffix))
-        shutil.copytree(previous/'plugins',plugins)
+        staged.rename(plugins)
         pointer=instance/'instance.json';pending=pointer.with_suffix('.pending')
         pending.write_text(json.dumps(record['previous']));pending.replace(pointer)
         verify_plugins(instance,previous)
@@ -122,7 +196,7 @@ def recover_upgrade(instance):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=['start','stop','status','upgrade','rollback','recover-upgrade'])
+    p.add_argument('command',choices=['start','stop','status','upgrade','rollback','recover-upgrade','recover-lifecycle'])
     p.add_argument('--instance',required=True,type=Path)
     p.add_argument('--python',type=Path,default=Path(sys.executable))
     p.add_argument('--release',type=Path)
@@ -131,6 +205,8 @@ if __name__=='__main__':
     p.add_argument('--simulate-crash',action='store_true')
     a=p.parse_args();root=a.instance.resolve()
     if a.command=='start':start(root,a.python.resolve())
+    elif a.command=='recover-lifecycle':
+        with exclusive(root,'.start-lock'),exclusive(root):recover_stale(root)
     elif a.command=='stop':stop(root,a.force)
     elif a.command=='status':print(json.dumps({'running':process(root) is not None,'dirty':(root/'private/DIRTY').exists(),'clean_stop':(root/'private/STOPPED').exists()}))
     elif a.command=='upgrade':activate(root,a.release.resolve(),a.simulate_failure,a.simulate_crash)

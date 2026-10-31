@@ -1,5 +1,6 @@
 ﻿param([Parameter(Mandatory=$true)][string]$Path)
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
 $boundary=(Resolve-Path -LiteralPath $Path).Path
 if(-not(Test-Path -LiteralPath (Join-Path $boundary '.fat-fish-assistant-private')) -and -not(Test-Path -LiteralPath (Join-Path $boundary '.feiyu-private-boundary')) -and -not(Test-Path -LiteralPath (Join-Path $boundary 'instance.json'))){throw 'Not a marked Fat-Fish-Assistant private boundary; refusing ACL change'}
 $owner=[Security.Principal.WindowsIdentity]::GetCurrent().User
