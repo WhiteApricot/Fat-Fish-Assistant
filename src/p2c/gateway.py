@@ -129,9 +129,9 @@ class Gateway:
                 if cmd=='new':
                     parts[0]='new';event.message_str='/new'+(' '+' '.join(args) if args else '')
                 if cmd=='memory' and args and private and level>=1:
-                    operations={'help':'记忆帮助','remember':'记住','search':'记忆查询','update':'记忆更新','reset':'记忆重置','confirm':'记忆确认','cancel':'记忆取消'}
+                    operations={'help':'记忆帮助','remember':'记住','search':'记忆查询','update':'记忆更新','delete':'记忆删除','reset':'记忆重置','confirm':'记忆确认','cancel':'记忆取消'}
                     if args[0] not in operations:
-                        return await self.reject(event,'/memory help|remember|search|update|reset|confirm|cancel；也可使用中文记忆指令')
+                        return await self.reject(event,'/memory help|remember|search|update|delete|reset|confirm|cancel；也可使用中文记忆指令')
                     event.message_str='/'+operations[args[0]]+(' '+' '.join(args[1:]) if len(args)>1 else '')
                     return True
                 if cmd in {'help','role','whitelist','blacklist','confirm','groupmode','groupsettings','personal','memory','grouppersona','groupmemory','privatepersona'}:
@@ -140,7 +140,7 @@ class Gateway:
                     return await self.reject(event, text)
                 # Existing personal-memory commands stay in the P2B handler.
                 event.set_extra('_feiyu_personal_native',parts[0]=='new')
-                personal = parts[0] in {'记住','记忆帮助','记忆查询','记忆更新','记忆重置','记忆确认','记忆取消','new'}
+                personal = parts[0] in {'记住','记忆帮助','记忆查询','记忆更新','记忆删除','记忆重置','记忆确认','记忆取消','new'}
                 if not (private and level >= 1 and personal) and level != 3:
                     return await self.reject(event, '这个指令不在你的权限范围内，使用 /help 查看')
             if not private:
@@ -207,7 +207,7 @@ class Gateway:
         if cmd in {'personal','memory'}:
             if not policy.authorize(sender, cmd, private=private, friend=level>=1):
                 return '个人操作只接受好友在私聊中使用'
-            if cmd=='memory':return '/memory help 或 /记忆帮助：使用说明\n/memory remember 内容 或 /记住 内容：写入本人记忆\n/memory search 关键词 或 /记忆查询 关键词：查询本人记忆\n/memory update 编号 内容 或 /记忆更新 编号 内容：修改本人记忆\n/memory reset 或 /记忆重置：申请清除本人记忆\n/confirm 或 /确认：确认刚才的清除申请\n/memory cancel 或 /记忆取消：取消清除'
+            if cmd=='memory':return '/memory help 或 /记忆帮助：使用说明\n/memory remember 内容 或 /记住 内容：写入本人记忆\n/memory search 关键词 或 /记忆查询 关键词：查询本人记忆\n/memory update 编号 内容 或 /记忆更新 编号 内容：修改本人记忆\n/memory delete 编号 或 /记忆删除 编号：遗忘本人的单条记录\n/memory reset 或 /记忆重置：申请清除本人记忆\n/confirm 或 /确认：确认刚才的清除申请\n/memory cancel 或 /记忆取消：取消清除'
             values={'short':'简短','简短':'简短','normal':'标准','标准':'标准','detailed':'详细','详细':'详细'}
             if not args:return '个人回复长度：'+cfg.get('preferences',{}).get(sender,'标准')+'；/personal short|normal|detailed'
             if len(args)!=1 or args[0] not in values:return '格式：/个人设置 简短|标准|详细'

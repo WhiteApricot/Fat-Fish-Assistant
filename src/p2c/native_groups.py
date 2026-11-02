@@ -112,8 +112,7 @@ class NativeGroups:
                         except ValueError:
                             root=Path(os.environ['FEIYU_PERSONA_ROOT'])
                             prompt=(root/'Persona_Master.md').read_text(encoding='utf-8-sig')
-                            examples=json.loads((root/'Persona_Examples.json').read_text(encoding='utf-8-sig'))
-                            original=await manager.create_persona('feiyu-group-public-base',prompt,begin_dialogs=examples,
+                            original=await manager.create_persona('feiyu-group-public-base',prompt,begin_dialogs=[],
                                 tools=['memorize_long_term_memory','web_search_deepseek','deepseek_fetch_web_page'],skills=[])
                     # Group bases never copy a private-selected or private-edited Persona.
                     base=await manager.create_persona(base_id,original.system_prompt,begin_dialogs=original.begin_dialogs,

@@ -4,6 +4,8 @@
  [string]$Manifest
 )
 $ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+. (Join-Path $PSScriptRoot 'Receive-Download.ps1')
 [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
 if(-not $Manifest){$Manifest=Join-Path $PSScriptRoot '..\manifests\python-runtime.json'}
 $spec=Get-Content -Raw -Encoding UTF8 -LiteralPath $Manifest|ConvertFrom-Json
@@ -24,10 +26,26 @@ if(-not(Test-Path -LiteralPath $archive)){
  $previousTls=[Net.ServicePointManager]::SecurityProtocol
  try{
   [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
-  $partial=$archive+'.part-'+[guid]::NewGuid().ToString('N')
-  Invoke-WebRequest -UseBasicParsing -Uri $spec.url -OutFile $partial
-  if((Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash.ToLowerInvariant() -ne $spec.sha256){throw 'Downloaded Python hash mismatch'}
-  Move-Item -LiteralPath $partial -Destination $archive
+  $sources=@()
+  try{
+   $index=Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Uri 'https://repo.huaweicloud.com/repository/nuget/v3/index.json'|Select-Object -ExpandProperty Content|ConvertFrom-Json
+   $baseUrl=($index.resources|Where-Object {$_.'@type' -eq 'PackageBaseAddress/3.0.0'}|Select-Object -First 1).'@id'
+   $baseUri=[Uri]$baseUrl
+   if($baseUri.Scheme -eq 'https' -and $baseUri.Host -eq 'repo.huaweicloud.com'){$sources+=($baseUrl.TrimEnd('/')+'/python/'+$spec.version+'/'+$spec.filename)}
+  }catch{} # Missing/unavailable mirror metadata falls back to pinned official.
+  $sources+=@($spec.url)
+  $downloaded=$false
+  foreach($source in $sources){
+   $partial=$archive+'.part-'+[guid]::NewGuid().ToString('N')
+   try{
+    ReceiveDownload $source $partial $spec.filename
+    if((Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash.ToLowerInvariant() -ne $spec.sha256){throw 'Downloaded Python hash mismatch'}
+    Move-Item -LiteralPath $partial -Destination $archive
+    @{file=$spec.filename;source=$source;sha256=$spec.sha256;time=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress|Add-Content -LiteralPath (Join-Path $cacheRoot 'acquisition.jsonl') -Encoding UTF8
+    $downloaded=$true;break
+   }catch{if(Test-Path -LiteralPath $partial){Remove-Item -LiteralPath $partial};if($source -eq $spec.url){throw}}
+  }
+  if(-not $downloaded){throw 'Downloaded Python hash mismatch'}
  }finally{[Net.ServicePointManager]::SecurityProtocol=$previousTls}
 }
 if((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $spec.sha256){throw 'Python package hash mismatch; refusing extraction'}

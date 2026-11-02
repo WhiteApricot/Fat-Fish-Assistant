@@ -25,7 +25,7 @@ PowerShell 5 的生命周期输出写入每次独立私密日志，避免后台�
 |start / stop / restart|依赖顺序启动，反向停止；原生 Chat 生命周期及受验证 PID 归属|
 |health / diagnose|实际管理认证、已安装模型/QQ 健康；diagnose 附环境检测|
 |config show/validate|脱敏配置、身份/回环检查；不输出凭据|
-|config initialize-experience|停写状态下首次准备换行分条回复，通过原生包导入器安装六张原创表情；保留配置副本，重复执行不覆盖用户修改，不改变权限|
+|config initialize-experience|停写状态下首次准备换行分条回复，通过原生包导入器安装 24 张鲸鱼娘 GIF 并启用适度的语境选图；保留配置副本，重复执行不覆盖用户修改，不改变权限|
 |config initialize-local-models|停写状态下复用原配置器准备已安装本机模型；保留密钥，避让其他安装的端口，运行中的本实例模型保留原端口，不覆盖自定义远端地址|
 |config apply --file FILE 或 -|停写后修改允许字段，保留私密历史；禁止通用写 owner/群授权|
 |wizard|QQ、模型与本地管理页的人工操作步骤|

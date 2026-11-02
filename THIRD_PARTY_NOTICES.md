@@ -2,7 +2,7 @@
 
 本轮仅在既有私有仓库维护自有集成代码、必要派生补丁、清单/模板/测试和文档，不公开发布。根 LICENSE 为 AGPL-3.0；不是对整个外部依赖栈重新授权。外部源码、wheel、模型、NapCat、QQ 与个人素材均不捆绑，也不进入本工程 Git 历史。
 
-基础小鱼表情由本项目自有绘图代码在实例中生成，使用项目许可，不使用私人素材或外部图片；通过现有表情包导入接口安装。
+默认表情现为 Dejavu Moe 的 DeepSeek 鲸鱼娘同人动图精选 24 张，安装时从公开固定版本下载，不把图片二进制写入本工程 Git。旧几何小鱼测试包不再生成；只有经核对未改动的旧包才在留存恢复材料后替换，用户自定义素材保留。
 
 |依赖|固定版本与来源|许可与处理|
 |---|---|---|
@@ -11,8 +11,9 @@
 |LivingMemory|e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b，[来源](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)|AGPL-3.0，3 个适配文件|
 |continuous_message|4a2a52ba90544d1527a72602762ae5ce3ae27dca，[来源](https://github.com/aliveriver/astrbot_plugin_continuous_message)|AGPL-3.0，4 个适配文件|
 |meme_manager|5cec301481b8b99682ba2a0021a432656a3a92ec，[来源](https://github.com/anka-afk/astrbot_plugin_meme_manager)|MIT，原版获取；不代表表情素材授权|
+|DeepSeek 鲸鱼娘动图（精选 24 张）|DejavuMoe/deepseek_wale_girl，提交 2e471f37d66fcc71274946d91f44da09c44fb7ad；[作者目录](https://github.com/DejavuMoe/deepseek_wale_girl/blob/2e471f37d66fcc71274946d91f44da09c44fb7ad/README.zh-CN.md)|[MIT](https://github.com/DejavuMoe/deepseek_wale_girl/blob/2e471f37d66fcc71274946d91f44da09c44fb7ad/LICENSE)，Copyright (c) 2026 Dejavu Moe；保留原始 GIF、作者 LICENSE 与 SOURCE，逐文件 SHA-256 见 starter-memes.json；非 DeepSeek 官方素材|
 |selfreply 判断子集|11be8206a6bb26b9ebeccf301213e2654087d512，[来源](https://github.com/chengzhi-c/astrbot_plugin_self_initiated_reply)|GPL-3.0；运行时只取三份判断文件与 LICENSE，不复制到本仓库|
-|Python/包|CPython 3.12.3、Chat 160 项、Speech 4 项，见 manifests|PSF 及各包独立许可，保留元数据/来源；158 个既有 wheel 与两个固定源码构建|
+|Python/包|CPython 3.12.3、默认核心 141 项、完整 Chat 160 项、Speech 4 项，见 manifests|PSF 及各包独立许可，保留元数据/来源；158 个既有 wheel 与两个固定源码构建|
 |shipyard-python-sdk|0.2.4，源码匹配提交 126718566de2d83648637e225c472b9a44e303f9|wheel 原缺许可证；8 文件换行规范化匹配，上游根 Apache-2.0，证据清单保留|
 |aiocqhttp/jieba|1.4.4 / 0.42.1，官方 PyPI sdist|MIT；固定哈希及构建工具，生成 wheel 只留本机|
 |llama.cpp / Sherpa|b11946 / 1.12.40，见 assets 和 speech 清单|代码许可与权重分开，二进制 NOTICE 需按下载版本保留；不捆绑|

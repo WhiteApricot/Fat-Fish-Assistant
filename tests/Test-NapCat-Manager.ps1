@@ -19,12 +19,26 @@ $files=@('napcat.mjs','loadNapCat.js','NapCatWinBootMain.exe','NapCatWinBootHook
 $manager=Join-Path $PSScriptRoot '..\scripts\NapCat.ps1'
 New-Item -ItemType Directory -Path (Join-Path $fixture 'config')|Out-Null
 @{host='127.0.0.1';port=16099}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $fixture 'config\webui.json')
+# Simulate an inaccessible unrelated same-name candidate; actual identity is still queried natively.
+function Get-Process {
+ [CmdletBinding()]param([string[]]$Name,[int]$Id)
+ if($PSBoundParameters.ContainsKey('Id')){return Microsoft.PowerShell.Management\Get-Process -Id $Id -ErrorAction SilentlyContinue}
+ $found=@(Microsoft.PowerShell.Management\Get-Process -Name $Name -ErrorAction SilentlyContinue)
+ return @([pscustomobject]@{Id=4})+$found
+}
 & $manager -Action Start -Root $fixture -QQExecutable (Join-Path $fixture 'QQ.exe') -LockFile (Join-Path $fixture 'lock.json')
+. (Join-Path $PSScriptRoot ../scripts/Native-Process.ps1)
 Start-Sleep -Milliseconds 500
-$before=@(Get-CimInstance Win32_Process | Where-Object {$_.ExecutablePath -in @((Join-Path $fixture 'QQ.exe'),(Join-Path $fixture 'NapCatWinBootMain.exe'))})
+$before=@(Get-Process -Name QQ,NapCatWinBootMain -ErrorAction SilentlyContinue|ForEach-Object {Get-NativeProcessInfo $_.Id -Scan} | Where-Object {$_.ExecutablePath -in @((Join-Path $fixture 'QQ.exe'),(Join-Path $fixture 'NapCatWinBootMain.exe'))})
 if($before.Count -ne 2){throw 'Dummy parent/child startup failed'}
+$duplicateRejected=$false
+try{& $manager -Action Start -Root $fixture -QQExecutable (Join-Path $fixture 'QQ.exe') -LockFile (Join-Path $fixture 'lock.json')}catch{
+ if($_.Exception.Message -notmatch 'already running'){throw}
+ $duplicateRejected=$true
+}
+if(-not $duplicateRejected){throw 'Duplicate launch was not rejected'}
 & $manager -Action Stop -Root $fixture
 Start-Sleep -Milliseconds 500
-$after=@(Get-CimInstance Win32_Process | Where-Object {$_.ExecutablePath -in @((Join-Path $fixture 'QQ.exe'),(Join-Path $fixture 'NapCatWinBootMain.exe'))})
+$after=@(Get-Process -Name QQ,NapCatWinBootMain -ErrorAction SilentlyContinue|ForEach-Object {Get-NativeProcessInfo $_.Id -Scan} | Where-Object {$_.ExecutablePath -in @((Join-Path $fixture 'QQ.exe'),(Join-Path $fixture 'NapCatWinBootMain.exe'))})
 if($after.Count -ne 0){throw 'Dummy parent/child shutdown failed'}
 @{synthetic_launcher_start=$true;verified_parent_child_stop=$true;real_qq_launched=$false;real_napcat_launched=$false}|ConvertTo-Json -Compress

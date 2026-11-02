@@ -1,6 +1,6 @@
 {
   "project": "Fat-Fish-Assistant",
-  "date": "2026-10-31",
+  "date": "2026-11-02",
   "status": "P2E-UX 本机实现、人工体验和最终25组冻结回归通过；干净Windows及真正跨主机待验收",
   "engineering_closure": "passed",
   "single_group_manual_smoke": "passed",
@@ -32,5 +32,16 @@
     "lifecycle": "actual-native-fault-matrix-passed",
     "double_click_install": "current-host-manually-accepted-clean-windows-not-executed",
     "daily_start": "real-cmd-and-services-passed"
+  },
+  "feature_repairs_20261102": {
+    "report": "docs/FEATURE_REPAIRS_20261102.md",
+    "independent_windows_regression_groups": 11,
+    "regression": "passed",
+    "dashboard_native_login_rotation_restart": "passed",
+    "whale_gif_default_and_onebot_payload": "passed",
+    "real_model_emotion_selection": "passed",
+    "real_model_automatic_memory": "passed",
+    "qq_client_visual_confirmation": "not-executed",
+    "distribution": "local-source-submission-package-no-push"
   }
 }

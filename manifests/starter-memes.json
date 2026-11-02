@@ -1,0 +1,319 @@
+{
+  "id": "ffa-deepseek-whale-daily",
+  "name": "DeepSeek 鲸鱼娘·日常动图",
+  "version": "2e471f37d66f",
+  "author": "Dejavu Moe",
+  "license": "MIT",
+  "source": "https://github.com/DejavuMoe/deepseek_wale_girl",
+  "commit": "2e471f37d66fcc71274946d91f44da09c44fb7ad",
+  "image_count": 24,
+  "download_bytes": 16190996,
+  "files": [
+    {
+      "path": "gifs/001_hehe.gif",
+      "file": "whale-2e471f37d66f-001_hehe.gif",
+      "sha256": "745feef5383b0e1535c1fe5c75a6af959db4fad182566cd4e1bf5ce729ca43ee",
+      "bytes": 614261,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/001_hehe.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/001_hehe.gif"
+      ],
+      "category": "happy",
+      "label": "嘿嘿"
+    },
+    {
+      "path": "gifs/002_haha.gif",
+      "file": "whale-2e471f37d66f-002_haha.gif",
+      "sha256": "79a189ce18073ac3b8f63cccfb6692a104a1e61bd3fbd9b9ddde62578da2ce4c",
+      "bytes": 585515,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/002_haha.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/002_haha.gif"
+      ],
+      "category": "laugh",
+      "label": "笑死"
+    },
+    {
+      "path": "gifs/003_shy.gif",
+      "file": "whale-2e471f37d66f-003_shy.gif",
+      "sha256": "91074a900354c6c26c7eb60b4c38ddb043efceb06659be635fd52ce28d2634a4",
+      "bytes": 629798,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/003_shy.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/003_shy.gif"
+      ],
+      "category": "shy",
+      "label": "好害羞"
+    },
+    {
+      "path": "gifs/004_cry.gif",
+      "file": "whale-2e471f37d66f-004_cry.gif",
+      "sha256": "20a6e6b423ce41263a5e91aa256e782c7adee06e7bc892f8a244842b9625e440",
+      "bytes": 645936,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/004_cry.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/004_cry.gif"
+      ],
+      "category": "sad",
+      "label": "呜呜"
+    },
+    {
+      "path": "gifs/006_angry.gif",
+      "file": "whale-2e471f37d66f-006_angry.gif",
+      "sha256": "5556b474b7e05898691cef4ee070e7693bcc5d9f29565a7bacccb390358417b9",
+      "bytes": 622587,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/006_angry.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/006_angry.gif"
+      ],
+      "category": "angry",
+      "label": "生气了"
+    },
+    {
+      "path": "gifs/008_speechless.gif",
+      "file": "whale-2e471f37d66f-008_speechless.gif",
+      "sha256": "08a4811a4ec5d69f98e631ab2d197f9cb79a598441f390b10a7e9482c563a0ad",
+      "bytes": 625323,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/008_speechless.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/008_speechless.gif"
+      ],
+      "category": "sigh",
+      "label": "无语"
+    },
+    {
+      "path": "gifs/009_shock.gif",
+      "file": "whale-2e471f37d66f-009_shock.gif",
+      "sha256": "aa250e54e96ae187c018fdfab5b9f99ff3940d621bb023e30ad67947bd2bc045",
+      "bytes": 730238,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/009_shock.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/009_shock.gif"
+      ],
+      "category": "surprised",
+      "label": "啊？"
+    },
+    {
+      "path": "gifs/011_sleepy.gif",
+      "file": "whale-2e471f37d66f-011_sleepy.gif",
+      "sha256": "af6f39d536e353292521a5096d67826d4cbad5442d82df74764eae6b82ca6eca",
+      "bytes": 642373,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/011_sleepy.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/011_sleepy.gif"
+      ],
+      "category": "sleepy",
+      "label": "困困"
+    },
+    {
+      "path": "gifs/012_smug.gif",
+      "file": "whale-2e471f37d66f-012_smug.gif",
+      "sha256": "b04a415c943f799695336a24184593179c682709758eb7587d3585fe59b55d46",
+      "bytes": 625334,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/012_smug.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/012_smug.gif"
+      ],
+      "category": "proud",
+      "label": "得意"
+    },
+    {
+      "path": "gifs/013_act-cute.gif",
+      "file": "whale-2e471f37d66f-013_act-cute.gif",
+      "sha256": "a9ae2551f700d60a519042910e120b1e2898d9b0f2f412b539be8b65e6d86ad8",
+      "bytes": 759197,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/013_act-cute.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/013_act-cute.gif"
+      ],
+      "category": "cute",
+      "label": "求求啦"
+    },
+    {
+      "path": "gifs/014_heart-hands.gif",
+      "file": "whale-2e471f37d66f-014_heart-hands.gif",
+      "sha256": "5c6e07c4ba264374be09540bf68af36add2afb98ba5b04406749ebbca8ab3fd2",
+      "bytes": 563619,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/014_heart-hands.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/014_heart-hands.gif"
+      ],
+      "category": "like",
+      "label": "比心"
+    },
+    {
+      "path": "gifs/015_like.gif",
+      "file": "whale-2e471f37d66f-015_like.gif",
+      "sha256": "d213e65f653f10c51285bf2b68ddd7eea3123bdda3ebfcee5600140a635baa42",
+      "bytes": 662746,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/015_like.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/015_like.gif"
+      ],
+      "category": "approve",
+      "label": "点赞"
+    },
+    {
+      "path": "gifs/016_nope.gif",
+      "file": "whale-2e471f37d66f-016_nope.gif",
+      "sha256": "441a94350f7ae071c296bb872ff88cd2f2903e9f8963de84cefb5d7775dad207",
+      "bytes": 576253,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/016_nope.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/016_nope.gif"
+      ],
+      "category": "no",
+      "label": "不可以"
+    },
+    {
+      "path": "gifs/017_yes.gif",
+      "file": "whale-2e471f37d66f-017_yes.gif",
+      "sha256": "d00a1f8daf9695d42741b66b2bafe44403b3c11d023294dfab4e42b2267b789b",
+      "bytes": 682355,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/017_yes.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/017_yes.gif"
+      ],
+      "category": "yes",
+      "label": "好哒"
+    },
+    {
+      "path": "gifs/018_wave.gif",
+      "file": "whale-2e471f37d66f-018_wave.gif",
+      "sha256": "6ba28ccceacddc485cd552122a68bc151a904f844b5e4302e5d33b609f1587bd",
+      "bytes": 614218,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/018_wave.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/018_wave.gif"
+      ],
+      "category": "bye",
+      "label": "拜拜"
+    },
+    {
+      "path": "gifs/020_hug.gif",
+      "file": "whale-2e471f37d66f-020_hug.gif",
+      "sha256": "943269b8108ecb314ebbd6c83e1cbea346fbb9b3b5e04587f40031b6793a8d72",
+      "bytes": 762133,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/020_hug.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/020_hug.gif"
+      ],
+      "category": "hug",
+      "label": "抱抱"
+    },
+    {
+      "path": "gifs/022_eat.gif",
+      "file": "whale-2e471f37d66f-022_eat.gif",
+      "sha256": "643d30a8e9ae5cc6d8c6843247fa934dc05cf5da324d3d51f957949acab62ac8",
+      "bytes": 783960,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/022_eat.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/022_eat.gif"
+      ],
+      "category": "eat",
+      "label": "干饭"
+    },
+    {
+      "path": "gifs/024_fighting.gif",
+      "file": "whale-2e471f37d66f-024_fighting.gif",
+      "sha256": "9f2f666ae4b1621b3b0bc453b667c57e23606a7c7c1515cec119368e73d69997",
+      "bytes": 671295,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/024_fighting.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/024_fighting.gif"
+      ],
+      "category": "encourage",
+      "label": "加油！"
+    },
+    {
+      "path": "gifs/025_thanks.gif",
+      "file": "whale-2e471f37d66f-025_thanks.gif",
+      "sha256": "e18a3f3e4dcc9661a753bc39d441c71088eac3470ae96b6797ab1d3caa805394",
+      "bytes": 651288,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/025_thanks.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/025_thanks.gif"
+      ],
+      "category": "thanks",
+      "label": "谢谢"
+    },
+    {
+      "path": "gifs/026_sorry.gif",
+      "file": "whale-2e471f37d66f-026_sorry.gif",
+      "sha256": "86dde423a9d430154d870b255c38fdf493de0ba60c29d9fd62d84bed2333ed3c",
+      "bytes": 714820,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/026_sorry.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/026_sorry.gif"
+      ],
+      "category": "sorry",
+      "label": "对不起"
+    },
+    {
+      "path": "gifs/027_good-night.gif",
+      "file": "whale-2e471f37d66f-027_good-night.gif",
+      "sha256": "75ab7cbc585cd679fea39187c623d34b74e9412d177e7144b0fe1f127f991f34",
+      "bytes": 645367,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/027_good-night.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/027_good-night.gif"
+      ],
+      "category": "sleep",
+      "label": "晚安"
+    },
+    {
+      "path": "gifs/028_good-morning.gif",
+      "file": "whale-2e471f37d66f-028_good-morning.gif",
+      "sha256": "d910e63f7d3f3e541d681572968b5d2204787bf0f9369197feec26c02fcdb9ad",
+      "bytes": 908699,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/028_good-morning.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/028_good-morning.gif"
+      ],
+      "category": "morning",
+      "label": "早安"
+    },
+    {
+      "path": "gifs/053_thinking.gif",
+      "file": "whale-2e471f37d66f-053_thinking.gif",
+      "sha256": "1c84b1f7cfef3a0fa5070cda0c92c402972d1fa79891de8b4e68deb9a700dc18",
+      "bytes": 712866,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/053_thinking.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/053_thinking.gif"
+      ],
+      "category": "thinking",
+      "label": "思考中"
+    },
+    {
+      "path": "gifs/100_hello.gif",
+      "file": "whale-2e471f37d66f-100_hello.gif",
+      "sha256": "5de6627cafe42d54de391fadf7390333688b0a742a484b409b369b177acc8184",
+      "bytes": 759748,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/100_hello.gif",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/gifs/100_hello.gif"
+      ],
+      "category": "hello",
+      "label": "来啦"
+    },
+    {
+      "path": "LICENSE",
+      "file": "whale-2e471f37d66f-LICENSE",
+      "sha256": "59f02b6f491d510bf923fdf257e707474ef2616a268898e6004e78e182a92a37",
+      "bytes": 1067,
+      "url": "https://raw.githubusercontent.com/DejavuMoe/deepseek_wale_girl/2e471f37d66fcc71274946d91f44da09c44fb7ad/LICENSE",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/DejavuMoe/deepseek_wale_girl@2e471f37d66fcc71274946d91f44da09c44fb7ad/LICENSE"
+      ]
+    }
+  ],
+  "retired_test_images": {
+    "memes/confused/fat-fish.png": "5909a8dbc210aebc4afbf6b2326952f4e90dda37098fa1a75c219dc0e389a348",
+    "memes/happy/fat-fish.png": "a1bb67eb9966de6c84e8460077ebb6be1d2baf634e768450f52b806a08575d0d",
+    "memes/like/fat-fish.png": "16efdeb4b88b1d3dabdc3256838c8652eedda573bba4b119fcff5356d3c1776a",
+    "memes/sad/fat-fish.png": "0cd6a1bb38fe532b6f4a69b432e30c88479e170a52ce4638c61ba3639b70d281",
+    "memes/shy/fat-fish.png": "a15fe0f995045b66830954998d4c131012c7b36e2022b66a82f8659afdfd9a15",
+    "memes/surprised/fat-fish.png": "63c1d4ab3198551e49e4d5e9f6c4d3768aed5a5fd3807887698feec6d3ca4bee"
+  }
+}

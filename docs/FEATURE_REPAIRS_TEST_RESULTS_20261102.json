@@ -1,0 +1,136 @@
+{
+  "date": "2026-11-02",
+  "platform": "Windows",
+  "independent_workspace": "E:\\AI_Chat\\Fat-Fish-Assistant.local\\feature-fix-20261102",
+  "regression_groups": [
+    {
+      "test": "test_feature_repairs.py",
+      "exit_code": 0,
+      "seconds": 0.67
+    },
+    {
+      "test": "test_minor_fixes.py",
+      "exit_code": 0,
+      "seconds": 4.94
+    },
+    {
+      "test": "test_management.py",
+      "exit_code": 0,
+      "seconds": 1.72
+    },
+    {
+      "test": "test_experience.py",
+      "exit_code": 0,
+      "seconds": 11.66
+    },
+    {
+      "test": "test_starter_pack_retirement.py",
+      "exit_code": 0,
+      "seconds": 8.34
+    },
+    {
+      "test": "test_install_fixes.py",
+      "exit_code": 0,
+      "seconds": 16.08
+    },
+    {
+      "test": "Verify-P2C-Scoped.py",
+      "exit_code": 0,
+      "seconds": 6.34
+    },
+    {
+      "test": "Verify-P2C-NativeBoundary.py",
+      "exit_code": 0,
+      "seconds": 6.05
+    },
+    {
+      "test": "test_dashboard_browser.cjs",
+      "exit_code": 0,
+      "seconds": 0.08
+    },
+    {
+      "test": "test_feature_native.py",
+      "exit_code": 0,
+      "seconds": 16.94
+    },
+    {
+      "test": "test_dashboard_native.py",
+      "exit_code": 0,
+      "seconds": 50.53
+    }
+  ],
+  "dashboard": {
+    "real_initial_login": true,
+    "username": "astrbot",
+    "password_changed_via_native_auth": true,
+    "invalid_update_preserves_saved_credential": true,
+    "secure_one_time_update": true,
+    "restart_uses_changed_password": true,
+    "plaintext_password_file": false,
+    "authentication_bypassed": false
+  },
+  "native_plugins_and_real_model": {
+    "memory": {
+      "native_memory_write_without_command": true,
+      "native_dedup": true,
+      "scope_isolation": true,
+      "unauthorized_rejected": true,
+      "correction_and_forgetting": true,
+      "real_model": {
+        "preference": "pass",
+        "project": "pass",
+        "chatter": "pass",
+        "secret": "pass"
+      }
+    },
+    "memes": {
+      "automatic_emotion_selection_without_instruction": true,
+      "real_emotion_model": true,
+      "onebot_image_payload": true,
+      "gif_bytes_unchanged": true,
+      "qq_client_visual_confirmation": false
+    }
+  },
+  "correction_summary_recheck": {
+    "memory": {
+      "native_memory_write_without_command": true,
+      "native_dedup": true,
+      "scope_isolation": true,
+      "unauthorized_rejected": true,
+      "correction_and_forgetting": true,
+      "real_model": "not_requested"
+    },
+    "memes": {
+      "automatic_emotion_selection_without_instruction": true,
+      "real_emotion_model": false,
+      "onebot_image_payload": true,
+      "gif_bytes_unchanged": true,
+      "qq_client_visual_confirmation": false
+    }
+  },
+  "supplemental": {
+    "credential_policy_tests": 5,
+    "credential_and_health_tests": 8,
+    "custom_user_gif_retained": true,
+    "powershell_entrypoint_parse": true
+  },
+  "limits": {
+    "real_qq_client_visual_confirmation": false,
+    "sandboxie_test": false,
+    "clean_windows_test": false,
+    "cross_host_test": false,
+    "github_push": false
+  },
+  "startup_followup": {
+    "management_tests_passed": 23,
+    "stale_running_marker_recovered_and_archived": true,
+    "installed_upstream_versions_unchanged": true,
+    "actual_instance_repaired": true,
+    "actual_chat_start": true,
+    "actual_dashboard_authentication": "pass",
+    "forced_process_termination": false,
+    "chat_data_deleted": false,
+    "daily_start_passed": true,
+    "qq_login": "manual-login-pending"
+  }
+}

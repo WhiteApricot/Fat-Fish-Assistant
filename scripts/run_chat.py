@@ -20,8 +20,9 @@ os.chdir(instance)
 sys.path[:0]=[str(release/'astrbot'),str(release/'src')]
 key=instance/'private/deepseek-key.txt'
 if key.exists():os.environ['DEEPSEEK_API_KEY']=key.read_text().strip()
-password=instance/'private/dashboard-password.txt'
-if password.exists():os.environ['ASTRBOT_DASHBOARD_INITIAL_PASSWORD']=password.read_text().strip()
+from ffa_local_credentials import install_capture,load_password
+install_capture(instance)
+if (instance/'private/dashboard-password.txt').exists():load_password(instance)
 
 async def run():
     running=instance/'private/RUNNING'
@@ -54,9 +55,8 @@ async def run():
 with exclusive(instance):
     # All subsequent application imports live in the independent local release
     # and environment. Reuse their caches without writing into formal scripts/.
-    cache=str(instance/'data/temp/python-cache')
-    sys.pycache_prefix=cache
-    os.environ['PYTHONPYCACHEPREFIX']=cache
+    sys.pycache_prefix=None
+    os.environ.pop('PYTHONPYCACHEPREFIX',None)
     sys.dont_write_bytecode=False
     os.environ.pop('PYTHONDONTWRITEBYTECODE',None)
     import main

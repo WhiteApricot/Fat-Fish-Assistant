@@ -7,25 +7,39 @@
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
 . (Join-Path $PSScriptRoot 'Process-Identity.ps1')
+. (Join-Path $PSScriptRoot 'Native-Process.ps1')
 if(-not $LockFile){$LockFile=Join-Path $PSScriptRoot '..\manifests\napcat-runtime-lock.json'}
 $napRoot=(Resolve-Path -LiteralPath $Root).Path
 $executable=Join-Path $napRoot 'NapCatWinBootMain.exe'
 $nodeRoot=Split-Path $napRoot -Parent
-$nodeMode=(Test-Path -LiteralPath (Join-Path $nodeRoot 'node.exe')) -and (Test-Path -LiteralPath (Join-Path $nodeRoot 'index.js'))
+$nodeMode=((Split-Path $napRoot -Leaf) -ieq 'napcat') -and (Test-Path -LiteralPath (Join-Path $nodeRoot 'wrapper.node')) -and (Test-Path -LiteralPath (Join-Path $nodeRoot 'package.json')) -and (Test-Path -LiteralPath (Join-Path $nodeRoot 'node.exe')) -and (Test-Path -LiteralPath (Join-Path $nodeRoot 'index.js'))
 if($nodeMode){$executable=Join-Path $nodeRoot 'node.exe'}
 $recordPath=Join-Path $napRoot '.feiyu-process.json'
+# Serialize status/start/stop for this owned root, including launch record writes.
+$guardPath=Join-Path $napRoot '.feiyu-process.lock'
+$guard=[IO.File]::Open($guardPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+try{
 $processName=if($nodeMode){'node.exe'}else{'NapCatWinBootMain.exe'}
-$running=@(Get-CimInstance Win32_Process -Filter "Name='$processName'"|Where-Object {$_.ExecutablePath -eq $executable})
+$running=@(Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($processName)) -ErrorAction SilentlyContinue|ForEach-Object {Get-NativeProcessInfo $_.Id -ExpectedPath $executable -Scan}|Where-Object {$_.ExecutablePath -eq $executable})
+if(Test-Path -LiteralPath $recordPath){
+ $ownedRecord=Read-ManagedJson $recordPath
+ # Re-query a recorded PID strictly, even if a discovery scan could not read it.
+ $ownedInfo=Get-NativeProcessInfo ([int]$ownedRecord.pid)
+ if($ownedInfo -and $ownedInfo.ExecutablePath -eq $executable -and [Math]::Abs([decimal]$ownedInfo.CreationDate.ToUniversalTime().Ticks-[decimal]$ownedRecord.created_ticks) -le 10){
+  $running=@($running|Where-Object {$_.ProcessId -ne $ownedInfo.ProcessId})+@($ownedInfo)
+ }
+}
 if($Action -eq 'Status'){@{running=($running.Count -gt 0);managed=(Test-Path -LiteralPath $recordPath)}|ConvertTo-Json -Compress;exit 0}
 if($Action -eq 'Stop'){
  if(-not(Test-Path -LiteralPath $recordPath)){throw 'No managed launch record; refusing to stop an unrelated launcher'}
  $record=Read-ManagedJson $recordPath
- $target=@($running|Where-Object {$_.ProcessId -eq $record.pid -and $_.CreationDate.ToUniversalTime().Ticks.ToString() -eq $record.created_ticks})
+ $target=@($running|Where-Object {$_.ProcessId -eq $record.pid -and [Math]::Abs([decimal]$_.CreationDate.ToUniversalTime().Ticks-[decimal]$record.created_ticks) -le 10})
  if($target.Count -eq 1){
-  $processes=@(Get-CimInstance Win32_Process);$parents=@([int]$record.pid);$children=@()
+  $processes=@([FeiyuProcessSnapshot]::Read());$parents=@([int]$record.pid);$children=@()
   do{
-   $next=@($processes|Where-Object {$_.ParentProcessId -in $parents -and $_.ExecutablePath -eq $record.qq})
-   $children+=@($next);$parents=@($next|ForEach-Object ProcessId)
+   $next=@($processes|Where-Object {$_.ParentProcessId -in $parents})
+   $verified=@($next|ForEach-Object {Get-NativeProcessInfo $_.ProcessId $_.ParentProcessId}|Where-Object {$_.ExecutablePath -eq $record.qq -and $_.CreationDate -ge $target[0].CreationDate})
+   $children+=@($verified);$parents=@($verified|ForEach-Object ProcessId)
   }while($parents.Count -gt 0)
   [array]::Reverse($children)
   foreach($child in $children){Stop-VerifiedProcess $child}
@@ -62,8 +76,8 @@ if($nodeMode){
   foreach($name in $launchEnvironment.Keys){$savedEnvironment[$name]=[Environment]::GetEnvironmentVariable($name,'Process');[Environment]::SetEnvironmentVariable($name,$launchEnvironment[$name],'Process')}
   $process=Start-Process -FilePath $executable -ArgumentList $arguments -WorkingDirectory ([WildcardPattern]::Escape($nodeRoot)) -WindowStyle Hidden -PassThru -RedirectStandardOutput ([WildcardPattern]::Escape((Join-Path $logRoot ($logTag+'-stdout.log')))) -RedirectStandardError ([WildcardPattern]::Escape((Join-Path $logRoot ($logTag+'-stderr.log'))))
  }finally{foreach($name in $savedEnvironment.Keys){[Environment]::SetEnvironmentVariable($name,$savedEnvironment[$name],'Process')}}
- $info=Get-CimInstance Win32_Process -Filter "ProcessId=$($process.Id)"
- if(-not $info){throw ('Independent QQ runtime exited; see '+$logRoot)}
+ $info=Get-NativeProcessInfo $process.Id
+ if(-not $info){throw ('Independent QQ runtime exited; see '+(Join-Path $logRoot ($logTag+'-stderr.log')))}
  @{pid=$process.Id;created_ticks=$info.CreationDate.ToUniversalTime().Ticks.ToString();qq='';runtime='node'}|ConvertTo-Json|Set-Content -LiteralPath $recordPath -Encoding UTF8
  'Independent QQ runtime started; complete QR login manually in the local WebUI.'
  exit 0
@@ -76,7 +90,10 @@ try{
  foreach($name in $values.Keys){$previous[$name]=[Environment]::GetEnvironmentVariable($name,'Process');[Environment]::SetEnvironmentVariable($name,$values[$name],'Process')}
  $arguments='"'+$qqPath+'" "'+$values.NAPCAT_INJECT_PATH+'"'
  $process=Start-Process -FilePath $executable -ArgumentList $arguments -WorkingDirectory ([WildcardPattern]::Escape($napRoot)) -WindowStyle Hidden -PassThru
- $info=Get-CimInstance Win32_Process -Filter "ProcessId=$($process.Id)"
+ $info=Get-NativeProcessInfo $process.Id
+ if(-not $info){throw 'Launcher exited before its process identity could be recorded'}
  @{pid=$process.Id;created_ticks=$info.CreationDate.ToUniversalTime().Ticks.ToString();qq=$qqPath}|ConvertTo-Json|Set-Content -LiteralPath $recordPath -Encoding UTF8
 }finally{foreach($name in $previous.Keys){[Environment]::SetEnvironmentVariable($name,$previous[$name],'Process')}}
 'Launcher started; verify local health and complete QQ login manually if required.'
+
+}finally{$guard.Dispose()}

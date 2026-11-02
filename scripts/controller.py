@@ -18,7 +18,7 @@ import uuid
 import tempfile
 from pathlib import Path
 
-from dependencies import PROJECT,acquire,build_release,clean_environment,digest,external,install_environment,load,profile_fingerprint,run_logged,unpack,verify_environment_versions
+from dependencies import PROJECT,acquire,build_release,clean_environment,digest,external,install_environment,load,profile_fingerprint,run_logged,unpack,verify_environment_versions,link_or_copy,RELEASE_LAYOUT,extend_core_environment
 
 SCHEMA=1
 COMPONENTS=load('components.json')['components']
@@ -221,9 +221,9 @@ def install_asset(root,name,spec,target,cache,offline=False,notify=progress):
         if name=='napcat-node':
             # Upstream Node mode stores account/runtime data here, never code.
             return relative=='beacon_report.log' or parts[0].lower() in {'logs','cache','temp'} or (parts[0]=='napcat' and mutable_napcat(parts[1:]))
-        return name=='napcat' and (parts[0].lower() in {'config','logs','cache','temp'} or relative in {'.feiyu-process.json','guild1.db','guild1.db-shm','guild1.db-wal'})
+        return name=='napcat' and (parts[0].lower() in {'config','logs','cache','temp'} or relative in {'.feiyu-process.json','.feiyu-process.lock','guild1.db','guild1.db-shm','guild1.db-wal'})
     def mutable_napcat(parts):
-        return bool(parts) and (parts[0].lower() in {'config','logs','cache','temp'} or '/'.join(parts) in {'.feiyu-process.json','guild1.db','guild1.db-shm','guild1.db-wal'})
+        return bool(parts) and (parts[0].lower() in {'config','logs','cache','temp'} or '/'.join(parts) in {'.feiyu-process.json','.feiyu-process.lock','guild1.db','guild1.db-shm','guild1.db-wal'})
     def contents(path):
         if path.is_file():return {'.':digest(path)}
         return {p.relative_to(path).as_posix():digest(p) for p in sorted(path.rglob('*')) if p.is_file() and not mutable(p.relative_to(path).as_posix())}
@@ -243,7 +243,7 @@ def install_asset(root,name,spec,target,cache,offline=False,notify=progress):
     archive=acquire(spec,cache,offline,notify)
     target.parent.mkdir(parents=True,exist_ok=True)
     stage=target.with_name(target.name+'.staging-'+secrets.token_hex(5))
-    if spec['format']=='file':shutil.copy2(archive,stage)
+    if spec['format']=='file':link_or_copy(archive,stage)
     else:unpack(archive,stage)
     receipt={'id':spec['id'],'sha256':spec['sha256'],'path':rel(root,target),'license_accepted':True,'files':contents(stage)}
     # Resume a completed rename only when pending receipt and all bytes match.
@@ -276,12 +276,25 @@ def activate_napcat_node(root,record,destination):
     record.pop('qq_executable',None)
 
 
+def environment_profile(root,record,role):
+    python=resolve(root,record[role+'_python'])
+    receipt=read(python.parents[1]/'ffa-environment.json')
+    profile=receipt.get('profile',role)
+    if profile not in {'chat','core','speech'}:raise Fault('incompatible','Unknown dependency profile')
+    if role=='chat' and profile not in {'chat','core'}:raise Fault('incompatible','Chat profile required')
+    if role=='speech' and profile not in {'speech'}:raise Fault('incompatible','Speech profile required')
+    return profile
+
 def install(root,args):
     root=owned_root(root,True)
     with installation_lock(root):
         from instance import protect_boundary
         protect_boundary(root)
         record=state(root);cache=Path(args.cache).resolve() if args.cache else root/'cache'
+        requested_profile=getattr(args,'dependency_profile',None)
+        existing_profile=environment_profile(root,record,'chat') if record.get('chat_python') else None
+        dependency_profile=requested_profile or (existing_profile.split('-speech')[0] if existing_profile else 'core')
+        if record.get('instance') and existing_profile and existing_profile.startswith('chat') and dependency_profile=='core':raise Fault('incompatible','Existing full installation is preserved; slimming needs a new instance and verified migration')
         if record.get('instance'):
             runtime=instance(root,record)
             if args.repair and any((runtime/'private'/name).exists() for name in ['RUNNING','DIRTY']):
@@ -292,7 +305,7 @@ def install(root,args):
                 for profile in ['chat','speech']:
                     if not record.get(profile+'_python'):continue
                     marker=resolve(root,record[profile+'_python']).parents[1]/'ffa-environment.json'
-                    if not marker.exists() or read(marker).get('lock_sha256')!=profile_fingerprint(profile):
+                    if not marker.exists() or read(marker).get('lock_sha256')!=profile_fingerprint(environment_profile(root,record,profile)):
                         raise Fault('incompatible','Repair will not switch a data instance to changed dependency versions; use a tested upgrade adapter')
         chosen=selection(args.components);record.setdefault('components',{})
         journal=root/'install-journal.json'
@@ -315,8 +328,15 @@ def install(root,args):
         record['components']['python']={'installed':True,'version':'3.12.3','path':rel(root,base),'ownership':'managed' if root in base.parents else 'external-readonly','depends':[]}
         progress('2/5','independent Python environments')
         if 'astrbot' in chosen:
-            tag=profile_fingerprint('chat')[:12]
-            python=install_environment(base,root/'envs'/('chat-'+tag),cache,'chat',args.offline,progress)
+            effective_profile=dependency_profile
+            tag=profile_fingerprint(effective_profile)[:12]
+            if effective_profile=='chat' and existing_profile=='core':
+                python=extend_core_environment(chat_python(root,record),cache,args.offline,progress)
+            elif record.get('chat_python') and existing_profile==effective_profile:
+                python=install_environment(base,chat_python(root,record).parents[1],cache,effective_profile,args.offline,progress)
+            else:
+                python=install_environment(base,root/'envs'/(effective_profile+'-'+tag),cache,effective_profile,args.offline,progress)
+            record['dependency_profile']=dependency_profile
             record['chat_python']=rel(root,python);save()
         if 'speech' in chosen:
             tag=profile_fingerprint('speech')[:12]
@@ -327,6 +347,8 @@ def install(root,args):
             plugins=args.plugins.split(',') if args.plugins else []
             if 'plugins' not in chosen:plugins=[]
             h=hashlib.sha256((PROJECT/'manifests/sources.json').read_bytes()+(PROJECT/'manifests/dashboard.json').read_bytes()+','.join(plugins).encode())
+            h.update(RELEASE_LAYOUT.encode('ascii'))
+            if 'meme_manager' in plugins:h.update((PROJECT/'manifests/starter-memes.json').read_bytes())
             for path in sorted((PROJECT/'src').rglob('*')):
                 if path.is_file() and '__pycache__' not in path.parts:h.update(path.read_bytes())
             release=root/'releases'/('chat-'+h.hexdigest()[:16])
@@ -392,6 +414,10 @@ def install(root,args):
                 for component in ['embedding','speech']:
                     if component in chosen:record['components'][component]={'installed':True,'version':COMPONENTS[component].get('asset',COMPONENTS[component].get('assets')),'path':rel(root,runtime),'ownership':'managed','depends':COMPONENTS[component]['depends']}
         save();atomic(journal,{'schema_version':SCHEMA,'state':'completed','requested':sorted(chosen)})
+        if not getattr(args,'retain_cache',False) and cache==root/'cache' and cache.resolve().parent==root and not cache.is_symlink() and not cache.is_junction():
+            from dependencies import prune_download_cache
+            receipt=read(chat_python(root,record).parents[1]/'ffa-environment.json') if record.get('chat_python') else {}
+            prune_download_cache(cache,receipt.get('locally_built',[]))
         return {'components':sorted(chosen),'instance_initialized':bool(record.get('instance')),'next_steps':guidance(root,record),'repeated_install_preserves_instance':True}
 
 def prepare_instance_assets(root,record,runtime):
@@ -406,13 +432,13 @@ def prepare_instance_assets(root,record,runtime):
             if output.exists():
                 if digest(output)!=digest(path):raise Fault('integrity','Restored resource conflicts with pinned runtime asset')
                 continue
-            output.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(path,output)
+            output.parent.mkdir(parents=True,exist_ok=True);link_or_copy(path,output)
 
 def guidance(root,record):
     if not record.get('instance'):return ['Software is ready; initialize with your own QQ identity or restore a verified backup into a new instance.']
     target=instance(root,record);cfg=read(target/'data/cmd_config.json');port=cfg['dashboard']['port']
     return [f'肥鱼助手 / Fat-Fish-Assistant: start opens only the local service at http://127.0.0.1:{port}.',
-            'Read the independent dashboard password from instance/private/dashboard-password.txt; configure your own provider in the native AstrBot UI.',
+            'Dashboard credentials are saved with Windows DPAPI; use dashboard_login.py --update once after changing the password.',
             'The pinned official Node/QQ runtime is prepared automatically; NapCat QR login and device authorization remain manual. Never copy another user\'s login session, owner identity, key or approved groups.',
             'No group is approved by default. Dagu, Work and the P6 GUI are not implemented in this stage.']
 
@@ -464,7 +490,14 @@ def operate(root,record,action,selected=None):
         current=component_status(root,record,name)
         if current['running'] is (action=='start'):
             results.append({'id':name,'already_in_requested_state':True});continue
-        if name=='astrbot':result=invoke(root,chat_python(root,record),'manage.py',action,'--instance',instance(root,record))
+        if name=='astrbot':
+            target=instance(root,record)
+            if action=='start' and not (target/'private/experience-v3.json').exists():
+                # The normal start path recovers stale markers inside manage.py.
+                # Configuration migration must run only after that same recovery.
+                invoke(root,chat_python(root,record),'manage.py','recover-lifecycle','--instance',target)
+                invoke(root,chat_python(root,record),'configure_experience.py','--instance',target,'--release',resolve(root,record['release']),json_output=True)
+            result=invoke(root,chat_python(root,record),'manage.py',action,'--instance',target)
         elif name=='napcat':
             argv=['-Action',action.title(),'-Root',resolve(root,info['path'])]
             if action=='start':
@@ -490,10 +523,11 @@ def verify_runtime_environment(root,record,profile):
     if not record.get(profile+'_python'):raise Fault('missing','Runtime environment is not installed: '+profile)
     python=resolve(root,record[profile+'_python'])
     receipt=python.parents[1]/'ffa-environment.json'
-    if not receipt.exists() or read(receipt).get('lock_sha256')!=profile_fingerprint(profile):raise Fault('incompatible','Runtime environment completion receipt or dependency lock mismatch: '+profile)
+    actual=environment_profile(root,record,profile)
+    if not receipt.exists() or read(receipt).get('lock_sha256')!=profile_fingerprint(actual):raise Fault('incompatible','Runtime environment completion receipt or dependency lock mismatch: '+profile)
     log=root/'logs'/(profile+'-startup-environment.log')
     run_logged([python,'-I','-c','import sys,struct; assert sys.version_info[:3]==(3,12,3) and struct.calcsize("P")==8'],log)
-    verify_environment_versions(python,load(profile+'.json'),log)
+    verify_environment_versions(python,load(actual+'.json'),log)
     run_logged([python,'-I','-m','pip','--isolated','check'],log)
 
 def recover_napcat_login(root,record):
@@ -529,6 +563,16 @@ def daily_start(root,record):
         if not record.get('components',{}).get(name,{}).get('installed'):continue
         try:
             if name=='speech':verify_runtime_environment(root,record,'speech')
+            if name in {'embedding','speech'} and not component_status(root,record,name)['running']:
+                from local_model_ports import repair_port
+                # The live chat holds this lock; never rewrite endpoints mid-turn.
+                try:reassigned=repair_port(instance(root,record),name)
+                except RuntimeError as exc:
+                    if 'Instance is owned by another writer' not in str(exc):raise
+                    reassigned=None
+                if reassigned:
+                    progress('local-model-port',name+': '+str(reassigned['from'])+' -> '+str(reassigned['to']))
+                    operations.append({'id':name,'local_port_reassigned':reassigned})
             operations.extend(operate(root,record,'start',[name])['operations'])
             if name in {'embedding','speech'}:
                 for attempt in range(30):
@@ -555,7 +599,7 @@ def config_view(root,record):
     target=instance(root,record);cfg=read(target/'data/cmd_config.json');identity=read(target/'private/instance-identity.json');access=read(target/'private/p2c-access.json')
     return {'project':'Fat-Fish-Assistant','dashboard':{'host':cfg['dashboard']['host'],'port':cfg['dashboard']['port']},'identity_valid':identity['owner']==access['owner'],
             'approved_group_count':len(access.get('approved_groups',[])),'providers':[{'id':x.get('id'),'type':x.get('type')} for x in cfg.get('provider',[])],
-            'dashboard_password_file':rel(root,target/'private/dashboard-password.txt'),'secrets_redacted':True,'qq_executable_configured':bool(record.get('qq_executable')),
+            'dashboard_password_file':rel(root,target/'private/dashboard-credential.dpapi'),'secrets_redacted':True,'qq_executable_configured':bool(record.get('qq_executable')),
             'experience':{'segmented_reply_enabled':bool(cfg.get('platform_settings',{}).get('segmented_reply',{}).get('enable')),
                 'meme_plugin_installed':(target/'data/plugins/meme_manager').is_dir(),
                 'meme_images':sum(1 for p in (target/'data/plugin_data/meme_manager/packs').rglob('*') if p.is_file() and p.suffix.lower() in {'.png','.jpg','.jpeg','.gif','.webp'})}}
@@ -578,6 +622,7 @@ def configure(root,record,args):
         return {'configured':selected,'ports':ports,'credentials_changed':False,'permissions_changed':False}
     if args.config_action=='initialize-experience':
         with installation_lock(root):
+            invoke(root,chat_python(root,record),'manage.py','recover-lifecycle','--instance',instance(root,record))
             return invoke(root,chat_python(root,record),'configure_experience.py','--instance',instance(root,record),'--release',resolve(root,record['release']),json_output=True)
     if args.config_action=='initialize-chat':
         with installation_lock(root):
@@ -629,6 +674,8 @@ def parser():
     check=sub.add_parser('check');check.add_argument('--network',action='store_true')
     setup=sub.add_parser('install');setup.add_argument('--components',default='chat');setup.add_argument('--plugins',default='astrbot_plugin_livingmemory,astrbot_plugin_continuous_message,meme_manager')
     setup.add_argument('--owner');setup.add_argument('--python',type=Path);setup.add_argument('--cache',type=Path);setup.add_argument('--offline',action='store_true');setup.add_argument('--accept-external-licenses',action='store_true');setup.add_argument('--no-instance',action='store_true')
+    setup.add_argument('--dependency-profile',choices=['core','chat'])
+    setup.add_argument('--retain-cache',action='store_true')
     setup.add_argument('--repair',action='store_true',help='Explicit same-dependency repair through the existing transactional upgrade mechanism')
     nap=sub.add_parser('prepare-napcat');nap.add_argument('--accept-external-licenses',action='store_true');nap.add_argument('--cache',type=Path);nap.add_argument('--offline',action='store_true')
     for name in ['status','components','start','daily-start','stop','restart','health','diagnose','wizard','rollback']:sub.add_parser(name)

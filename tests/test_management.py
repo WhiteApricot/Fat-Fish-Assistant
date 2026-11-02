@@ -135,9 +135,24 @@ class Management(unittest.TestCase):
         with self.assertRaises(c.Fault):c.install_asset(self.root,'napcat',spec,target,self.root/'cache')
     def test_install_running_instance_refused_before_dependencies(self):
         (self.root/'instance/private/RUNNING').write_text('synthetic')
-        with patch.object(c,'install_environment') as install:
+        with patch.object(c,'install_environment') as install,patch.object(c,'environment_profile',return_value='chat'):
             code,_=self.call('install','--owner','100');self.assertEqual(code,24)
         install.assert_not_called()
+    def test_start_recovers_stale_lifecycle_before_experience_migration(self):
+        self.record.update(release='release',components={'astrbot':{'installed':True,'ownership':'managed'}})
+        with patch.object(c,'component_status',return_value={'running':False}),patch.object(c,'invoke',return_value={}) as invoke:
+            c.operate(self.root,self.record,'start',['astrbot'])
+        self.assertEqual([(x.args[2],x.args[3]) for x in invoke.call_args_list],[('manage.py','recover-lifecycle'),('configure_experience.py','--instance'),('manage.py','start')])
+    def test_running_instance_is_reused_without_migration_or_cleanup(self):
+        self.record.update(release='release',components={'astrbot':{'installed':True,'ownership':'managed'}})
+        with patch.object(c,'component_status',return_value={'running':True}),patch.object(c,'invoke') as invoke:
+            c.operate(self.root,self.record,'start',['astrbot'])
+        invoke.assert_not_called()
+    def test_failed_recovery_does_not_migrate_or_start(self):
+        self.record.update(release='release',components={'astrbot':{'installed':True,'ownership':'managed'}})
+        with patch.object(c,'component_status',return_value={'running':False}),patch.object(c,'invoke',side_effect=RuntimeError('unverified dirty state')) as invoke:
+            with self.assertRaises(RuntimeError):c.operate(self.root,self.record,'start',['astrbot'])
+        self.assertEqual(invoke.call_count,1)
     def test_embedding_only_configuration_is_idempotent(self):
         script=Path(c.PROJECT)/'scripts/configure_local_models.py'
         command=[sys.executable,str(script),'--instance',str(self.root/'instance'),'--components','embedding']

@@ -89,8 +89,8 @@ class ScopedGateway(Gateway):
             return self.request(sender,private,group,'privatepersona',(sender,note),'更新你本人私聊的表达补充为：'+(note or '默认'))
         if cmd=='groupmemory':
             if private or level<2:return '只有主人或本群Bot管理员可以在本群管理共享记忆'
-            if not args or args in (['help'],['帮助']):return '/群记忆 search 关键词：查询本群记忆\n/群记忆 remember 内容：写入本群记忆\n/群记忆 update 编号 内容：更新本群记录\n/群记忆 reset：申请清除本群记忆，需再次确认\n/groupmemory：对应英文入口；不能指定其他群或私人记录'
-            operations={'search':'记忆查询','查询':'记忆查询','remember':'记住','写入':'记住','update':'记忆更新','更新':'记忆更新','reset':'记忆重置','重置':'记忆重置','cancel':'记忆取消','取消':'记忆取消'}
+            if not args or args in (['help'],['帮助']):return '/群记忆 search 关键词：查询本群记忆\n/群记忆 remember 内容：写入本群记忆\n/群记忆 update 编号 内容：更新本群记录\n/群记忆 delete 编号：遗忘本群单条记录\n/群记忆 reset：申请清除本群记忆，需再次确认\n/groupmemory：对应英文入口；不能指定其他群或私人记录'
+            operations={'search':'记忆查询','查询':'记忆查询','remember':'记住','写入':'记住','update':'记忆更新','更新':'记忆更新','delete':'记忆删除','删除':'记忆删除','reset':'记忆重置','重置':'记忆重置','cancel':'记忆取消','取消':'记忆取消'}
             if not event or args[0] not in operations:return '用 /群记忆 help 查看可用操作'
             event.message_str='/'+operations[args[0]]+(' '+' '.join(args[1:]) if len(args)>1 else '')
             event.set_extra('_feiyu_group_memory_command',True)

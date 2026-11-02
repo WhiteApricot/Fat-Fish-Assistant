@@ -24,6 +24,9 @@ harness=root/'launcher-harness.ps1'
 harness.write_text(r'''param([string]$Desktop,[string]$Root,[string]$Package,[string]$Python)
 $ErrorActionPreference='Stop'
 $project=Split-Path (Split-Path $Desktop -Parent) -Parent
+. (Join-Path $project 'scripts/Desktop-Interaction.ps1')
+$script:desktopLog=Join-Path $Root 'Desktop-test.log'
+'synthetic'|Set-Content $script:desktopLog
 $ast=[Management.Automation.Language.Parser]::ParseFile($Desktop,[ref]$null,[ref]$null)
 foreach($definition in $ast.EndBlock.Statements){
  if($definition -is [Management.Automation.Language.FunctionDefinitionAst]){. ([scriptblock]::Create($definition.Extent.Text))}

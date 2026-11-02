@@ -32,7 +32,7 @@ with exclusive(root):
             providers.append(speech)
         elif speech.get('type')!='openai_whisper_api':raise ValueError('Existing speech provider type mismatch')
         speech['api_base']=f'http://127.0.0.1:{a.speech_port}/v1'
-        cfg.setdefault('provider_stt_settings',{})['provider_id']=speech['id']
+        cfg.setdefault('provider_stt_settings',{}).update(enable=True,provider_id=speech['id'])
     if cfg==json.loads(before.decode('utf-8-sig')):
         print('Local provider configuration already matches; no files changed')
         raise SystemExit(0)

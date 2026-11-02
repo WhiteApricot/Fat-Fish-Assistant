@@ -81,6 +81,11 @@ class Checks(unittest.IsolatedAsyncioTestCase):
  async def test_group_memory_does_not_open_private_memory(self):
   e=await self.issue('300',False,'900','/群记忆 search 饺子');self.assertEqual(e.message_str,'/记忆查询 饺子');self.assertTrue(e.get_extra('_feiyu_group_memory_command'))
   e=await self.issue('300',False,'901','/群记忆 search 饺子');self.assertIn('只有',e.sent[0])
+ async def test_memory_delete_retains_private_and_group_permissions(self):
+  e=await self.issue('300',True,'900','/memory delete 1');self.assertEqual(e.message_str,'/记忆删除 1');self.assertFalse(e.sent)
+  e=await self.issue('300',True,'900','/记忆删除 1');self.assertFalse(e.sent)
+  e=await self.issue('300',False,'900','/群记忆 delete 1');self.assertEqual(e.message_str,'/记忆删除 1');self.assertTrue(e.get_extra('_feiyu_group_memory_command'))
+  e=await self.issue('300',False,'901','/群记忆 delete 1');self.assertIn('只有',e.sent[0])
  async def test_numeric_role_is_scoped_owner_only(self):
   await self.issue('300',False,'900','/role set 400 2');await self.issue('300',False,'900','/confirm')
   self.assertNotIn('400',self.g.load()[0]['group_admins']['900'])

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 from pathlib import Path
 PROJECT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(PROJECT/'scripts'))
 from instance import initialize
-from configure_experience import configure,native_pack_modules,CATEGORIES
+from configure_experience import configure,native_pack_modules,CATEGORIES,PACK_ID
 
 release=Path(os.environ['FEIYU_TEST_RELEASE']).resolve()
 with tempfile.TemporaryDirectory(prefix='experience-') as tmp,contextlib.chdir(Path.cwd()):
@@ -15,16 +15,20 @@ with tempfile.TemporaryDirectory(prefix='experience-') as tmp,contextlib.chdir(P
     assert cfg['platform_settings']['segmented_reply']['enable']
     plugin_cfg=json.loads((runtime/'data/config/meme_manager_config.json').read_text(encoding='utf-8'))
     assert plugin_cfg['generation']['emotion']['max_memes_per_message']==1
+    assert plugin_cfg['generation']['emotion']['probability']==35
+    assert '可以附一张' in plugin_cfg['generation']['prompt']['head']
     native=native_pack_modules(runtime,release)
-    pack=next(p for p in native.list_installed_packs() if p['id']=='ffa-original-basic')
-    assert pack['image_count']==6 and pack['is_default']
+    pack=next(p for p in native.list_installed_packs() if p['id']==PACK_ID)
+    assert pack['image_count']==24 and pack['is_default']
     images=importlib.import_module('ffa_starter_meme.backend.packs.images')
     from PIL import Image
     from ffa_starter_meme.backend.packs.resolver import resolve_pack_paths
-    paths=resolve_pack_paths('ffa-original-basic')
+    paths=resolve_pack_paths(PACK_ID)
     for mood in CATEGORIES:
         names=images.get_emoji_by_category(mood);assert names
-        with Image.open(Path(paths['memes_dir'])/mood/names[0]) as picture:assert picture.size==(256,256)
+        image_path=Path(paths['memes_dir'])/mood/names[0]
+        with Image.open(image_path) as picture:assert picture.size==(512,512) and picture.n_frames==8
+        if os.name=='nt':assert image_path.stat().st_ino==(release/'resources/starter-memes/gifs'/names[0]).stat().st_ino
     custom=Path(paths['memes_dir'])/'happy/custom-user.txt';custom.write_text('synthetic user asset')
     configure(runtime,release)
     assert custom.read_text()=='synthetic user asset'
@@ -57,4 +61,4 @@ with tempfile.TemporaryDirectory(prefix='experience-') as tmp,contextlib.chdir(P
         await check('第一句\n第二句\n第三句',['第一句','第二句','第三句'])
         await check('说明\n```python\na=1\nb=2\n```\n结束',['说明','```python\na=1\nb=2\n```','结束'])
     asyncio.run(verify())
-    print('EXPERIENCE_RESULT=original native pack ready; native separate sends; fenced code intact; permissions and user resources preserved')
+    print('EXPERIENCE_RESULT=verified whale-girl native pack ready; native separate sends; fenced code intact; permissions and user resources preserved')

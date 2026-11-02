@@ -84,6 +84,10 @@ def validate_snapshot(snapshot):
     if plan.get('schema')!=1:raise ValueError('Unsupported installation plan')
     for name in LOCKS:
         if plan['locks'].get(name)!=digest(c.PROJECT/'manifests'/name):raise ValueError('Pinned dependency compatibility mismatch: '+name)
+    for name,value in plan.get('profile_locks',{}).items():
+        if name not in {'core.json'} or value!=digest(c.PROJECT/'manifests'/name):raise ValueError('Dependency profile lock mismatch')
+    if plan.get('dependency_profile','chat') not in {'core','chat'}:raise ValueError('Unknown migration dependency profile')
+    if plan.get('dependency_profile')=='core' and 'core.json' not in plan.get('profile_locks',{}):raise ValueError('Missing core dependency lock')
     if set(plan['components'])-{'python','astrbot','plugins','embedding','speech','napcat'}:raise ValueError('Unsupported components in migration')
     return manifest,plan
 
@@ -99,7 +103,7 @@ def export(root,record,destination,password):
         for profile in ['chat','speech']:
             if not record.get(profile+'_python'):continue
             receipt=c.resolve(root,record[profile+'_python']).parents[1]/'ffa-environment.json'
-            if not receipt.exists() or c.read(receipt).get('lock_sha256')!=c.profile_fingerprint(profile):
+            if not receipt.exists() or c.read(receipt).get('lock_sha256')!=c.profile_fingerprint(c.environment_profile(root,record,profile)):
                 raise ValueError('Installed environment lock differs from the current dependency manifest: '+profile)
         # Stop all managed services through the existing controller first.
         c.operate(root,record,'stop')
@@ -116,10 +120,10 @@ def export(root,record,destination,password):
                 metadata=c.read(release/'release.json')
                 plugins=[x['name'] for x in metadata['vendor'] if x['name'] in {'astrbot_plugin_livingmemory','astrbot_plugin_continuous_message','meme_manager'}]
                 components=[name for name in ['python','astrbot','plugins','napcat','embedding','speech'] if record['components'].get(name,{}).get('installed')]
-                dependencies={'python':c.load('python-runtime.json'),'sources':metadata['vendor'],'chat':c.load('chat.json'),'dashboard':c.load('dashboard.json'),'assets':c.load('assets.json')}
+                dependencies={'python':c.load('python-runtime.json'),'sources':metadata['vendor'],'chat':c.load(record.get('dependency_profile','chat')+'.json'),'dashboard':c.load('dashboard.json'),'assets':c.load('assets.json')}
                 if record.get('speech_python'):dependencies['speech']=c.load('speech.json')
                 states={name:{key:record['components'][name].get(key) for key in ['installed','version','ownership']} for name in components}
-                c.atomic(snapshot/'installation-plan.json',{'schema':1,'components':components,'component_state':states,'dependencies':dependencies,'plugins':plugins,'locks':{name:digest(c.PROJECT/'manifests'/name) for name in LOCKS},'source_suspended':True})
+                c.atomic(snapshot/'installation-plan.json',{'schema':1,'components':components,'component_state':states,'dependencies':dependencies,'plugins':plugins,'locks':{name:digest(c.PROJECT/'manifests'/name) for name in LOCKS},'source_suspended':True,'dependency_profile':record.get('dependency_profile','chat'),'profile_locks':{name:digest(c.PROJECT/'manifests'/name) for name in ['core.json']}})
                 manifest,_=validate_snapshot(snapshot)
                 manifest['relocation']={'root':str(root),'instance':str(target)}
                 c.atomic(snapshot/'manifest.json',manifest)
@@ -139,6 +143,7 @@ def import_package(root,package,password,confirm_source_offline=False,cache=None
         # Reuse the single pinned installer, including model and plugin dependencies.
         base=c.resolve(root,c.state(root)['components']['python']['path'])
         args=c.parser().parse_args(['--root',str(root),'install','--no-instance','--python',str(base),'--components',','.join(plan['components']),'--plugins',','.join(plan['plugins']),'--accept-external-licenses'])
+        args.dependency_profile=plan.get('dependency_profile','chat')
         args.cache=cache;args.offline=offline
         c.install(root,args)
         with c.installation_lock(root):

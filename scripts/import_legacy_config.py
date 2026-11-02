@@ -27,8 +27,11 @@ if (old/'data/config').exists():
     (new/'data/config').mkdir(exist_ok=True)
     for path in (old/'data/config').glob('*.json'):
         (new/'data/config'/path.name).write_text(json.dumps(relocate(json.loads(path.read_text(encoding='utf-8-sig'))),ensure_ascii=False),encoding='utf-8')
-for pattern in ['*key*.txt','dashboard-password.txt']:
+for pattern in ['*key*.txt','dashboard-credential.dpapi']:
     for path in (old/'private').glob(pattern):shutil.copy2(path,new/'private'/path.name)
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
+from ffa_local_credentials import load_password,save_password
+if (old/'private/dashboard-password.txt').exists():save_password(new,(old/'private/dashboard-password.txt').read_text(encoding='utf-8-sig').strip())
 if a.persona_assets:
     for name in ['Persona_Master.md','Persona_Examples.json']:shutil.copy2(a.persona_assets/name,new/'persona'/name)
 os.environ.update(ASTRBOT_ROOT=str(new),FEIYU_RUNTIME_ROOT=str(new),FEIYU_SOURCE_ROOT=str(release/'src'),FEIYU_PERSONA_ROOT=str(new/'persona'))

@@ -13,6 +13,7 @@ import sys
 import zipfile
 from pathlib import Path
 from lifecycle_lock import exclusive
+from dependencies import link_or_copy
 from data_integrity import historical_memory
 
 SCHEMA = 1
@@ -89,10 +90,9 @@ def initialize(destination, owner, release,seed_persona=True):
     destination.mkdir(parents=True)
     for name in ['private','data','logs','persona']:(destination/name).mkdir()
     protect_boundary(destination)
-    (destination/'private/dashboard-password.txt').write_text(secrets.token_urlsafe(24))
     import imageio_ffmpeg
     (destination/'bin').mkdir()
-    shutil.copy2(imageio_ffmpeg.get_ffmpeg_exe(),destination/'bin/ffmpeg.exe')
+    link_or_copy(imageio_ffmpeg.get_ffmpeg_exe(),destination/'bin/ffmpeg.exe')
     cfg = {'owner':owner,'admins':[],'blocked':[],'approved_groups':[],'groups':{},
            'group_admins':{},'group_blocked':{},'identity_salt':secrets.token_hex(32),'epoch':0}
     (destination/'private/p2c-access.json').write_text(json.dumps(cfg))
@@ -207,7 +207,7 @@ def restore(snapshot,destination,release,installation_root=None):
                 if db.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise ValueError('Restore database check failed; staging quarantined')
     import imageio_ffmpeg
     (stage/'bin').mkdir(exist_ok=True)
-    shutil.copy2(imageio_ffmpeg.get_ffmpeg_exe(),stage/'bin/ffmpeg.exe')
+    link_or_copy(imageio_ffmpeg.get_ffmpeg_exe(),stage/'bin/ffmpeg.exe')
     (stage/'logs').mkdir(exist_ok=True)
     identity=manifest.get('instance_identity',{'schema':SCHEMA})
     if identity.get('schema')!=SCHEMA:raise ValueError('Unsupported instance identity schema')

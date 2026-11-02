@@ -3,6 +3,7 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Star
 from astrbot.api import logger
 from .policy import scope_allowed,Confirmations
+from .experience import MEMORY_INSTRUCTION,contains_secret,protect_memory_engine,protect_memorize_tool,MemeCadence
 
 SILENT={"不用回复","这条不用回复","这条不用回","我先下线了不用回复"}
 def requests_silence(text):
@@ -10,12 +11,24 @@ def requests_silence(text):
 
 class FatFishGuard(Star):
     def __init__(self,context):
-        super().__init__(context);self.context=context;self.confirm=Confirmations();self.locks={}
+        super().__init__(context);self.context=context;self.confirm=Confirmations();self.locks={};self.meme_cadence=MemeCadence()
+    @filter.event_message_type(filter.EventMessageType.ALL,priority=10001)
+    async def unavailable_voice(self,event:AstrMessageEvent):
+        # Native preprocessing replaces successfully transcribed Record parts.
+        # Any remaining audio must never fall through to a text-only LLM API.
+        if not event.get_extra('_feiyu_access_checked',False):return
+        def has_audio(parts):
+            return any(p.__class__.__name__=='Record' or
+                (p.__class__.__name__=='Reply' and has_audio(getattr(p,'chain',None) or [])) for p in parts)
+        if has_audio(event.get_messages()):
+            yield event.plain_result('这条语音没能识别。语音识别可能尚未安装或未成功启动，请在本机安装向导中启用或修复，或先发送文字。')
+            event.stop_event()
+
     @filter.event_message_type(filter.EventMessageType.ALL,priority=10000)
     async def guard(self,event:AstrMessageEvent):
         text=event.message_str.strip()
         # AstrBot strips the slash wake prefix before listener dispatch.
-        if re.match(r"^(记忆(?:帮助|查询|更新|重置|确认|取消)|记住)(?:\s|$)",text):text="/"+text
+        if re.match(r"^(记忆(?:帮助|查询|更新|删除|重置|确认|取消)|记住)(?:\s|$)",text):text="/"+text
         if requests_silence(text):event.stop_event();return
         if not (text.startswith("/记忆") or text.startswith("/记住")):return
         umo=event.unified_msg_origin;sender=str(event.get_sender_id())
@@ -51,6 +64,23 @@ class FatFishGuard(Star):
         preference=event.get_extra('_feiyu_preference','标准')
         if event.is_private_chat() and preference in {'简短','详细'}:
             request.system_prompt=(request.system_prompt or '')+'\n当前用户在私聊中选择回复长度：'+preference+'；仅调整详略，不改变人格、事实或权限。'
+
+    @filter.on_llm_response(priority=-99998)
+    async def limit_automatic_memes(self,event,response):
+        self.meme_cadence.apply(event)
+
+    @filter.on_llm_request(priority=100000)
+    async def enable_durable_memory(self,event,request):
+        md=self.context.get_registered_star('astrbot_plugin_livingmemory')
+        plugin=md.star_cls if md and md.activated else None
+        if not plugin:return
+        ready,_=await plugin._ensure_plugin_ready(wait=False)
+        if not ready:return
+        runtime=getattr(plugin,'initializer',plugin)
+        protect_memory_engine(runtime.memory_engine)
+        protect_memorize_tool(self.context.get_llm_tool_manager().get_func('memorize_long_term_memory'))
+        # LivingMemory still applies its own allowlist, persona and session scope.
+        request.system_prompt=(request.system_prompt or '')+MEMORY_INSTRUCTION
 
     @filter.on_llm_request(priority=-99999)
     async def enforce_private_persona(self,event,request):
@@ -103,7 +133,7 @@ class FatFishGuard(Star):
             expected,args,_=values
             if expected!=umo:return '记忆清除所属会话已变化，请重新申请'
 
-        if cmd=="/记忆帮助":return "本人的记忆：/记住 内容；/记忆查询 关键词；/记忆更新 编号 新内容；/记忆重置（需再次确认）；/记忆取消"
+        if cmd=="/记忆帮助":return "本人的记忆：/记住 内容；/记忆查询 关键词；/记忆更新 编号 新内容；/记忆删除 编号；/记忆重置（需再次确认）；/记忆取消"
         if cmd=="/记忆取消":
             self.confirm.items.pop((umo,sender),None)
             if event and event.get_extra('_feiyu_access_checked',False):
@@ -120,6 +150,7 @@ class FatFishGuard(Star):
         if not ready:return "长期记忆还没准备好，没有进行操作"
         runtime=getattr(p,"initializer",p)
         eng=runtime.memory_engine
+        protect_memory_engine(eng)
         if cmd=="/记忆重置":
             if args:return '重置只作用于'+label+'，不接受其他目标参数'
             code=self.confirm.issue(umo,sender)
@@ -153,7 +184,7 @@ class FatFishGuard(Star):
             return "本私聊的长期记忆已清除，当前聊天也已换成空白上下文；其他会话未修改，备份和旧日志仍按保留策略保存"
         if cmd in {"/记住","/记忆更新"}:
             if not args or len(args)>300:return "请分条提供简短明确的内容，每条最多300字"
-            if re.search(r"sk-[A-Za-z0-9_-]{16,}",args):return "不要把密钥写进记忆"
+            if contains_secret(args):return "不要把密码、Token 或其他凭据写进记忆"
         if cmd=="/记住":
             ident=await eng.add_memory(content=args,session_id=umo,persona_id=persona_id,importance=1.0,metadata={"source":"explicit_user","owner_id":sender})
             if not ident:raise RuntimeError("not written")
@@ -165,6 +196,13 @@ class FatFishGuard(Star):
             if int(ident) not in {int(x["id"]) for x in own}:return "找不到"+label+"的这个编号，不能修改其他会话的记忆"
             if not await eng.update_memory(int(ident),{"content":value,"importance":1.0}):raise RuntimeError("update failed")
             return '已更新'+label+'的这条记忆，查询时以新内容为准'
+        if cmd=="/记忆删除":
+            if not args.isdigit():return "格式是 /记忆删除 编号，只作用当前会话"
+            own=await self.rows(eng,umo)
+            if int(args) not in {int(x["id"]) for x in own}:return "找不到"+label+"的这个编号"
+            if not await eng.archive_memories([int(args)],audit={"archived_by":"explicit_user","archive_session_id":umo}):raise RuntimeError("archive failed")
+            eng._invalidate_search_cache()
+            return "已遗忘"+label+"的这条记忆；历史记录和备份仍保留"
         if cmd=="/记忆查询":
             if not args:return "请在 /记忆查询 后加关键词"
             if len(args)>300:return "查询请使用简短关键词，最多300字"
