@@ -54,7 +54,7 @@ async def main():
         try:
             extra={'_feiyu_access_checked':True,'_feiyu_security_epoch':1,'_feiyu_smart':True}
             e=types.SimpleNamespace(get_extra=lambda k,default=None:extra.get(k,default),get_sender_id=lambda:'300',get_group_id=lambda:'900',is_private_chat=lambda:False)
-            request=types.SimpleNamespace(prompt='fixture',system_prompt='',image_urls=[])
+            request=types.SimpleNamespace(prompt='fixture',system_prompt='',image_urls=[],func_tool=None)
             await guard.apply_personal_preference(e,request)
             for reason in ('blocked','epoch','mode'):
                 changed=json.loads(path.read_text())
@@ -67,15 +67,20 @@ async def main():
                 else:raise AssertionError('Model request admitted after '+reason)
                 gateway.save(cfg)
             cfg['private_persona_notes']={'300':'轻快但认真'};gateway.save(cfg)
+            def persona_event(actor,private):
+                turn_extra=dict(extra)
+                return types.SimpleNamespace(message_str='fixture',get_messages=lambda:[],
+                    get_extra=turn_extra.get,set_extra=turn_extra.__setitem__,get_sender_id=lambda:actor,
+                    get_group_id=lambda:'' if private else '900',is_private_chat=lambda:private)
             for actor,private,expected in [('300',True,True),('301',True,False),('300',False,False)]:
-                e=types.SimpleNamespace(get_extra=lambda k,default=None:extra.get(k,default),get_sender_id=lambda:actor,get_group_id=lambda:'' if private else '900',is_private_chat=lambda:private)
-                request=types.SimpleNamespace(prompt='fixture',system_prompt='',image_urls=[])
+                e=persona_event(actor,private)
+                request=types.SimpleNamespace(prompt='fixture',system_prompt='',image_urls=[],func_tool=None)
                 await guard.apply_personal_preference(e,request)
                 await guard.enforce_private_persona(e,request)
                 assert ('轻快但认真' in request.system_prompt) is expected
             cfg['private_persona_notes']['300']='';gateway.save(cfg)
-            e=types.SimpleNamespace(get_extra=lambda k,default=None:extra.get(k,default),get_sender_id=lambda:'300',get_group_id=lambda:'',is_private_chat=lambda:True)
-            request=types.SimpleNamespace(prompt='fixture',system_prompt='基础人格与检索资料',image_urls=[])
+            e=persona_event('300',True)
+            request=types.SimpleNamespace(prompt='fixture',system_prompt='基础人格与检索资料',image_urls=[],func_tool=None)
             await guard.enforce_private_persona(e,request)
             assert '已恢复默认' in request.system_prompt and '轻快但认真' not in request.system_prompt
             assert request.prompt=='fixture' and request.system_prompt.startswith('基础人格与检索资料')

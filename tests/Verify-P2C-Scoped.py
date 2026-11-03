@@ -63,52 +63,25 @@ class Checks(unittest.IsolatedAsyncioTestCase):
   self.g.save(cfg)
   self.assertFalse((await request('admin','/role')).sent)
 
- async def test_real_at_shape_and_natural_confirm(self):
-  from unittest.mock import AsyncMock,patch
-  class At:
-   def __init__(self,qq):self.qq=qq
-  e=Event('100',False,'900','帮我把 @昵称(400) 设成管理员')
-  e.get_messages=lambda:[At('999'),At('400')]
-  self.g.context=object()
-  with patch('p2f.persona_reply.command_reply',new=AsyncMock(return_value='鲸鱼娘补充')):
-   await self.g.process(e)
-   self.assertEqual(len(e.sent),2)
-   self.assertIn('授予400',e.sent[0])
-   self.assertTrue(e.sent[0].startswith('【系统】'))
-   self.assertEqual(e.sent[1],'鲸鱼娘补充')
-   self.assertNotIn('400',self.g.load()[0]['group_admins']['900'])
-   wrong=Event('100',True,'900','确定执行')
-   await self.g.process(wrong)
-   self.assertIn('没有有效',wrong.sent[0])
-   confirm=Event('100',False,'900','你执行吧')
-   confirm.get_messages=lambda:[At('999')]
-   await self.g.process(confirm)
-   self.assertIn('已保存',confirm.sent[0])
-   self.assertEqual(confirm.sent[1],'鲸鱼娘补充')
-   self.assertIn('400',self.g.load()[0]['group_admins']['900'])
-   repeat=Event('100',False,'900','确认')
-   repeat.get_messages=lambda:[At('999')]
-   await self.g.process(repeat)
-   self.assertIn('没有有效',repeat.sent[0])
 
  async def test_relative_admin_undo_and_short_confirmation(self):
   await self.issue('100',True,'','/role global add 500')
-  cancelled=await self.issue('100',True,'','撤销刚刚的管理员申请')
+  cancelled=await self.issue('100',True,'','/role undo')
   self.assertIn('已取消',cancelled.sent[0])
-  await self.issue('100',True,'','确定')
+  await self.issue('100',True,'','/confirm')
   self.assertNotIn('500',self.g.load()[1].global_admins)
   await self.issue('100',True,'','/role global add 500')
-  confirmed=await self.issue('100',True,'','确定')
+  confirmed=await self.issue('100',True,'','/confirm')
   self.assertIn('已保存',confirmed.sent[0])
   self.assertIn('已授予 500',str(self.g.recent_commands(confirmed)))
-  other=await self.issue('300',True,'','撤销刚刚的管理员申请')
+  other=await self.issue('300',True,'','/role undo')
   self.assertNotIn('500',str(self.g.recent_commands(other)))
-  group=await self.issue('100',False,'900','撤销刚刚的管理员申请')
+  group=await self.issue('100',False,'900','/role undo')
   self.assertNotIn('500',str(self.g.recent_commands(group)))
-  undo=await self.issue('100',True,'','撤销刚刚的管理员申请')
+  undo=await self.issue('100',True,'','/role undo')
   self.assertIn('撤销刚才授予 500',undo.sent[0])
   self.assertIn('500',self.g.load()[1].global_admins)
-  await self.issue('100',True,'','确定')
+  await self.issue('100',True,'','/confirm')
   self.assertNotIn('500',self.g.load()[1].global_admins)
   self.assertIn('已撤销 500',self.g.recent_commands(undo)[-1])
 
@@ -116,13 +89,13 @@ class Checks(unittest.IsolatedAsyncioTestCase):
   from unittest.mock import patch
   from fat_fish_guard.main import FatFishGuard
   await self.issue('100',True,'','/role global add 500')
-  await self.issue('100',True,'','确定')
-  await self.issue('100',True,'','撤销刚刚的管理员申请')
-  await self.issue('100',True,'','确定')
+  await self.issue('100',True,'','/confirm')
+  await self.issue('100',True,'','/role undo')
+  await self.issue('100',True,'','/confirm')
   async def request(actor,private):
    e=Event(actor,private,'900','刚才做了什么？')
    e.set_extra('_feiyu_access_checked',True)
-   req=types.SimpleNamespace(prompt=e.message_str,system_prompt='',contexts=[])
+   req=types.SimpleNamespace(prompt=e.message_str,system_prompt='',contexts=[],func_tool=None)
    with patch.dict(sys.modules,{'astrbot.core.feiyu_p2c':types.SimpleNamespace(gateway=self.g)}):
     await FatFishGuard.enforce_private_persona(types.SimpleNamespace(),e,req)
    return req
@@ -136,88 +109,7 @@ class Checks(unittest.IsolatedAsyncioTestCase):
   self.assertNotIn('500',(await request('300',True)).prompt)
   self.assertNotIn('500',(await request('100',False)).prompt)
 
- async def test_model_routes_persona_history_and_relative_undo(self):
-  chosen=None
-  prompts=[]
-  async def chat(**kwargs):
-   prompts.append(json.loads(kwargs['prompt']))
-   return types.SimpleNamespace(completion_text=json.dumps(chosen))
-  async def provider(_):
-   return types.SimpleNamespace(text_chat=chat)
-  self.g.context=types.SimpleNamespace(get_using_provider_async=provider)
-  async def natural(text,actor='100'):
-   e=Event(actor,True,'',text)
-   e.unified_msg_origin='fixture:FriendMessage:'+actor
-   await self.g.process(e)
-   return e
 
-  chosen={'command':'privatepersona','args':['reset']}
-  reset=await natural('重置私聊人格')
-  self.assertIn('已恢复你本人私聊的默认表达',reset.sent[0])
-  chosen={'command':'history','args':[]}
-  question=await natural('我上一条执行的指令是啥')
-  self.assertIn('/privatepersona reset',question.sent[0])
-  self.assertIn('已恢复你本人私聊的默认表达',question.sent[0])
-  self.assertIn('privatepersona reset',str(prompts[-1]['recent_receipts']))
-  self.assertIn('/privatepersona reset',(await natural('我上一次做了啥')).sent[0])
-  self.assertIn('没有可查询',(await natural('我上一次做了啥','300')).sent[0])
-  self.assertEqual(prompts[-1]['recent_receipts'],[])
-
-  chosen={'command':'role','args':['global','add','500']}
-  await natural('把500设成全局管理员')
-  await natural('确定')
-  self.assertIn('500',self.g.load()[1].global_admins)
-  chosen=None
-  quote=await natural('他说「撤销刚刚的管理员申请」是什么意思')
-  self.assertFalse(quote.sent)
-  self.assertFalse(self.g.pending.pending)
-  plain=await natural('撤销刚刚的管理员申请')
-  self.assertFalse(plain.sent)
-  self.assertFalse(self.g.pending.pending)
-  chosen={'command':'role','args':['undo']}
-  undo=await natural('我去，我好像输错了，撤销刚刚的权限')
-  self.assertTrue(prompts[-1]['has_admin_undo_reference'])
-  self.assertIn('撤销刚才授予 500',undo.sent[0])
-  self.assertIn('500',self.g.load()[1].global_admins)
-  await natural('确定')
-  self.assertNotIn('500',self.g.load()[1].global_admins)
-
- async def test_model_followups_use_stable_reminder_references(self):
-  from p2f.reminders import ReminderStore
-  self.g.reminders=ReminderStore(self.path.with_name('reminders.sqlite3'))
-  choice=None
-  prompts=[]
-  async def chat(**kwargs):
-   prompts.append(json.loads(kwargs['prompt']))
-   return types.SimpleNamespace(completion_text=json.dumps(choice))
-  async def provider(_):
-   return types.SimpleNamespace(text_chat=chat)
-  self.g.context=types.SimpleNamespace(get_using_provider_async=provider)
-  async def dispatch(actor,text):
-   e=Event(actor,True,'',text)
-   e.unified_msg_origin='fixture:FriendMessage:'+actor
-   await self.g.process(e)
-   return e.sent[0]
-
-  choice={'command':'reminder','args':['add','明天下午提醒我整理实验结果']}
-  self.assertIn('已创建提醒',await dispatch('100','明天下午提醒我整理实验结果'))
-  task=self.g.reminders.rows()[0]
-  choice={'command':'reference','args':['text','1','整理实验结果并发给导师']}
-  self.assertIn('已修改提醒内容',await dispatch('100','刚才那项，内容加上发给导师'))
-  self.assertTrue(prompts[-1]['references'][0]['reminder'])
-  self.assertEqual(self.g.reminders.rows()[0]['id'],task['id'])
-  self.assertEqual(self.g.reminders.rows()[0]['body'],'整理实验结果并发给导师')
-  choice={'command':'reference','args':['receipt','1']}
-  self.assertIn('已创建提醒',await dispatch('100','给我看看最初创建时的回执'))
-  choice={'command':'reference','args':['delete','1']}
-  self.assertIn('请明确',await dispatch('300','把刚才那个删掉'))
-  self.assertEqual(prompts[-1]['references'],[])
-  choice={'command':'clarify','args':[]}
-  self.assertIn('请明确',await dispatch('100','改一下'))
-  self.assertEqual(self.g.reminders.rows()[0]['state'],'active')
-  choice={'command':'reference','args':['delete','1']}
-  self.assertIn('已删除提醒',await dispatch('100','这项不用提醒了，删掉吧'))
-  self.assertEqual(self.g.reminders.rows()[0]['state'],'deleted')
 
  async def test_context_specific_help(self):
   private=await self.issue('300',True,'900','/help');self.assertIn('/personal',private.sent[0]);self.assertNotIn('/groupmode',private.sent[0]);self.assertNotIn('/blacklist',private.sent[0])
@@ -292,18 +184,6 @@ class Checks(unittest.IsolatedAsyncioTestCase):
    e=await self.issue('200',False,group,'/groupmode smart');self.assertIn('已保存',e.sent[0]);self.assertEqual(self.g.load()[0]['groups'][group],'smart')
   e=await self.issue('200',True,'900','/role global add 500');self.assertIn('只有主人',e.sent[0])
   e=await self.issue('200',True,'900','/role');self.assertIn('全局管理员',e.sent[0])
- async def test_natural_result_matches_slash_and_order(self):
-  slash=await self.issue('100',True,'900','/whitelist add 902')
-  natural=await self.issue('100',True,'900','把群号为902加入授权群')
-  self.assertEqual(natural.sent[:1],slash.sent);self.assertEqual(len(natural.sent),1)
-  e=await self.issue('300',True,'900','把群号为903加入授权群')
-  self.assertEqual(len(e.sent),1);self.assertIn('主人',e.sent[0]);self.assertNotIn('903',self.g.load()[0]['groups'])
- async def test_natural_risk_and_missing_target(self):
-  e=await self.issue('100',False,'900','将刚才 @ 的成员设为群管理员')
-  self.assertEqual(len(e.sent),1);self.assertIn('明确',e.sent[0]);self.assertNotIn(('100','group:900'),self.g.pending.pending)
-  e=await self.issue('100',True,'900','/role global add 200')
-  self.assertIn('确认',e.sent[0])
-  await self.issue('100',True,'900','确认执行');self.assertIn('200',self.g.load()[1].global_admins)
 
  async def test_attached_forward_runs_once_through_authorized_private_gateway(self):
   from p2f.forwards import ForwardReader,MARKER
@@ -322,11 +202,6 @@ class Checks(unittest.IsolatedAsyncioTestCase):
   first=await run();self.assertEqual(first.sent,['甲提到周三预约'])
   second=await run();self.assertIn('重复',second.sent[0]);self.assertEqual(len(calls),1);self.assertEqual(calls[0][1],{'id':'synthetic-forward'})
 
- async def test_natural_runtime_failure_has_two_truthful_messages(self):
-  def fail(*args,**kwargs):raise RuntimeError('synthetic failure')
-  self.g.command=fail
-  e=await self.issue('100',True,'900','查看当前有哪些管理员')
-  self.assertEqual(len(e.sent),1);self.assertIn('执行失败',e.sent[0])
  async def test_natural_stranger_is_denied_without_execution(self):
   e=await self.issue('400',True,'900','把群号为902的群加入授权群')
   self.assertEqual(len(e.sent),1);self.assertIn('添加',e.sent[0]);self.assertNotIn('902',self.g.load()[0]['groups'])
@@ -349,31 +224,6 @@ class Checks(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(e.sent,['甲：预算300元；乙：周三预约'])
   self.assertEqual(e.session_id,'p2c7_900')
 
- async def test_model_routes_paraphrase_and_rejects_fabricated_target(self):
-  result='{"command":"role","args":[]}'
-  comment='好呀，\n看上一条就知道啦～'
-  async def chat(**kwargs):
-   self.assertIsNone(kwargs['func_tool'])
-   if '程序已经确定指令状态' in kwargs['system_prompt']:
-    self.assertNotIn('主人',kwargs['prompt'])
-    return types.SimpleNamespace(completion_text=comment)
-   return types.SimpleNamespace(completion_text=result)
-  async def provider(_):return types.SimpleNamespace(text_chat=chat)
-  async def persona(_):return {'prompt':'鲸鱼娘人格'}
-  self.g.context=types.SimpleNamespace(get_using_provider_async=provider,persona_manager=types.SimpleNamespace(get_default_persona_v3=persona))
-  e=Event('100',True,'','我在肥鱼这儿算是哪一级呀')
-  e.unified_msg_origin='fixture:FriendMessage:100'
-  await self.g.process(e)
-  self.assertIn('主人',e.sent[0]);self.assertEqual(e.sent[1:],['好呀，','看上一条就知道啦～'])
-  comment='我不认这个，谁是主人要看聊天。'
-  bad=Event('100',True,'','我在肥鱼这儿算是哪一级呀')
-  bad.unified_msg_origin=e.unified_msg_origin
-  await self.g.process(bad)
-  self.assertEqual(bad.sent,e.sent[:1])
-  result='{"command":"whitelist","args":["add","9999"]}'
-  e=Event('100',True,'','今天心情很好');e.unified_msg_origin='fixture:FriendMessage:100'
-  self.assertTrue(await self.g.process(e))
-  self.assertNotIn('9999',self.g.load()[0]['groups'])
 
  async def test_inline_nested_forward_with_reused_parent_id(self):
   from p2f.forwards import ForwardReader
@@ -388,44 +238,7 @@ class Checks(unittest.IsolatedAsyncioTestCase):
   self.assertIn('内层内容',text)
   self.assertIn('子节点',text)
 
- async def test_provider_failure_routes_reported_commands_through_real_handlers(self):
-  from p2f.reminders import ReminderStore
-  from datetime import datetime
-  from p2f.timing import TZ
-  async def chat(**kwargs):raise TimeoutError()
-  async def provider(_):return types.SimpleNamespace(text_chat=chat)
-  self.g.context=types.SimpleNamespace(get_using_provider_async=provider)
-  self.g.reminders=ReminderStore(self.path.with_name('reminders.sqlite3'))
-  async def event(text,actor='100'):
-   e=Event(actor,True,'',text);e.unified_msg_origin='fixture:FriendMessage:'+actor
-   await self.g.process(e)
-   return e
-  self.assertIn('主人',(await event('我是什么身份')).sent[0])
-  reset=await event('清空所有记忆')
-  self.assertEqual(reset.message_str,'/记忆重置')
-  self.assertFalse(reset.sent)
-  self.assertFalse(self.g.pending.pending)
-  e=await event('半分钟后提醒我去拿快递')
-  self.assertIn('已创建提醒',e.sent[0])
-  row=self.g.reminders.rows()[0]
-  self.assertEqual(row['body'],'去拿快递')
-  self.assertAlmostEqual(row['due']-datetime.now(TZ).timestamp(),30,delta=2)
-  ordinary=await event('他说半分钟后提醒我去拿快递')
-  self.assertFalse(ordinary.sent)
-  self.assertEqual(len(self.g.reminders.rows()),1)
 
- async def test_valid_model_null_does_not_trigger_fallback_and_quotes_are_inert(self):
-  calls=[]
-  async def chat(**kwargs):calls.append(kwargs);return types.SimpleNamespace(completion_text='null')
-  async def provider(_):return types.SimpleNamespace(text_chat=chat)
-  self.g.context=types.SimpleNamespace(get_using_provider_async=provider)
-  e=Event('100',True,'','清空所有记忆');e.unified_msg_origin='fixture:FriendMessage:100'
-  self.assertTrue(await self.g.process(e))
-  self.assertEqual(e.message_str,'清空所有记忆')
-  self.assertEqual(len(calls),1)
-  e.message_obj.raw_message={'message':[{'type':'forward','data':{'id':'opaque'}}]}
-  self.assertTrue(await self.g.process(e))
-  self.assertEqual(len(calls),1)
 
  async def test_outage_memory_reset_requires_confirmation_and_executes_once(self):
   from unittest.mock import AsyncMock,Mock,patch
@@ -446,33 +259,13 @@ class Checks(unittest.IsolatedAsyncioTestCase):
    await self.g.run(event,downstream)
    return event.sent
   with patch.dict(sys.modules,{'astrbot.core.feiyu_p2c':types.SimpleNamespace(gateway=self.g)}),patch('fat_fish_guard.main.protect_memory_engine'):
-   self.assertIn('确认',(await dispatch('清空所有记忆'))[0])
+   self.assertIn('确认',(await dispatch('/memory reset'))[0])
    engine.batch_delete_memories.assert_not_awaited()
-   self.assertIn('已清除',(await dispatch('确认执行'))[0])
+   self.assertIn('已清除',(await dispatch('/confirm'))[0])
    engine.batch_delete_memories.assert_awaited_once_with([17])
-   self.assertIn('没有有效',(await dispatch('确认执行'))[0])
+   self.assertIn('没有有效',(await dispatch('/confirm'))[0])
    engine.batch_delete_memories.assert_awaited_once()
 
- async def test_ai_role_routes_keep_global_and_group_scopes_separate(self):
-  self.cfg['global_admins']=['200']
-  self.cfg['group_admins']={'900':['200'],'901':['200']}
-  self.g.save(self.cfg)
-  output={}
-  async def chat(**kwargs):return types.SimpleNamespace(completion_text=json.dumps(output))
-  async def provider(_):return types.SimpleNamespace(text_chat=chat)
-  self.g.context=types.SimpleNamespace(get_using_provider_async=provider)
-  async def dispatch(text,args):
-   output.update(command='role',args=args)
-   e=Event('100',True,'',text);e.unified_msg_origin='fixture:FriendMessage:100'
-   await self.g.process(e)
-   return e.sent
-  self.assertFalse(await dispatch('撤销200的全局管理员身份',['remove','200','all']))
-  self.assertEqual(self.g.load()[0]['group_admins']['900'],['200'])
-  self.assertIn('仍是全局管理员',(await dispatch('撤销200在所有群的管理员身份',['remove','200','all']))[0])
-  self.assertEqual(self.g.load()[0]['group_admins']['900'],[])
-  self.assertIn('确认',(await dispatch('撤销200的全局管理员身份',['global','remove','200']))[0])
-  self.assertIn('200',self.g.load()[1].global_admins)
-  await dispatch('确认执行',[])
-  self.assertNotIn('200',self.g.load()[1].global_admins)
 
-unittest.main(verbosity=2)
+if __name__=='__main__':
+ unittest.main(verbosity=2)

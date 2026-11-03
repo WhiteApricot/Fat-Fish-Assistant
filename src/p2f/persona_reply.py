@@ -28,7 +28,7 @@ async def render(context, scope, text, *, notes='', command_state=None):
                 instruction = (
                     '你在用当前鲸鱼娘人格补充上一条系统回执。程序已经确定指令状态为「'+command_state+'」。'
                     '这个状态来自程序，接受它为事实。给出简短的聊天式补充；如果有多句话，每句话单独一行。'
-                    '若待确认，可提醒核对；若已返回结果，请指向上条结果，不重判身份、权限或成败。'
+                    '若待确认，可提醒核对；仅给出有价值的补充，不重判身份、权限或成败；没有补充则输出空文本。'
                     '不重复编号，不解释安全策略，不执行任何操作。'
                 )
             response = await provider.text_chat(
@@ -51,28 +51,42 @@ async def render(context, scope, text, *, notes='', command_state=None):
         return None
 
 
-async def command_reply(gateway, event, result):
+def command_state(result):
+    if result.startswith(('变更全局管理员', '授予', '撤销刚才授予', '这会清除')) and '90秒内发送' in result:
+        return '待确认'
+    if result.startswith(('已保存', '已恢复', '已创建', '已更新', '已撤销', '已删除',
+                          '本私聊的长期记忆已清除', '本群可用的长期记忆与当前上下文已清除')):
+        return '已完成'
+    if result.startswith('已取消'):
+        return '已取消'
+    return '已返回结果'
+
+
+async def command_reply(gateway, event, result, *, command=None):
     group=str(event.get_group_id() or '')
     actor=str(event.get_sender_id())
     cfg,policy=gateway.load()
     if actor in policy.blocked_for(group) or (group and group not in policy.groups):
         return None
     notes=cfg.get('group_persona_notes',{}).get(group,'') if group else cfg.get('private_persona_notes',{}).get(actor,'')
-    pending=result.startswith(('变更全局管理员','授予','撤销刚才授予','这会清除')) and '90秒内发送' in result
-    state='待确认' if pending else '已返回结果'
+    state=command_state(result)
+    if command and state == '已返回结果':
+        return None
+    if command and state == '待确认':
+        return '先核对一下这项申请，准备好再确认。'
     # Exact receipts are visible in chat; the provider only needs the trusted
     # state and must never receive command parameters or retrieved memory here.
     reply=await render(getattr(gateway,'context',None),getattr(event,'unified_msg_origin',''),
-                       state,notes=notes,command_state=state)
+                       {'operation':command,'scope':'群聊' if group else '私聊','state':state},notes='' if command else notes,command_state=state)
     latest,policy=gateway.load()
     if actor in policy.blocked_for(group) or (group and (group not in policy.groups or gateway.epoch(cfg,group)!=gateway.epoch(latest,group))):
         return None
     return reply
 
 
-async def send_command_reply(gateway, event, result, *, send=None):
+async def send_command_reply(gateway, event, result, *, send=None, command=None):
     """Deliver the model supplement with the active AstrBot segmentation settings."""
-    reply=await command_reply(gateway,event,result)
+    reply=await command_reply(gateway,event,result,command=command)
     if not reply:
         return
     from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage

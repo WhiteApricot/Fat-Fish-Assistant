@@ -2,7 +2,7 @@
   {
     "path": "astrbot/core/astr_agent_hooks.py",
     "before": "accd70ee25c31732f4915f3dfb5cedfd5c1ca2e2890c4d8fa070eb4c74d12317",
-    "after": "5b87b6b9bb14d8b7be4843c584a09587be894b18e393e3644e6ccc0828c2823a",
+    "after": "4719a5ac1ba05bc287c5d10cfdb9a064ffaedb287d4c62610e74c6d18f89f516",
     "edits": [
       {
         "start": 0,
@@ -24,7 +24,8 @@
           "            group=str(event.get_group_id() or '')\n",
           "            if str(event.get_sender_id()) in policy.blocked_for(group) or (group and (group not in policy.groups or gateway.epoch(cfg,group)!=event.get_extra('_feiyu_security_epoch'))):\n",
           "                raise PermissionError('P2C access revoked before tool execution')\n",
-          "            if getattr(tool, 'name', '') not in {'memorize_long_term_memory','web_search_deepseek','deepseek_fetch_web_page'}:\n",
+          "            turn=event.get_extra('_p2f_turn_tools',None)\n",
+          "            if getattr(tool, 'name', '') not in {'memorize_long_term_memory','web_search_deepseek','deepseek_fetch_web_page'} and not (turn and turn.owns(tool)):\n",
           "                raise PermissionError('Tool outside the P2C chat capability boundary')\n",
           "            gateway.audit('tool_start',event)\n"
         ]

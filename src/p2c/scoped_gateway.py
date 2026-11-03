@@ -8,7 +8,7 @@ from .policy import ScopedPolicy
 class ScopedGateway(Gateway):
     full_group_context=True
     def __init__(self,path):
-        super().__init__(path);self.context=None;self.native=None;self.recent_grants={}
+        super().__init__(path);self.context=None;self.native=None;self.recent_grants={};self.persona_snapshots={}
     def epoch(self,cfg,group):return cfg.get('group_epochs',{}).get(str(group),cfg.get('epoch',0))
     def barrier(self,cfg,group):return max(cfg.get('barrier_time',0),cfg.get('group_barriers',{}).get(str(group),0))
     def load(self):
@@ -128,7 +128,9 @@ class ScopedGateway(Gateway):
                         self.recent_grants.pop(next(iter(self.recent_grants)))
             if admin_change and result.startswith('已保存'):
                 title='全局管理员' if operation=='global_admin' else '群 '+target_group+' 的显式Bot管理员'
-                result+='。已'+('授予' if values[0]=='add' else '撤销')+' '+target+' 的'+title+'权限'
+                if event is not None:
+                    event.set_extra('_p2f_confirmed_command',('globaladmin' if operation=='global_admin' else 'role',values))
+                result+='。经二次确认，已'+('授予' if values[0]=='add' else '撤销')+' '+target+' 的'+title+'权限'
             return result
         if cmd in {'personal','memory','new'}:
             if not private:return '这个功能只在私聊可用；本群共享记忆由 /群记忆 管理'
@@ -136,8 +138,24 @@ class ScopedGateway(Gateway):
         if cmd=='privatepersona':
             if not policy.authorize(sender,'personal',private=private,group=group,friend=level>=1):return '私聊人格只接受好友在本人私聊中调整，不能指定其他用户'
             current=cfg.get('private_persona_notes',{}).get(sender,'')
+            if args==['undo']:
+                snapshot=self.persona_snapshots.pop(sender,None)
+                if snapshot is None or time.monotonic()>=snapshot[0] or current!=snapshot[2]:
+                    return '没有可撤销的近期私聊人格修改'
+                previous=snapshot[1]
+                notes=cfg.setdefault('private_persona_notes',{})
+                if previous is None:
+                    notes.pop(sender,None)
+                else:
+                    notes[sender]=previous
+                try:
+                    self.save(cfg)
+                except Exception:
+                    self.persona_snapshots[sender]=snapshot
+                    raise
+                return '已恢复上一次修改前的私聊人格设置'
             if not args:return '你与肥鱼助手私聊的表达补充：'+(current or '默认')+'\n用 /私聊人格 help 查看调整方法'
-            if args in (['help'],['帮助']):return '/私聊人格：查看本人私聊表达补充\n/私聊人格 set 表达要求：只调整本人私聊，最多300字\n/私聊人格 reset：恢复默认表达\n/privatepersona：英文入口；直接执行，不修改群或其他人，不清除记忆'
+            if args in (['help'],['帮助']):return '/私聊人格：查看本人私聊表达补充\n/私聊人格 set 表达要求：只调整本人私聊，最多300字\n/私聊人格 reset：恢复默认表达\n/privatepersona undo：恢复上一次私聊表达；直接执行'
             note='' if args==['reset'] else ' '.join(args[1:]) if args[0]=='set' else None
             if note is None or len(note)>300 or (not note and args!=['reset']):return '格式：/私聊人格 set 表达要求（1至300字），或 /私聊人格 reset'
             return self.request(cfg,policy,sender,private,group,'privatepersona',(sender,note),'更新你本人私聊的表达补充为：'+(note or '默认'))
@@ -236,7 +254,9 @@ class ScopedGateway(Gateway):
         if operation=='privatepersona':
             actor,note=args
             if actor!=sender or not policy.authorize(sender,'personal',private=True,friend=level>=1):return '只能调整本人的私聊人格'
-            cfg.setdefault('private_persona_notes',{})[sender]=note
+            notes=cfg.setdefault('private_persona_notes',{})
+            previous=notes.get(sender)
+            notes[sender]=note
         elif operation in {'groupmode','persona'}:
             group,value=args
             if not policy.authorize(sender,'group',private=False,group=group):return '你目前无权修改这个群'
@@ -278,6 +298,11 @@ class ScopedGateway(Gateway):
                 if not group:cfg['barrier_time']=time.time()
             else:return '不支持的操作'
         self.save(cfg)
+        if operation=='privatepersona' and previous!=note:
+            self.persona_snapshots.pop(sender,None)
+            self.persona_snapshots[sender]=(time.monotonic()+1800,previous,note)
+            if len(self.persona_snapshots)>512:
+                self.persona_snapshots.pop(next(iter(self.persona_snapshots)))
         if operation=='privatepersona':return '已保存你本人私聊的表达补充' if args[1] else '已恢复你本人私聊的默认表达；原有事实记忆和聊天内容保留'
         if operation=='admin' and action=='remove' and target in policy.qq_group_admins.get(group,set()):
             return '已撤销显式授权。该成员的QQ群管理身份仍赋予本群Bot管理权限'

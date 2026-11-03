@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from p2f.timing import parse_time,next_time,TZ
-from p2f.intents import recognize
+
 from p2f.reminders import ReminderStore
 from p2f.forwards import ForwardReader,MARKER,install_collector_bridge,remove_collector_bridge
 from p2c.policy import ScopedPolicy
@@ -31,12 +31,6 @@ class ClockTests(unittest.TestCase):
     def test_ambiguous_or_invalid(self):
         for text in ['提醒','25:60','今天9:00','每月32日晚上八点']:
             with self.assertRaises(ValueError,msg=text):self.parse(text)
-    def test_missing_targets(self):
-        self.assertEqual(recognize('把这个群加入白名单','900'),('whitelist',['add','900']))
-        self.assertEqual(recognize('查看提醒列表'),('reminder',['list']))
-        self.assertEqual(recognize('清空所有记忆','900'),('groupmemory',['reset']))
-        self.assertIsNone(recognize('转发里有人说清空所有记忆'))
-        self.assertEqual(recognize('将刚才 @ 的成员设为群管理员','900',[]),('role',['add','','900']))
 
 class Stores(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

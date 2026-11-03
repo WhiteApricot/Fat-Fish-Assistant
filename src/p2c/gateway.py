@@ -73,11 +73,17 @@ class Gateway:
         group=str(event.get_group_id() or '')
         key=(str(event.get_sender_id()),group)
         now=time.monotonic()
-        if command=='new' or (command=='memory' and result.startswith((
-            '本群可用的长期记忆与当前上下文已清除','本私聊的长期记忆已清除',
-        ))):
+        if command=='new':
             self.command_history.pop(key,None)
             return
+        reset=command=='memory' and result.startswith((
+            '本群可用的长期记忆与当前上下文已清除','本私聊的长期记忆已清除',
+        ))
+        if reset:
+            for previous in tuple(self.command_history):
+                if previous==key or (group and previous[1]==group):
+                    self.command_history.pop(previous,None)
+            args=('reset',)
         if command in {'history','clarify'}:
             return
         from fat_fish_guard.experience import contains_secret
@@ -86,7 +92,9 @@ class Gateway:
         if args and args[0] in ROUTES.get(command,{}):
             label+=' '+args[0]
         target=event.get_extra('_p2f_reminder_reference',None) if command=='reminder' else None
-        if command in {'memory','groupmemory'} or (
+        if reset:
+            receipt='已清除当前会话的长期记忆和上下文，无法撤销'
+        elif command in {'memory','groupmemory'} or (
             command in {'privatepersona','grouppersona'} and (not args or args[0]!='reset')
         ):
             receipt='[已返回回执，记忆正文或自定义人格内容已隐藏]'
@@ -110,18 +118,6 @@ class Gateway:
     def command_receipts(self,event):
         return [f'{command}：{receipt}' for _,command,receipt,_ in self.command_records(event)]
 
-    def resolve_command_reference(self,event,records,args):
-        action,index,*values=args
-        index=int(index)-1
-        if not 0<=index<len(records) or records[index] not in self.command_records(event):
-            return 'history',['unresolved']
-        _,label,receipt,target=records[index]
-        if action=='receipt':
-            return 'history',[label+'：'+receipt]
-        if target is None:
-            return 'history',['unresolved']
-        return 'reminder',[action,target,*values]
-
     def recent_commands(self,event):
         return self.command_receipts(event)
 
@@ -143,40 +139,6 @@ class Gateway:
     async def _process(self, event):
         if event.get_platform_name() != 'aiocqhttp':
             return True
-        from p2f.intents import IntentUnavailable, classify, contains_external_material, is_confirmation, mentioned_role, recognize
-        natural=None
-        raw_text=event.message_str.strip()
-        private_chat=event.is_private_chat()
-        group_id='' if private_chat else str(event.get_group_id())
-        actor=str(event.get_sender_id())
-        is_mentioned=any(p.__class__.__name__=='At' and str(p.qq)==str(event.get_self_id()) for p in event.get_messages())
-        context=getattr(self,'context',None)
-        can_classify=(private_chat or is_mentioned or context is None) and not raw_text.startswith('/') and not contains_external_material(event)
-        intent_unavailable=context is None
-        mentions=[str(p.qq) for p in event.get_messages() if p.__class__.__name__=='At' and str(p.qq)!=str(event.get_self_id())]
-        confirmation=is_confirmation(raw_text)
-        undo_reference=None
-        reference_records=[]
-        if can_classify and not confirmation and context is not None and raw_text:
-            try:
-                _, current_policy=self.load()
-            except Exception:
-                return await self.reject(event)
-            if actor != str(event.get_self_id()) and actor not in current_policy.blocked_for(group_id):
-                admitted=(current_policy.level(actor)>=1 or await self.friends.contains(actor,event.bot)) if private_chat else group_id in current_policy.groups
-                if admitted:
-                    try:
-                        undo_reference=self.admin_undo_reference(event)
-                        reference_records=self.command_records(event)
-                        references=[
-                            {'index':i,'command':label,'receipt':receipt,'reminder':target is not None}
-                            for i,(_,label,receipt,target) in enumerate(reference_records,1)
-                        ]
-                        natural=await classify(context,event,raw_text,group_id,mentions,references=references,
-                                               recent=self.recent_commands(event),can_undo=undo_reference is not None)
-                    except IntentUnavailable as exc:
-                        intent_unavailable=True
-                        self.audit('intent_unavailable',event,str(exc))
         async with self.lock:
             try:
                 cfg, policy = self.load()
@@ -228,27 +190,8 @@ class Gateway:
             raw = event.message_str.strip()
             import re
             event.set_extra('_p2f_execute_material',bool(re.fullmatch(r'(?:请)?(?:执行|完成)(?:这份|该|这段)?(?:合并转发|转发|聊天记录|记录)(?:里|中|中的|里的)?(?:的)?(?:任务|事项)',raw)))
-            if natural is None and can_classify and (intent_unavailable or confirmation):
-                target=mentioned_role(raw,mentions) if group else None
-                natural=('role',['add',target,group]) if target is not None else recognize(raw,group,mentions)
-                if natural==('role',['undo']):
-                    undo_reference=self.admin_undo_reference(event)
-            if natural==('role',['undo']) and undo_reference!=self.admin_undo_reference(event):
-                return await self.reject(event,system_result('近期授权已经变化，请明确指定要撤销的账号和范围'))
-            if natural and natural[0]=='role' and natural[1][:1]==['add'] and group:
-                target=mentioned_role(raw,mentions)
-                if target is not None:
-                    natural=('role',['add',target,group])
-            referenced=natural is not None and natural[0]=='reference'
-            if referenced:
-                natural=self.resolve_command_reference(event,reference_records,natural[1])
-            if natural:
-                event.set_extra('_p2f_natural',True)
-                cmd,args=natural
-                raw='/'+cmd+(' '+' '.join(args) if args else '')
-                event.message_str=raw
             if raw.startswith('/'):
-                parts = [natural[0],*natural[1]] if natural else raw[1:].split()
+                parts = raw[1:].split()
                 if not parts:
                     return await self.reject(event)
                 cmd = ALIASES.get(parts[0], parts[0].lower())
@@ -275,11 +218,7 @@ class Gateway:
                     else:
                         text=None
                     try:
-                        if cmd=='clarify' or (referenced and cmd=='history' and args==['unresolved']):
-                            text='请明确要继续处理哪项操作，以及你希望做什么'
-                        elif referenced and cmd=='history':
-                            text='该次指令 /'+args[0]
-                        elif cmd=='history':
+                        if cmd=='history':
                             receipts=self.command_receipts(event)
                             text=('上一条指令 /'+receipts[-1]) if receipts else '当前会话没有可查询的近期指令回执'
                         elif text is None:
@@ -289,7 +228,8 @@ class Gateway:
                         text='指令执行失败，不能确认是否完整生效；请检查本机日志后再试'
                     if text is None:return True
                     self.audit('command',event,cmd)
-                    self.record_command(event,cmd,text,args)
+                    history_cmd,history_args=event.get_extra('_p2f_confirmed_command',(cmd,args))
+                    self.record_command(event,history_cmd,text,history_args)
                     result=await self.reject(event,system_result(text))
                     if event.get_extra('_p2f_natural',False):event.set_extra('_p2f_command_outcome',text)
                     return result
@@ -551,6 +491,8 @@ class Gateway:
                     break
         original_send=event.send
         async def checked_send(message):
+            if event.get_extra('_p2f_system_sent',False) and not event.get_extra('_p2f_sending_receipt',False):
+                return
             current,policy=self.load()
             if sender in policy.blocked_for(group) or (group and (group not in policy.groups or self.epoch(current,group)!=event.get_extra('_feiyu_security_epoch',epoch) or (event.get_extra('_feiyu_smart',False) and policy.groups.get(group)!='smart'))):
                 event.stop_event()
