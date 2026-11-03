@@ -36,10 +36,10 @@ class Checks(unittest.IsolatedAsyncioTestCase):
  async def issue(self,sender,private,group,text):
   e=Event(sender,private,group,text);await self.g.process(e);return e
  async def test_group_admin_never_becomes_global_or_other_group_admin(self):
-  e=await self.issue('300',True,'900','/权限');self.assertEqual(e.get_extra('_feiyu_level'),1)
-  e=await self.issue('300',False,'900','/权限');self.assertEqual(e.get_extra('_feiyu_level'),2)
-  e=await self.issue('300',False,'901','/群聊模式 smart');self.assertIn('只有',e.sent[0])
-  e=await self.issue('300',False,'900','/权限 set 400 管理员');self.assertIn('不能',e.sent[0])
+  e=await self.issue('300',True,'900','/role');self.assertEqual(e.get_extra('_feiyu_level'),1)
+  e=await self.issue('300',False,'900','/role');self.assertEqual(e.get_extra('_feiyu_level'),2)
+  e=await self.issue('300',False,'901','/groupmode smart');self.assertIn('只有',e.sent[0])
+  e=await self.issue('300',False,'900','/role set 400 2');self.assertIn('不能',e.sent[0])
  async def test_qq_group_admin_is_event_scoped_and_revocable(self):
   async def request(role, text, group='900', raw_group=900):
    e=Event('400',False,group,text)
@@ -115,20 +115,20 @@ class Checks(unittest.IsolatedAsyncioTestCase):
   private=await self.issue('300',True,'900','/help');self.assertIn('/personal',private.sent[0]);self.assertNotIn('/groupmode',private.sent[0]);self.assertNotIn('/blacklist',private.sent[0])
   group=await self.issue('300',False,'900','/help');self.assertIn('/groupmode',group.sent[0]);self.assertNotIn('/personal',group.sent[0]);self.assertNotIn('/memory 或',group.sent[0])
  async def test_reversible_blacklist_executes_without_confirmation(self):
-  await self.issue('300',False,'900','/黑名单 add 400')
+  await self.issue('300',False,'900','/blacklist add 400')
   cfg,p=self.g.load();self.assertIn('400',p.blocked_for('900'));self.assertNotIn('400',p.blocked_for('901'))
   self.assertNotIn(('300','group:900'),self.g.pending.pending)
   self.assertEqual(cfg['group_epochs'],{'900':8,'901':7})
-  await self.issue('300',False,'900','/黑名单 remove 400')
+  await self.issue('300',False,'900','/blacklist remove 400')
   self.assertNotIn('400',self.g.load()[1].blocked_for('900'))
  async def test_owner_group_grant_is_explicit(self):
-  await self.issue('100',True,'900','/权限 set 400 管理员')
+  await self.issue('100',True,'900','/role set 400 2')
   self.assertNotIn(('100','private'),self.g.pending.pending)
-  await self.issue('100',True,'900','/权限 set 400 管理员 901');await self.issue('100',True,'900','/确认')
+  await self.issue('100',True,'900','/role set 400 2 901');await self.issue('100',True,'900','/confirm')
   _,p=self.g.load();self.assertEqual(p.level('400',False,'901'),2);self.assertEqual(p.level('400',False,'900'),0);self.assertEqual(p.level('400',False,''),0)
  async def test_global_blacklist_is_owner_only_and_dominates(self):
-  e=await self.issue('300',True,'900','/黑名单 add 400');self.assertIn('主人',e.sent[0])
-  await self.issue('100',True,'900','/黑名单 add 300');await self.issue('100',True,'900','/confirm')
+  e=await self.issue('300',True,'900','/blacklist add 400');self.assertIn('主人',e.sent[0])
+  await self.issue('100',True,'900','/blacklist add 300');await self.issue('100',True,'900','/confirm')
   _,p=self.g.load();self.assertEqual(p.level('300',True,'900'),-1);self.assertEqual(p.level('300',True,'901'),-1);self.assertEqual(p.level('300',True,''),-1)
  async def test_whitelist_direct_after_authorization(self):
   await self.issue('300',False,'900','/whitelist add 902')
@@ -142,18 +142,18 @@ class Checks(unittest.IsolatedAsyncioTestCase):
   await self.issue('100',True,'900','/whitelist add 900');await self.issue('100',True,'900','/confirm')
   self.assertEqual(self.g.load()[0]['groups']['900'],'smart')
  async def test_persona_can_only_change_current_authorized_group(self):
-  e=await self.issue('300',True,'900','/群人格 set test');self.assertIn('本群',e.sent[0])
-  e=await self.issue('300',False,'901','/群人格 set test');self.assertIn('本群',e.sent[0])
-  await self.issue('300',False,'900','/群人格 set 简短');await self.issue('300',False,'900','/confirm')
+  e=await self.issue('300',True,'900','/grouppersona set test');self.assertIn('本群',e.sent[0])
+  e=await self.issue('300',False,'901','/grouppersona set test');self.assertIn('本群',e.sent[0])
+  await self.issue('300',False,'900','/grouppersona set 简短');await self.issue('300',False,'900','/confirm')
   cfg,_=self.g.load();self.assertEqual(cfg['group_persona_notes'],{'900':'简短'})
  async def test_group_memory_does_not_open_private_memory(self):
-  e=await self.issue('300',False,'900','/群记忆 search 饺子');self.assertEqual(e.message_str,'/记忆查询 饺子');self.assertTrue(e.get_extra('_feiyu_group_memory_command'))
-  e=await self.issue('300',False,'901','/群记忆 search 饺子');self.assertIn('只有',e.sent[0])
+  e=await self.issue('300',False,'900','/groupmemory search 饺子');self.assertEqual(e.message_str,'/记忆查询 饺子');self.assertTrue(e.get_extra('_feiyu_group_memory_command'))
+  e=await self.issue('300',False,'901','/groupmemory search 饺子');self.assertIn('只有',e.sent[0])
  async def test_memory_delete_retains_private_and_group_permissions(self):
   e=await self.issue('300',True,'900','/memory delete 1');self.assertEqual(e.message_str,'/记忆删除 1');self.assertFalse(e.sent)
-  e=await self.issue('300',True,'900','/记忆删除 1');self.assertFalse(e.sent)
-  e=await self.issue('300',False,'900','/群记忆 delete 1');self.assertEqual(e.message_str,'/记忆删除 1');self.assertTrue(e.get_extra('_feiyu_group_memory_command'))
-  e=await self.issue('300',False,'901','/群记忆 delete 1');self.assertIn('只有',e.sent[0])
+  e=await self.issue('300',True,'900','/记忆删除 1');self.assertIn('英文指令',e.sent[0])
+  e=await self.issue('300',False,'900','/groupmemory delete 1');self.assertEqual(e.message_str,'/记忆删除 1');self.assertTrue(e.get_extra('_feiyu_group_memory_command'))
+  e=await self.issue('300',False,'901','/groupmemory delete 1');self.assertIn('只有',e.sent[0])
  async def test_numeric_role_is_scoped_owner_only(self):
   await self.issue('300',False,'900','/role set 400 2');await self.issue('300',False,'900','/confirm')
   self.assertNotIn('400',self.g.load()[0]['group_admins']['900'])
@@ -163,7 +163,7 @@ class Checks(unittest.IsolatedAsyncioTestCase):
    self.assertEqual(self.g.load()[1].level('400',False,'900'),expected)
   self.assertEqual(self.g.load()[1].level('400',False,''),0)
  async def test_private_persona_is_self_only_private_and_direct(self):
-  e=await self.issue('300',False,'900','/私聊人格 set 活泼');self.assertIn('本人私聊',e.sent[0])
+  e=await self.issue('300',False,'900','/privatepersona set 活泼');self.assertIn('本人私聊',e.sent[0])
   e=await self.issue('400',True,'900','/privatepersona set 活泼');self.assertIn('添加',e.sent[0])
   await self.issue('300',True,'900','/privatepersona set 活泼一点')
   self.assertEqual(self.g.load()[0]['private_persona_notes'],{'300':'活泼一点'})
@@ -171,7 +171,7 @@ class Checks(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(self.g.load()[0]['private_persona_notes'],{'300':'活泼一点'})
   await self.issue('300',True,'900','/confirm')
   cfg,_=self.g.load();self.assertEqual(cfg['private_persona_notes'],{'300':'活泼一点'});self.assertNotIn('group_persona_notes',cfg)
-  await self.issue('300',True,'900','/私聊人格 reset');await self.issue('300',True,'900','/confirm')
+  await self.issue('300',True,'900','/privatepersona reset');await self.issue('300',True,'900','/confirm')
   self.assertEqual(self.g.load()[0]['private_persona_notes'],{'300':''})
 
  async def test_global_admin_owner_confirmation_and_scope(self):
@@ -259,7 +259,7 @@ class Checks(unittest.IsolatedAsyncioTestCase):
    await self.g.run(event,downstream)
    return event.sent
   with patch.dict(sys.modules,{'astrbot.core.feiyu_p2c':types.SimpleNamespace(gateway=self.g)}),patch('fat_fish_guard.main.protect_memory_engine'):
-   self.assertIn('确认',(await dispatch('/memory reset'))[0])
+   self.assertIn('/confirm',(await dispatch('/memory reset'))[0])
    engine.batch_delete_memories.assert_not_awaited()
    self.assertIn('已清除',(await dispatch('/confirm'))[0])
    engine.batch_delete_memories.assert_awaited_once_with([17])

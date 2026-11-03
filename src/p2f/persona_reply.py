@@ -52,9 +52,9 @@ async def render(context, scope, text, *, notes='', command_state=None):
 
 
 def command_state(result):
-    if result.startswith(('变更全局管理员', '授予', '撤销刚才授予', '这会清除')) and '90秒内发送' in result:
+    if '90秒内发送' in result and result.startswith(('变更全局管理员','授予','撤销刚才授予','这会清除','撤销这项操作')):
         return '待确认'
-    if result.startswith(('已保存', '已恢复', '已创建', '已更新', '已撤销', '已删除',
+    if result.startswith(('已保存', '已恢复', '已创建', '已更新', '已修改提醒', '已调整', '已撤销', '已删除',
                           '本私聊的长期记忆已清除', '本群可用的长期记忆与当前上下文已清除')):
         return '已完成'
     if result.startswith('已取消'):
@@ -68,19 +68,28 @@ async def command_reply(gateway, event, result, *, command=None):
     cfg,policy=gateway.load()
     if actor in policy.blocked_for(group) or (group and group not in policy.groups):
         return None
-    notes=cfg.get('group_persona_notes',{}).get(group,'') if group else cfg.get('private_persona_notes',{}).get(actor,'')
+    from p2c.persona_settings import effective_notes
+    notes=effective_notes(cfg,actor,group)
+    local=cfg.get('group_persona_notes' if group else 'private_persona_notes',{}).get(group or actor,'')
     state=command_state(result)
     if command and state == '已返回结果':
         return None
-    if command and state == '待确认':
-        return '先核对一下这项申请，准备好再确认。'
     # Exact receipts are visible in chat; the provider only needs the trusted
     # state and must never receive command parameters or retrieved memory here.
     reply=await render(getattr(gateway,'context',None),getattr(event,'unified_msg_origin',''),
-                       {'operation':command,'scope':'群聊' if group else '私聊','state':state},notes='' if command else notes,command_state=state)
+                       {'operation':command,'scope':'群聊' if group else '私聊','state':state},notes=notes,command_state=state)
     latest,policy=gateway.load()
     if actor in policy.blocked_for(group) or (group and (group not in policy.groups or gateway.epoch(cfg,group)!=gateway.epoch(latest,group))):
         return None
+    if not reply and state=='待确认':
+        reply='先核对一下这项申请，准备好再确认。'
+    if not reply and command in {'role','globaladmin','confirm','undo'} and state=='已完成':
+        reply='这次调整已经记下啦。'
+    if not reply and command=='reminder' and result.startswith('已修改提醒'):
+        return '我会按新的安排提醒你。'
+    if reply and notes:
+        from p2c.private_persona import apply_affix
+        reply=apply_affix(reply,local or notes)
     return reply
 
 

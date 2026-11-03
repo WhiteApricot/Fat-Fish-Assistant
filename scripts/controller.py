@@ -30,6 +30,24 @@ class Fault(Exception):
 class Parser(argparse.ArgumentParser):
     def error(self,message):raise Fault('invalid',message,'Run the command with --help for accepted options.')
 
+# The tested P2F-R1 transition changes only the project's AstrBot tool guard.
+P2F_R1_PATCH_TRANSITION=(
+    '48ab060e53723c3b5f320c6085073d87ac432510a014ba356700db6e1dab313d',
+    'dfc27563a18dc90360d91ba7513694a3f3a5fad5eb5c4abd77716a9be547ac38',
+)
+
+def repair_release_compatible(before,after):
+    if before.get('schema')!=after.get('schema'):return False
+    if before.get('vendor')==after.get('vendor'):return True
+    for key in ('vendor','external_sources'):
+        rows=before.get(key)
+        if not isinstance(rows,list):return False
+        astrbot=[row for row in rows if row['name']=='astrbot']
+        if len(astrbot)!=1 or astrbot[0].get('patch_sha256')!=P2F_R1_PATCH_TRANSITION[0]:return False
+        expected=[dict(row,patch_sha256=P2F_R1_PATCH_TRANSITION[1]) if row['name']=='astrbot' else row for row in rows]
+        if expected!=after.get(key):return False
+    return before.get('dashboard')==after.get('dashboard')
+
 def read(path):return json.loads(Path(path).read_text(encoding='utf-8-sig'))
 def read_stdin():return json.loads(sys.stdin.read().removeprefix('\ufeff'))
 def atomic(path,data):
@@ -366,7 +384,7 @@ def install(root,args):
                 if active!=release:
                     if not args.repair:raise Fault('busy','Existing instance uses a different release','Use explicit repair after a clean stop; ordinary install never switches existing instances.')
                     before=read(active/'release.json');after=read(release/'release.json')
-                    if before.get('schema')!=after.get('schema') or before.get('vendor')!=after.get('vendor'):
+                    if not repair_release_compatible(before,after):
                         raise Fault('incompatible','Repair refuses changes to upstream versions or patches; a tested upgrade is required')
                     invoke(root,chat_python(root,record),'manage.py','upgrade','--instance',instance(root,record),'--release',release)
             record['release']=rel(root,release)
@@ -493,7 +511,9 @@ def operate(root,record,action,selected=None):
         if info.get('ownership')=='external-readonly':raise Fault('read_only','External component cannot be modified: '+name)
         if not info.get('installed'):raise Fault('missing','Component is not installed: '+name)
         current=component_status(root,record,name)
-        if current['running'] is (action=='start'):
+        # NapCat Stop also clears a stale managed launch record.
+        cleanup_napcat=action=='stop' and name=='napcat' and current.get('managed',False)
+        if current['running'] is (action=='start') and not cleanup_napcat:
             results.append({'id':name,'already_in_requested_state':True});continue
         if name=='astrbot':
             target=instance(root,record)

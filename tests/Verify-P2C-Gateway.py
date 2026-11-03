@@ -70,18 +70,18 @@ class GatewayChecks(unittest.IsolatedAsyncioTestCase):
         self.assertIn('未获',e.sent[0]);self.assertNotIn('901',self.g.load()[0]['groups'])
     async def test_help_role_set_and_stranger_messages(self):
         e=Event('100',text='/help');await self.g.process(e)
-        self.assertTrue(all(line.startswith('/') and '：' in line for line in e.sent[0].splitlines()))
-        e=Event('300',text='/权限');await self.g.process(e)
+        self.assertTrue(all(line.startswith('/') and ' ' not in line for line in e.sent[0].removeprefix('【系统】').splitlines()))
+        e=Event('300',text='/role');await self.g.process(e)
         self.assertIn('好友',e.sent[0]);self.assertNotIn('L1',e.sent[0])
-        e=Event('100',text='/权限 set 300 管理员');await self.g.process(e)
+        e=Event('100',text='/role set 300 2');await self.g.process(e)
         self.assertIn('/confirm',e.sent[0]);self.assertNotIn('300',self.g.load()[0]['admins'])
-        e=Event('200',text='/权限 set 300 管理员');await self.g.process(e)
+        e=Event('200',text='/role set 300 2');await self.g.process(e)
         self.assertIn('权限不足',e.sent[0])
-        e=Event('100',text='/权限 set 300 主人');await self.g.process(e)
+        e=Event('100',text='/role set 300 owner');await self.g.process(e)
         self.assertIn('不能',e.sent[0])
         for _ in range(2):
             e=Event('500',text='你好');await self.g.process(e)
-            self.assertIn('此实例的主人',e.sent[0]);self.assertNotIn('QQ：',e.sent[0])
+            self.assertIn('此实例的主人',e.sent[0]);self.assertIn('主人 QQ：100',e.sent[0])
     async def test_blacklist_cancels_inflight_and_rotates_group_history(self):
         import asyncio
         entered=asyncio.Event()
@@ -115,10 +115,10 @@ class GatewayChecks(unittest.IsolatedAsyncioTestCase):
     async def test_submenus(self):
         e=Event('100',text='/help');await self.g.process(e)
         self.assertNotIn('set QQ',e.sent[0])
-        e=Event('100',text='/权限 help');await self.g.process(e)
-        self.assertIn('set QQ 管理员',e.sent[0])
-        e=Event('100',text='/help 权限');await self.g.process(e)
-        self.assertIn('set QQ 管理员',e.sent[0])
+        e=Event('100',text='/role help');await self.g.process(e)
+        self.assertIn('set QQ 1|2',e.sent[0])
+        e=Event('100',text='/help role');await self.g.process(e)
+        self.assertIn('set QQ 1|2',e.sent[0])
     async def test_bad_owner_fails_closed(self):
         self.cfg['owner']='200';self.path.write_text(json.dumps(self.cfg))
         self.assertFalse(await self.g.process(Event()))

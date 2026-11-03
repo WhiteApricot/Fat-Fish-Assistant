@@ -101,7 +101,8 @@ class NativeGroups:
 
     async def persona(self,event):
         group=str(event.get_group_id());cfg,_=self.gateway.load();manager=self.gateway.context.persona_manager
-        ident='feiyu-group-'+group;base_id=ident+'-base';note=cfg.get('group_persona_notes',{}).get(group,'')
+        from .persona_settings import effective_notes
+        ident='feiyu-group-'+group;base_id=ident+'-base';note=effective_notes(cfg,'',group)
         signature=(ident,note)
         async with self.locks.setdefault('persona:'+group,asyncio.Lock()):
             if self.personas_ready.get(group)!=signature:

@@ -9,14 +9,17 @@ from p2f.persona_reply import send_command_reply
 
 
 TOOLS = {
+    'get_my_role': ('查询当前发言者真实的肥鱼助手身份和权限，不能根据昵称、历史或对话推测。', 'role', '', {}),
+    'list_group_admins': ('查询当前群实际的Bot管理员，包含适用的QQ群管理身份。', 'role', 'list', {}),
+    'list_global_admins': ('查询实际的全局管理员名单。', 'globaladmin', 'list', {}),
     'get_recent_actions': ('查询本人本会话的近期操作，撤销或指代不明确时先查。', '', '', {}),
     'get_pending_actions': ('查询本人本会话待确认操作。', '', '', {}),
     'confirm_action': ('仅在用户明确确认当前待办时调用。不能在创建待办的同一轮确认。', 'confirm', '', {}),
     'cancel_action': ('仅在用户明确取消当前待办时调用。', '', '', {}),
     'memory_reset': ('申请清除当前会话记忆，需要另行确认，清除后不可撤销。', 'memory', 'reset', {}),
-    'private_persona_update': ('持久修改本人私聊表达。', 'privatepersona', 'set', {'note': 300}),
-    'private_persona_reset': ('将私聊表达恢复默认。', 'privatepersona', 'reset', {}),
-    'private_persona_undo': ('恢复本人上一次私聊表达修改前的设置。', 'privatepersona', 'undo', {}),
+    'private_persona_update': ('持久修改本人私聊表达。用户说私聊人格设置或明确要求以后都这样说时，必须调用，不能口头答应。', 'privatepersona', 'set', {'note': 300}),
+    'private_persona_reset': ('重置私聊人格到默认值，必须执行工具。', 'privatepersona', 'reset', {}),
+    'private_persona_undo': ('撤销刚才的私聊人格设置，恢复到修改前的值，必须执行工具。', 'privatepersona', 'undo', {}),
     'global_admin_grant': ('申请授予当前发言明确给出的数字QQ全局管理员权限。', 'globaladmin', 'add', {'qq': 20}),
     'global_admin_revoke': ('仅在当前发言明确提供数字QQ时申请撤销。撤销刚才的授权用 undo_recent_admin_grant，即使历史给出了QQ。', 'globaladmin', 'remove', {'qq': 20}),
     'undo_recent_admin_grant': ('用于撤销刚才、上一次或最近的管理员授权或待确认申请。先查询近期操作，随后用本工具；不传QQ。', 'role', 'undo', {}),
@@ -32,7 +35,7 @@ TOOLS = {
     'group_mention_mode': ('让当前群只在被明确呼叫时回复。', 'groupmode', 'mention', {}),
     'group_smart_mode': ('将当前群设为智能回复。', 'groupmode', 'smart', {}),
     'group_cooldown': ('设置当前群的回复冷却秒数。', 'groupsettings', 'cooldown', {'seconds': 5}),
-    'group_admin_grant': ('申请授予指定群的成员Bot管理权限。', 'role', 'add', {'qq': 20, 'group': 20}),
+    'group_admin_grant': ('申请授予群成员Bot管理权限。省略群号表示本群；省略QQ时使用消息中唯一的非Bot @。', 'role', 'add', {'qq': 20, 'group': 20}),
     'group_admin_revoke': ('撤销指定群的成员的显式Bot管理权限。', 'role', 'remove', {'qq': 20, 'group': 20}),
     'block_account': ('把指定QQ加入当前作用域黑名单。', 'blacklist', 'add', {'qq': 20}),
     'unblock_account': ('将指定QQ从当前作用域黑名单移除。', 'blacklist', 'remove', {'qq': 20}),
@@ -59,6 +62,10 @@ class TurnTools:
         self.finished = False
 
     def allowed(self, name, level):
+        if name == 'list_group_admins':
+            return bool(self.group) and level >= 2
+        if name == 'list_global_admins':
+            return level >= 2.5
         if name.startswith('global_admin_'):
             return level == 3
         if name.startswith('private_persona_'):
@@ -93,9 +100,10 @@ class TurnTools:
                 if field in {'id', 'qq', 'group', 'seconds'}:
                     schema['pattern'] = '^[0-9]+$'
                 properties[field] = schema
+            required = [] if name == 'group_admin_grant' else list(fields)
             self.handlers[name] = self.handler(name)
             toolset.add_tool(FunctionTool(name=name, description=description, parameters={
-                'type': 'object', 'properties': properties, 'required': list(fields),
+                'type': 'object', 'properties': properties, 'required': required,
                 'additionalProperties': False,
             }, handler=self.handlers[name]))
         self.toolset = toolset
@@ -156,6 +164,18 @@ class TurnTools:
             if (self.private and level < 1) or name not in TOOLS or not self.allowed(name, level):
                 return '当前账号无权使用该工具。'
             _, command, action, fields = TOOLS[name]
+            if name == 'group_admin_grant':
+                mentions = {str(part.qq) for part in event.get_messages()
+                            if part.__class__.__name__ == 'At' and str(part.qq) != str(event.get_self_id())}
+                values = dict(values)
+                if values.get('group') in (None, '', '本群', '当前群'):
+                    values['group'] = self.group
+                if len(mentions) == 1 and not re.fullmatch('[0-9]+', str(values.get('qq', ''))):
+                    values['qq'] = next(iter(mentions))
+                if values.get('qq') and not self.explicit_account(str(values['qq'])):
+                    return '工具参数不合法，未执行。'
+            values = {key: str(value) if key in {'id','qq','group','seconds'} and type(value) is int else value
+                      for key, value in values.items()}
             if values.keys() != fields.keys() or any(
                 not isinstance(values[key], str) or not values[key].strip() or len(values[key]) > limit
                 or (key in {'qq', 'id', 'group', 'seconds'} and not re.fullmatch('[0-9]+', values[key]))
@@ -172,6 +192,13 @@ class TurnTools:
             args = [action, *(values[key].strip() for key in fields)] if action else []
             if name == 'reminder_query':
                 return gateway.command(cfg, policy, self.actor, level, self.private, self.group, command, args, event)
+            if name == 'list_group_admins':
+                await gateway.group_platform.bind_roster(policy, self.group, event.bot, self.actor)
+            if name in {'get_my_role', 'list_group_admins', 'list_global_admins'}:
+                self.finished = True
+                result = gateway.command(cfg, policy, self.actor, level, self.private, self.group, command, args, event)
+                await self.send_receipt(result)
+                return '系统已发送核验结果。'
             self.finished = True
             memory_command = None
             if name in {'confirm_action', 'cancel_action'} and (not pending or pending != self.pending):
@@ -213,7 +240,7 @@ class TurnTools:
             command, args = 'memory', ['reset']
         result = result or '指令没有返回执行结果。'
         history_command, history_args = event.get_extra('_p2f_confirmed_command', (command, args))
-        if history_command:
+        if history_command and (name != 'undo_recent_admin_grant' or result.startswith(('已撤销','已取消'))):
             gateway.record_command(event, history_command, result, history_args)
         await self.send_receipt(result, history_command)
         from p2f.persona_reply import command_state

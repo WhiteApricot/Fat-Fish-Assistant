@@ -1,5 +1,6 @@
 """Pre-wake QQ access boundary, deliberately independent of plugin filters."""
 import asyncio
+from copy import deepcopy
 import hashlib
 from datetime import datetime, timezone
 import json
@@ -11,9 +12,7 @@ from p2d.group_media import GroupMedia
 from .dedup import SeenMessages
 from .group_platform import GroupPlatform
 
-ALIASES = {'帮助':'help','权限':'role','白名单':'whitelist','黑名单':'blacklist',
-           '确认':'confirm','群聊模式':'groupmode','群聊设置':'groupsettings',
-           '个人设置':'personal','记忆管理':'memory','新对话':'new','comfirm':'confirm','群人格':'grouppersona','群记忆':'groupmemory','私聊人格':'privatepersona','全局管理员':'globaladmin','提醒':'reminder','remind':'reminder'}
+ALIASES = {'comfirm':'confirm','remind':'reminder'}
 
 def system_result(text):
     return '【系统】'+text
@@ -74,12 +73,17 @@ class Gateway:
         key=(str(event.get_sender_id()),group)
         now=time.monotonic()
         if command=='new':
+            getattr(self,'undo_records',{}).pop((key[0],event_scope(not group,group)),None)
             self.command_history.pop(key,None)
             return
         reset=command=='memory' and result.startswith((
             '本群可用的长期记忆与当前上下文已清除','本私聊的长期记忆已清除',
         ))
         if reset:
+            undo=getattr(self,'undo_records',{})
+            scope=event_scope(not group,group)
+            for previous in tuple(undo):
+                if previous==(key[0],scope) or (group and previous[1]==scope):undo.pop(previous,None)
             for previous in tuple(self.command_history):
                 if previous==key or (group and previous[1]==group):
                     self.command_history.pop(previous,None)
@@ -95,7 +99,7 @@ class Gateway:
         if reset:
             receipt='已清除当前会话的长期记忆和上下文，无法撤销'
         elif command in {'memory','groupmemory'} or (
-            command in {'privatepersona','grouppersona'} and (not args or args[0]!='reset')
+            command in {'privatepersona','grouppersona','persona','globalpersona'} and (not args or args[0]!='reset')
         ):
             receipt='[已返回回执，记忆正文或自定义人格内容已隐藏]'
         else:
@@ -129,16 +133,73 @@ class Gateway:
         return False
 
     async def process(self,event):
+        original=event.message_str
         admitted=await self._process(event)
+        if admitted and event.get_platform_name()=='aiocqhttp':
+            event.set_extra('_p2f_memory_dispatch_checked',True)
+            event.set_extra('_p2f_internal_memory',original!=event.message_str and event.message_str.startswith('/记'))
         outcome=event.get_extra('_p2f_command_outcome',None)
         if outcome is not None:
             from p2f.persona_reply import send_command_reply
-            await send_command_reply(self,event,outcome)
+            await send_command_reply(self,event,outcome,command=event.get_extra('_p2f_natural_command',None))
         return admitted
 
     async def _process(self, event):
         if event.get_platform_name() != 'aiocqhttp':
             return True
+        from p2f.intents import classify, contains_external_material, IntentUnavailable
+        natural=None
+        pending_snapshot=None
+        undo_snapshot=None
+        latest_undo=None
+        raw_text=event.message_str.strip()
+        actor=str(event.get_sender_id())
+        group_id=str(event.get_group_id() or '')
+        private_chat=event.is_private_chat()
+        mentions={str(part.qq) for part in event.get_messages() if part.__class__.__name__=='At'}
+        raw_message=getattr(getattr(event,'message_obj',None),'raw_message',None)
+        if isinstance(raw_message,dict) and isinstance(raw_message.get('message'),list):
+            for part in raw_message['message']:
+                if isinstance(part,dict) and part.get('type')=='at' and isinstance(part.get('data'),dict):
+                    mentions.add(str(part['data'].get('qq','')))
+        mentions={qq for qq in mentions if qq.isascii() and qq.isdecimal()}
+        context=getattr(self,'context',None)
+        if (context is not None and 0<len(raw_text)<=2000 and not raw_text.startswith('/')
+                and (private_chat or str(event.get_self_id()) in mentions)
+                and not contains_external_material(event)):
+            try:
+                current_cfg, current_policy=self.load()
+            except Exception:
+                return await self.reject(event)
+            if actor!=str(event.get_self_id()) and actor not in current_policy.blocked_for(group_id):
+                admitted=(current_policy.level(actor)>=1 or await self.friends.contains(actor,event.bot)) if private_chat else group_id in current_policy.groups
+                if admitted and current_cfg.get('naturalcommand',{}).get(group_id and 'group:'+group_id or 'private:'+actor,True):
+                    scope=event_scope(private_chat,group_id)
+                    pending_snapshot=self.pending.peek(actor,scope)
+                    undo_snapshot=self.admin_undo_reference(event)
+                    latest_undo=getattr(self,'undo_reference',lambda _:None)(event)
+                    store=getattr(self,'reminders',None)
+                    reminders=[]
+                    if store is not None:
+                        from fat_fish_guard.experience import contains_secret
+                        reminders=[{'number':row['number'],'body':row['body'][:200]}
+                                   for row in store.rows() if row['creator']==actor and row['scope']==group_id
+                                   and row['state'] not in {'deleted','done'} and not contains_secret(row['body'])][:20]
+                    from .persona_settings import persona_catalog
+                    settings_key='group:'+group_id if group_id else 'private:'+actor
+                    local_note=current_cfg.get('group_persona_notes' if group_id else 'private_persona_notes',{}).get(group_id or actor,'')
+                    persona_numbers={'persona':[row[0] for row in persona_catalog(current_cfg,settings_key,local_note)['rows']]}
+                    if current_policy.level(actor,False,group_id)>=2.5:
+                        persona_numbers['globalpersona']=[
+                            row[0] for row in persona_catalog(current_cfg,'global',current_cfg.get('global_persona_notes',''))['rows']]
+                    try:
+                        natural=await classify(context,event,raw_text,group_id,
+                            [qq for qq in mentions if qq!=str(event.get_self_id())],
+                            recent=self.recent_commands(event)+(['最新可撤销操作：'+latest_undo[2]] if latest_undo else []),pending=pending_snapshot[1] if pending_snapshot else None,
+                            reminders=reminders,persona_numbers=persona_numbers)
+                    except IntentUnavailable as exc:
+                        self.audit('intent_unavailable',event,str(exc))
+                        return await self.reject(event,system_result('暂时无法判断这条消息是否要求执行指令，没有执行。请稍后重试或使用 /help。'))
         async with self.lock:
             try:
                 cfg, policy = self.load()
@@ -190,26 +251,79 @@ class Gateway:
             raw = event.message_str.strip()
             import re
             event.set_extra('_p2f_execute_material',bool(re.fullmatch(r'(?:请)?(?:执行|完成)(?:这份|该|这段)?(?:合并转发|转发|聊天记录|记录)(?:里|中|中的|里的)?(?:的)?(?:任务|事项)',raw)))
+            if natural and not cfg.get('naturalcommand',{}).get('group:'+group if group else 'private:'+sender,True):
+                natural=None
+            if natural:
+                command, arguments=natural
+                if command in {'persona','globalpersona'} and arguments[:1] in (['edit'],['remove']):
+                    from .persona_settings import persona_catalog
+                    if command=='globalpersona':
+                        key='global'
+                        old_note=current_cfg.get('global_persona_notes','')
+                        new_note=cfg.get('global_persona_notes','')
+                    else:
+                        key='group:'+group if group else 'private:'+sender
+                        field='group_persona_notes' if group else 'private_persona_notes'
+                        old_note=current_cfg.get(field,{}).get(group or sender,'')
+                        new_note=cfg.get(field,{}).get(group or sender,'')
+                    if persona_catalog(current_cfg,key,old_note)!=persona_catalog(cfg,key,new_note):
+                        return await self.reject(event,system_result('人格条目已变化，请重新查看编号。'))
+                if command=='websearch':
+                    event.set_extra('_p2f_search_query',raw_text[:128])
+                    natural=None
+                if command=='role' and arguments==['undo'] and undo_snapshot!=self.admin_undo_reference(event):
+                    return await self.reject(event,system_result('近期授权已变化，请重新核对。'))
+                if command in {'confirm','cancel'} or (command in {'memory','groupmemory'} and arguments in (['confirm'],['cancel'])):
+                    current=self.pending.peek(sender,event_scope(private,group))
+                    if current!=pending_snapshot:
+                        return await self.reject(event,system_result('待确认操作已变化，请重新核对。'))
+                if natural:
+                    event.set_extra('_p2f_natural',True)
+                    event.set_extra('_p2f_natural_command',command)
+                    raw='/'+command+(' '+' '.join(arguments) if arguments else '')
+                    event.message_str=raw
             if raw.startswith('/'):
-                parts = raw[1:].split()
+                parts = [natural[0],*natural[1]] if natural else raw[1:].split()
                 if not parts:
                     return await self.reject(event)
                 cmd = ALIASES.get(parts[0], parts[0].lower())
                 args = parts[1:]
+                if not natural:
+                    if not parts[0].isascii():
+                        return await self.reject(event,system_result('请使用 /help 查看英文指令。'))
+                    from p2f.command_help import HELP, SYNTAX
+                    if args==['help'] and cmd in HELP:
+                        return await self.reject(event,system_result(HELP[cmd]))
+                    if args and cmd in SYNTAX and cmd not in {'help','undo','confirm'}:
+                        variants=SYNTAX[cmd]
+                        allowed={suffix.split()[0] for suffix in variants if suffix}
+                        if allowed and args[0] not in allowed:
+                            return await self.reject(event,system_result('请使用 /help '+cmd+' 查看英文指令用法。'))
+                    if cmd=='role' and ((args[:1]==['set'] and len(args)>=3 and not args[2].isascii())
+                                        or (args[:1]==['global'] and len(args)>=2 and args[1] not in {'list','add','remove'})):
+                        return await self.reject(event,system_result('请使用 /help role 查看英文指令用法。'))
+                if not natural and cmd in {'persona','globalpersona'} and args:
+                    _,_,body=raw[1:].partition(' ')
+                    action,_,payload=body.strip().partition(' ')
+                    if action in {'set','add'} and payload.strip():
+                        args=[action,payload.strip()]
+                    elif action=='edit':
+                        number,_,content=payload.strip().partition(' ')
+                        if content.strip():args=[action,number,content.strip()]
                 if cmd=='new':
-                    parts[0]='new';event.message_str='/new'+(' '+' '.join(args) if args else '')
+                    parts[0]='new';event.set_extra('_feiyu_personal_native',True);event.message_str='/new'+(' '+' '.join(args) if args else '')
                 if cmd=='memory' and args and private and level>=1:
                     operations={'help':'记忆帮助','remember':'记住','search':'记忆查询','update':'记忆更新','delete':'记忆删除','reset':'记忆重置','confirm':'记忆确认','cancel':'记忆取消'}
                     if args[0] not in operations:
-                        return await self.reject(event,system_result('/memory help|remember|search|update|delete|reset|confirm|cancel；也可使用中文记忆指令'))
+                        return await self.reject(event,system_result('/memory help|remember|search|update|delete|reset|confirm|cancel'))
                     event.message_str='/'+operations[args[0]]+(' '+' '.join(args[1:]) if len(args)>1 else '')
                     return True
-                if cmd in {'reminder','globaladmin','help','history','clarify','role','whitelist','blacklist','confirm','groupmode','groupsettings','personal','memory','grouppersona','groupmemory','privatepersona'}:
+                if cmd in {'reminder','globaladmin','help','history','clarify','cancel','undo','role','whitelist','blacklist','confirm','groupmode','groupsettings','personal','memory','grouppersona','groupmemory','privatepersona','persona','globalpersona','naturalcommand'}:
                     if group and hasattr(policy,'qq_group_admins') and (
-                        (cmd=='role' and args and args[0] in {'list','remove','set'}) or (cmd=='blacklist' and len(args)==2)
+                        (cmd=='undo') or (cmd=='role' and args and args[0] in {'list','remove','set'}) or (cmd=='blacklist' and len(args)==2)
                     ):
                         roster_verified=await self.group_platform.bind_roster(policy,group,event.bot,sender)
-                        if cmd=='blacklist' and args[0]=='add' and level==2 and not roster_verified:
+                        if level==2 and not roster_verified and (cmd=='undo' or (cmd=='blacklist' and args[0]=='add')):
                             text='暂时无法核实目标的QQ群管理身份，请稍后再试'
                             if event.get_extra('_p2f_natural',False):event.set_extra('_p2f_command_outcome',text)
                             return await self.reject(event,system_result(text),reason='group_roster_unavailable')
@@ -217,10 +331,30 @@ class Gateway:
                         text='请明确指定目标，在这条消息中只 @ 一位要授权的成员，并同时 @ 肥鱼助手'
                     else:
                         text=None
+                    before=deepcopy(cfg)
                     try:
-                        if cmd=='history':
+                        if cmd=='undo':
+                            entry=latest_undo if natural else self.undo_reference(event)
+                            if entry and (not args or args==[entry[2]]):
+                                text=self.restore_recent(cfg,policy,sender,level,private,group,event,entry)
+                            else:
+                                text='当前没有匹配的可撤销操作，或该操作已过期。'
+                        elif cmd=='clarify':
+                            text='请明确要执行的操作、目标和范围。'
+                        elif cmd=='cancel':
+                            scope=event_scope(private,group)
+                            item=self.pending.peek(sender,scope)
+                            text='当前没有有效的待确认操作。'
+                            if item:
+                                if item[1]=='memory_reset':
+                                    event.message_str='/记忆取消'
+                                    if group:event.set_extra('_feiyu_group_memory_command',True)
+                                    return True
+                                self.pending.consume(sender,scope,item[0])
+                                text='已取消待确认操作。'
+                        elif cmd=='history':
                             receipts=self.command_receipts(event)
-                            text=('上一条指令 /'+receipts[-1]) if receipts else '当前会话没有可查询的近期指令回执'
+                            text=('\n'.join(receipts) if args==['all'] else '上一条指令 /'+receipts[-1]) if receipts else '当前会话没有可查询的近期指令回执'
                         elif text is None:
                             text=self.command(cfg,policy,sender,level,private,group,cmd,args,event=event)
                     except Exception:
@@ -229,7 +363,9 @@ class Gateway:
                     if text is None:return True
                     self.audit('command',event,cmd)
                     history_cmd,history_args=event.get_extra('_p2f_confirmed_command',(cmd,args))
-                    self.record_command(event,history_cmd,text,history_args)
+                    if cmd not in {'undo','cancel'} and not event.get_extra('_p2f_undo_applied',False) and hasattr(self,'remember_undo'):
+                        self.remember_undo(event,level,history_cmd,history_args,before,cfg,text)
+                    if cmd!='cancel':self.record_command(event,history_cmd,text,history_args)
                     result=await self.reject(event,system_result(text))
                     if event.get_extra('_p2f_natural',False):event.set_extra('_p2f_command_outcome',text)
                     return result
@@ -257,35 +393,13 @@ class Gateway:
             return True
 
     def command(self, cfg, policy, sender, level, private, group, cmd, args, event=None):
-        if cmd == 'help' and not args:
-            lines=['/help 或 /帮助：查看你能使用的指令',
-                   '/role 或 /权限：查看你与肥鱼助手的关系']
-            if level>=1:
-                lines+=['/personal 或 /个人设置：在私聊中设置回复详略',
-                        '/memory 或 /记忆管理：在私聊中查看本人记忆操作',
-                        '/new 或 /新对话：在私聊中开始新对话']
-            if level >= 2:
-                lines+=['/whitelist 或 /白名单：查看、加入或移除已授权的群',
-                        '/blacklist 或 /黑名单：拉黑或解除拉黑用户',
-                        '/groupmode 或 /群聊模式：在本群切换 @触发或智能插话',
-                        '/groupsettings 或 /群聊设置：调整本群插话冷却',
-                        '/confirm 或 /确认：确认刚才申请的变更']
-            return '\n'.join(lines)
-        if cmd=='help' and args:
-            target=ALIASES.get(args[0],args[0])
-            return self.command(cfg,policy,sender,level,private,group,target,['help']) if target in {'role','whitelist','blacklist','groupmode','groupsettings','personal','memory'} else '没有这个子菜单'
-        if args==['help'] or args==['帮助']:
-            if cmd=='role':
-                if level==3:return '/权限：查看自己的身份\n/权限 list：查看已授权的管理员\n/权限 set QQ 管理员：授予管理权限\n/权限 set QQ 普通好友：撤销管理权限，好友身份由 QQ 判断\n/role add|remove QQ：英文写法\n变更需使用 /confirm 或 /确认 再次确认；不能转让主人身份'
-                return '用 /权限 查看自己的身份；管理权限由主人授予或撤销'
-            if cmd in {'whitelist','blacklist'}:
-                if level<2:return '只有主人和管理员可以管理名单'
-                root='白名单' if cmd=='whitelist' else '黑名单'
-                return '/'+root+'：查看当前数量\n/'+root+' list：查看名单\n/'+root+' add QQ或群号：添加\n/'+root+' remove QQ或群号：移除\n变更需再次确认；群仅限已明确批准的范围'
-            if cmd=='groupmode':return '/群聊模式：查看本群模式\n/群聊模式 @触发：只在被 @ 时回复\n/群聊模式 智能插话：允许谨慎接话\n/groupmode mention|smart：英文写法；模式变更需确认'
-            if cmd=='groupsettings':return '/群聊设置：查看本群冷却\n/群聊设置 冷却 120：设置30至1800秒\n/groupsettings cooldown 120：英文写法'
-            if cmd=='personal':return '/个人设置：查看本人回复详略\n/个人设置 简短|标准|详细：修改本人偏好\n/personal short|normal|detailed：英文写法；仅私聊可修改'
-            if cmd=='memory':args=[]
+        if cmd=='help':
+            from p2f.command_help import HELP
+            if args:return HELP.get(ALIASES.get(args[0],args[0].lower()),'没有这个子菜单。')
+            names=['help','role']
+            if level>=1:names+=['personal','memory','new']
+            if level>=2:names+=['whitelist','blacklist','groupmode','groupsettings','confirm']
+            return '\n'.join('/'+name for name in names)
         if cmd=='role' and args==['list']:
             return '已授权管理员：'+('、'.join(cfg['admins']) or '暂无') if level==3 else '只有主人可以查看和管理授权名单'
         if cmd == 'role' and not args:
@@ -297,15 +411,17 @@ class Gateway:
             roles={'管理员':'add','admin':'add','L2':'add','2':'add',
                    '普通好友':'remove','好友':'remove','friend':'remove','default':'remove','L1':'remove','1':'remove'}
             if len(args)!=3 or not args[1].isdecimal() or args[2] not in roles:
-                return '格式：/权限 set QQ 管理员|普通好友；主人身份不能通过指令转让'
+                return '格式：/role set QQ 管理员|普通好友；主人身份不能通过指令转让'
             args=[roles[args[2]],args[1]]
         if cmd in {'personal','memory'}:
             if not policy.authorize(sender, cmd, private=private, friend=level>=1):
                 return '个人操作只接受好友在私聊中使用'
-            if cmd=='memory':return '/memory help 或 /记忆帮助：使用说明\n/memory remember 内容 或 /记住 内容：写入本人记忆\n/memory search 关键词 或 /记忆查询 关键词：查询本人记忆\n/memory update 编号 内容 或 /记忆更新 编号 内容：修改本人记忆\n/memory delete 编号 或 /记忆删除 编号：遗忘本人的单条记录\n/memory reset 或 /记忆重置：申请清除本人记忆\n/confirm 或 /确认：确认刚才的清除申请\n/memory cancel 或 /记忆取消：取消清除'
+            if cmd=='memory':
+                from p2f.command_help import HELP
+                return HELP['memory']
             values={'short':'简短','简短':'简短','normal':'标准','标准':'标准','detailed':'详细','详细':'详细'}
             if not args:return '个人回复长度：'+cfg.get('preferences',{}).get(sender,'标准')+'；/personal short|normal|detailed'
-            if len(args)!=1 or args[0] not in values:return '格式：/个人设置 简短|标准|详细'
+            if len(args)!=1 or args[0] not in values:return '格式：/personal 简短|标准|详细'
             cfg.setdefault('preferences',{})[sender]=values[args[0]];self.save(cfg)
             return '个人回复长度已设为 '+values[args[0]]
         if cmd in {'groupmode','groupsettings'}:
@@ -315,10 +431,10 @@ class Gateway:
                 if not args:return '本群冷却秒数：'+str(cfg.get('cooldowns',{}).get(group,120))+'；/groupsettings cooldown 120（30至1800秒）'
                 if len(args)==2 and args[0] in {'cooldown','冷却'} and args[1].isdigit() and 30<=int(args[1])<=1800:
                     cfg.setdefault('cooldowns',{})[group]=int(args[1]);self.save(cfg);return '已调整本群智能插话冷却'
-                return '格式：/群聊设置 冷却 120，范围30至1800秒'
+                return '格式：/groupsettings 冷却 120，范围30至1800秒'
             modes={'mention':'mention','@':'mention','@触发':'mention','smart':'smart','智能':'smart','智能插话':'smart'}
             if not args:return '本群模式：'+policy.groups[group]+'；/groupmode mention|smart'
-            if len(args)!=1 or args[0] not in modes:return '格式：/群聊模式 @触发|智能插话'
+            if len(args)!=1 or args[0] not in modes:return '格式：/groupmode @触发|智能插话'
             mode=modes[args[0]]
             code=self.pending.issue(sender,event_scope(private,group),'groupmode',(group,mode))
             return '90秒内发送 /confirm '+code+' 确认本群模式变更' 

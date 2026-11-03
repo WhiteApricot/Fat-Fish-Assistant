@@ -29,6 +29,9 @@ def next_time(stamp,rule,after):
         if month==13:year+=1;month=1
     raise ValueError('无法计算下一次时间')
 
+def tomorrow_date(now):
+    return now.date()+timedelta(days=int((now.hour,now.minute)>=(4,30)))
+
 def parse_time(text,now=None):
     now=now or datetime.now(TZ)
     if now.tzinfo is None:now=now.replace(tzinfo=TZ)
@@ -55,7 +58,9 @@ def parse_time(text,now=None):
     absolute=re.search(r'(\d{4})-(\d{2})-(\d{2})',text)
     if absolute:day=datetime(*map(int,absolute.groups()),tzinfo=TZ).date()
     elif '后天' in text:day+=timedelta(days=2)
-    elif '明天' in text or '明晚' in text:day+=timedelta(days=1)
+    elif '明天' in text or '明晚' in text:
+        day=tomorrow_date(now)
+        if day==now.date():note='凌晨的“明天”按当天理解'
     elif week:
         weekday='一二三四五六日'.find(week[1].replace('天','日')) if not week[1].isdigit() else int(week[1])-1
         day+=timedelta(days=(weekday-now.weekday())%7)
@@ -67,7 +72,7 @@ def parse_time(text,now=None):
         if not 0<=hour<=23 or not 0<=minute<=59:raise ValueError('时间无效，请使用24小时制时间')
     else:
         hour=20 if any(x in text for x in ('晚上','今晚','明晚','晚')) else 15 if '下午' in text else 12 if '中午' in text else 9
-        minute=0;note='未给精确时刻，采用默认'+str(hour)+':00'
+        minute=0;note+=('；' if note else '')+'未给精确时刻，采用默认'+str(hour)+':00'
         if not any(x in text for x in ('今天','明天','后天','今晚','明晚','上午','下午','晚上','中午','每天','每日','每周','每星期','每月')) and not absolute:
             raise ValueError('请提供提醒时间，例如“明天下午”或“30分钟后”')
     value=datetime.combine(day,datetime.min.time(),TZ).replace(hour=hour,minute=minute)

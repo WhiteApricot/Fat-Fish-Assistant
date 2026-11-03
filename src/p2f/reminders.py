@@ -4,9 +4,9 @@ import json
 import sqlite3
 import time
 import uuid
-from datetime import datetime,timedelta
+from datetime import datetime
 from contextlib import closing
-from .timing import parse_time,next_time,display,TZ
+from .timing import tomorrow_date, parse_time,next_time,display,TZ
 
 class ReminderStore:
     def __init__(self,path):
@@ -37,6 +37,34 @@ class ReminderStore:
         if actor in policy.blocked_for(group):return False
         if not group:return row['creator']==actor
         return row['creator']==actor or actor==policy.owner or actor in policy.global_admins or (bool(group) and policy.authorize(actor,'group',private=False,group=group))
+    def remember_undo(self,db,event,ident,before):
+        if hasattr(event,'set_extra'):
+            after=db.execute('SELECT * FROM reminders WHERE id=?',(ident,)).fetchone()
+            event.set_extra('_p2f_reminder_undo',(before,dict(after)))
+
+    def restore_recent(self,gateway,event,cfg,policy,task):
+        before,after=task
+        ident=after['id']
+        actor=str(event.get_sender_id())
+        group=str(event.get_group_id() or '')
+        with closing(self.connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT * FROM reminders WHERE id=?',(ident,)).fetchone()
+            if not row or dict(row)!=after or not self.allowed(row,actor,policy,group):
+                return '提醒状态或权限已变化，未撤销。'
+            due=before['due'] if before else after['due']
+            if db.execute("SELECT 1 FROM deliveries WHERE id=? AND due IN (?,?)",(ident,due,after['due'])).fetchone():
+                return '提醒已进入发送流程，不能撤销。'
+            if before and before['state']=='active' and due<=time.time():
+                return '原提醒时间已过，请指定新时间。'
+            if before:
+                db.execute('UPDATE reminders SET body=?,due=?,rule=?,state=?,epoch=?,updated=? WHERE id=?',
+                           (before['body'],due,before['rule'],before['state'],gateway.epoch(cfg,group),time.time(),ident))
+            else:
+                db.execute("UPDATE reminders SET state='deleted',updated=? WHERE id=?",(time.time(),ident))
+            db.commit()
+        return '已撤销最近的提醒操作。'
+
     def command(self,gateway,event,args,*,access=None):
         cfg,policy=gateway.load() if access is None else access
         actor=str(event.get_sender_id());group=str(event.get_group_id() or '')
@@ -50,7 +78,7 @@ class ReminderStore:
             label=args[1] if len(args)>1 else ''
             selected=[r for r in rows if r['creator']==actor and r['state'] not in {'deleted','done'}]
             if label=='明天':
-                tomorrow=(datetime.now(TZ)+timedelta(days=1)).date()
+                tomorrow=tomorrow_date(datetime.now(TZ))
                 selected=[r for r in selected if datetime.fromtimestamp(r['due'],TZ).date()==tomorrow]
             elif label.startswith('每周') and len(label)==3 and label[-1] in '一二三四五六日天':
                 weekday='一二三四五六日'.index(label[-1].replace('天','日'))
@@ -65,8 +93,16 @@ class ReminderStore:
                 target=args[1]
                 if not group or (target!=actor and not policy.authorize(actor,'group',private=False,group=group)):return '只有本群管理者可以为明确指定的其他成员创建提醒'
                 if target in policy.blocked_for(group):return '不能提醒黑名单成员'
-            text=' '.join(args[2:] if operation=='addto' else args[1:]);parts=text.split('提醒我',1) if '提醒我' in text else text.split('提醒',1)
-            if len(parts)!=2 or not parts[1].strip():return '格式：/remind add 明天下午提醒我给老师打电话'
+            values=args[2:] if operation=='addto' else args[1:]
+            if getattr(event,'get_extra',lambda *_:False)('_p2f_natural',False):
+                if len(values)!=2 or not all(value.strip() for value in values):
+                    return '请明确提醒的时间和事项。'
+                parts=values
+            else:
+                text=' '.join(values)
+                parts=text.split('提醒我',1) if '提醒我' in text else text.split('提醒',1)
+                if len(parts)!=2 or not parts[1].strip():
+                    return '格式：/remind add 明天下午提醒我给老师打电话'
             due,rule,note=parse_time(parts[0]);body=parts[1].strip()
             if 'QQ电话' in parts[0] or '拨号' in parts[0]:note='QQ电话暂缓，本任务仅文字提醒；'+note
             if len(body)>2000:return '提醒内容最多2000字'
@@ -74,6 +110,7 @@ class ReminderStore:
             ident=uuid.uuid4().hex[:12]
             with closing(self.connect()) as db:
                 db.execute('INSERT INTO reminders VALUES(?,?,?,?,?,?,?,?,?,?,?)',(ident,actor,target,group,event.get_platform_id(),gateway.epoch(cfg,group),body,due,json.dumps(rule),'active',time.time()));db.commit()
+                self.remember_undo(db,event,ident,None)
             if hasattr(event,'set_extra'):
                 event.set_extra('_p2f_reminder_reference',ident)
             return '已创建提醒 '+str(next(row['number'] for row in self.rows() if row['id']==ident))+'：'+display(due)+'；目标QQ：'+target+'；'+note+'；'+body
@@ -96,6 +133,7 @@ class ReminderStore:
             with closing(self.connect()) as db:
                 db.execute('UPDATE reminders SET state=?,due=?,epoch=?,updated=? WHERE id=?',(state,due,gateway.epoch(cfg,group),time.time(),row['id']));db.commit()
                 if operation=='resume':db.execute('DELETE FROM authorization_failures WHERE id=?',(row['id'],));db.commit()
+                self.remember_undo(db,event,row['id'],row)
             return '已'+{'delete':'删除','pause':'暂停','resume':'恢复'}[operation]+'提醒 '+str(row['number'])
         if len(args)<3:return '请提供新的时间或内容'
         value=' '.join(args[2:])
@@ -115,7 +153,9 @@ class ReminderStore:
                 if not value.strip() or len(value)>2000:return '提醒内容应为1至2000字'
                 db.execute('UPDATE reminders SET body=?,updated=? WHERE id=?',(value,time.time(),row['id']));result='已修改提醒内容：'+value
             else:return '不支持的提醒操作'
-            db.commit();return result
+            db.commit()
+            self.remember_undo(db,event,row['id'],row)
+            return result
     def format(self,row):
         state={'active':'已激活','paused':'已暂停','done':'已完成','deleted':'已删除','failed':'失败','unknown':'送达待确认','revoked':'已撤权'}.get(row['state'],row['state'])
         rule=json.loads(row['rule'])

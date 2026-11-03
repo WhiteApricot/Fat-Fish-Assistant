@@ -35,7 +35,10 @@ async def main():
   original=gateway.path;original_seen=gateway.seen;gateway.path=config;gateway.seen=SeenMessages(config.with_suffix(".seen.db"))
   hits=[]
   scheduler=PipelineScheduler.__new__(PipelineScheduler)
-  async def provider():return None
+  async def classify_fixture(**kwargs):
+   assert kwargs['func_tool'] is None
+   return types.SimpleNamespace(completion_text='{"command":"chat","args":[]}')
+  async def provider(_=None):return types.SimpleNamespace(text_chat=classify_fixture)
   scheduler.ctx=types.SimpleNamespace(plugin_manager=types.SimpleNamespace(context=types.SimpleNamespace(get_using_provider_async=provider)))
   async def downstream(e):hits.append(e.get_sender_id())
   scheduler._process_stages=downstream

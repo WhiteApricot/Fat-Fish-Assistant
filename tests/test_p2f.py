@@ -22,6 +22,17 @@ class ClockTests(unittest.TestCase):
         for text,day,hour,minute in [('今晚',3,20,0),('明天下午',4,15,0),('过会儿',3,10,30),('明晚之前',4,18,0),('明天下午三点半',4,15,30),('2026-11-05 21:45',5,21,45)]:
             due,rule,note=self.parse(text);value=datetime.fromtimestamp(due,TZ)
             self.assertEqual((value.day,value.hour,value.minute),(day,hour,minute),text);self.assertEqual(rule['kind'],'once');self.assertTrue(note)
+    def test_tomorrow_during_early_morning(self):
+        early=datetime(2026,11,4,1,2,tzinfo=TZ)
+        for text,now,day,hour in [
+            ('明天早上九点',early,4,9),('明天下午',early,4,15),
+            ('明天一点',early,5,1),('明天早上九点',early.replace(hour=4,minute=29),4,9),
+            ('明天早上九点',early.replace(hour=4,minute=30),5,9),
+            ('2026-11-05 09:00',early,5,9),('后天早上九点',early,6,9),
+        ]:
+            due,_,_=parse_time(text,now)
+            value=datetime.fromtimestamp(due,TZ)
+            self.assertEqual((value.day,value.hour),(day,hour),text)
     def test_recurrence(self):
         for text,kind in [('每天晚上八点','daily'),('每周三晚上八点','weekly'),('每月31日晚上八点','monthly'),('每隔30分钟后','interval')]:
             due,rule,_=self.parse(text);self.assertEqual(rule['kind'],kind);self.assertGreater(next_time(due,rule,due),due)
