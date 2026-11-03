@@ -21,7 +21,7 @@ def audit(repo,known_values=(),include_git=True):
         lower=name.lower()
         if lower.endswith(PAYLOADS) or any(part.casefold() in {'backup','private','instances','logs','models','cache'} for part in Path(name).parts):
             findings.append({'path':name,'kind':'forbidden-payload-or-private-path','source':source})
-        if lower.startswith('src/p2d/upstream_selfreply/'):
+        if lower.startswith('src/ffa_components/participation/upstream_selfreply/'):
             findings.append({'path':name,'kind':'copied-third-party-source','source':source})
         for kind,pattern in PATTERNS:
             if pattern.search(data):findings.append({'path':name,'kind':kind,'source':source})

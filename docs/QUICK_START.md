@@ -36,4 +36,4 @@ AstrBot Dashboard 用户名固定为 astrbot，启动日志中的初始密码自
 
 ## 迁移到新主机
 
-使用 **Migrate-Fat-Fish-Assistant.cmd**，正常流程只需选择迁出/导入、包、密码及新位置。具体范围、暂停源实例、目标重新扫码和拒绝条件见 [迁移清单](MIGRATION_CHECKLIST.md)。完整验收范围见 [P2E-UX 报告](P2E_UX_REPORT.md)，新 Windows 主机及真实 QQ 人工验收未执行的项目不得视为通过。
+使用 **Migrate-Fat-Fish-Assistant.cmd**，正常流程只需选择迁出/导入、包、密码及新位置。操作范围和源实例暂停要求见 [迁移指南](MIGRATION.md)。

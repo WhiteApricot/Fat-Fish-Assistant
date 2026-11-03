@@ -5,7 +5,7 @@ from pathlib import Path
 import time
 from astrbot.api.star import Star
 from astrbot.api import logger
-from p2d.connection_health import probe
+from ffa_components.adapters.connection_health import probe
 
 class FatFishHealth(Star):
     def __init__(self,context):

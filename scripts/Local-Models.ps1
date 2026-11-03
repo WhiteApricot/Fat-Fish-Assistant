@@ -78,7 +78,8 @@ if($Component -eq 'Embedding'){
  if(-not $SpeechPython){throw 'Specify the independent speech Python executable'}
  $executable=$SpeechPython
  $release=(Read-ManagedJson (Join-Path $instanceRoot 'instance.json')).release
- $script=Join-Path $release 'src\p2d\speech_server.py'
+ $script=Join-Path $release 'src\ffa_components\integrations\speech_server.py'
+ if(-not(Test-Path -LiteralPath $script)){ $script=Join-Path $release 'src\p2d\speech_server.py' }
  $arguments="-X utf8 -u `"$script`" --instance-runtime `"$instanceRoot`""
 }
 $childExecutables=@(Get-ModelInterpreterPaths $executable)

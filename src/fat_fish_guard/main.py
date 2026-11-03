@@ -36,7 +36,7 @@ class FatFishGuard(Star):
         umo=event.unified_msg_origin;sender=str(event.get_sender_id())
         cfg=self.context.get_config();allow=cfg["platform_settings"]["id_whitelist"]
         if not (event.get_extra('_feiyu_access_checked',False) and ((event.is_private_chat() and event.get_extra('_feiyu_level',-1)>=1) or (not event.is_private_chat() and event.get_extra('_feiyu_group_memory_command',False) and event.get_extra('_feiyu_level',-1)>=2))) and not scope_allowed(umo,sender,event.get_platform_name(),event.is_private_chat(),allow):
-            from p2c.gateway import system_result
+            from ffa_components.gateway.gateway import system_result
             event.stop_event()
             await event.send(event.plain_result(system_result("只接受已授权私聊本人操作，不能指定其他人")))
             return
@@ -51,7 +51,7 @@ class FatFishGuard(Star):
             # Never print database contents, sender IDs, or secrets in errors.
             logger.error("Fat-Fish-Assistant memory operation failed: "+type(exc).__name__)
             reply="记忆操作没有完全完成，不能把这次算成功；请在本机核对日志和备份"
-        from p2c.gateway import system_result
+        from ffa_components.gateway.gateway import system_result
         event.stop_event()
         if event.get_extra('_feiyu_access_checked',False):
             from astrbot.core.feiyu_p2c import gateway
@@ -59,7 +59,7 @@ class FatFishGuard(Star):
         await event.send(event.plain_result(system_result(reply)))
         if event.get_extra('_p2f_natural',False):
             from astrbot.core.feiyu_p2c import gateway
-            from p2f.persona_reply import send_command_reply
+            from ffa_components.persona.persona_reply import send_command_reply
             await send_command_reply(gateway,event,reply)
         event.stop_event()
     @filter.on_llm_request(priority=99999)
@@ -92,12 +92,12 @@ class FatFishGuard(Star):
                 event.get_extra('_p2f_system_sent',False)):
             return
         from astrbot.core.feiyu_p2c import gateway
-        from p2c.private_persona import apply_affix
+        from ffa_components.persona.private_persona import apply_affix
         actor=str(event.get_sender_id())
         cfg,_=gateway.load()
         retired=cfg.get('private_persona_retired_affixes',{}).get(actor)
         if not retired:return
-        from p2c.persona_settings import effective_notes
+        from ffa_components.persona.persona_settings import effective_notes
         if effective_notes(cfg,actor):return
         text=response.completion_text or ''
         clean=apply_affix(text,retired,remove=True)
@@ -150,7 +150,7 @@ class FatFishGuard(Star):
 
     @filter.on_llm_request(priority=-99999)
     async def enforce_private_persona(self,event,request):
-        from p2f.forwards import MARKER
+        from ffa_components.integrations.forwards import MARKER
         import json
         material_context=MARKER in json.dumps(getattr(request,'contexts',None),ensure_ascii=False,default=str)
         if event.get_extra('_p2f_material',False) or MARKER in (request.prompt or '') or material_context:
@@ -185,7 +185,7 @@ class FatFishGuard(Star):
             request.prompt='[本会话近期指令回执]\n'+json.dumps(recent,ensure_ascii=False)+'\n[当前发言]\n'+(request.prompt or '')
         if not event.is_private_chat():return
         notes=cfg.get('private_persona_notes',{})
-        from p2c.persona_settings import effective_notes
+        from ffa_components.persona.persona_settings import effective_notes
         note=effective_notes(cfg,actor)
         if actor not in notes and not note:return
         instruction=('当前用户的私聊表达补充：'+note) if note else '当前用户已恢复默认私聊人格，不再使用任何已撤销的私人表达补充；遵循原基础鲸鱼娘人格'
@@ -242,11 +242,11 @@ class FatFishGuard(Star):
     async def apply_private_persona_to_agent(self,event,run_context):
         if not event.is_private_chat() or not event.get_extra('_feiyu_access_checked',False):return
         from astrbot.core.feiyu_p2c import gateway
-        from p2c.private_persona import apply_to_turn
+        from ffa_components.persona.private_persona import apply_to_turn
         cfg,policy=gateway.load();actor=str(event.get_sender_id())
         if actor in policy.blocked_for(''):raise asyncio.CancelledError()
         notes=cfg.get('private_persona_notes',{})
-        from p2c.persona_settings import effective_notes
+        from ffa_components.persona.persona_settings import effective_notes
         note=effective_notes(cfg,actor)
         if actor in notes or note:
             state=apply_to_turn(run_context.messages,note)
@@ -260,7 +260,7 @@ class FatFishGuard(Star):
             return '待确认操作所属会话已变化，请重新申请'
         if cmd=='/记忆确认' and not args and event and event.get_extra('_feiyu_access_checked',False):
             from astrbot.core.feiyu_p2c import gateway
-            from p2c.gateway import event_scope
+            from ffa_components.gateway.gateway import event_scope
             item=gateway.pending.pending.get((sender,event_scope(not group,str(event.get_group_id() or ''))))
             if not item or item[1]!='memory_reset':return '当前没有待确认的记忆清除'
             consumed=gateway.pending.consume_latest(sender,event_scope(not group,str(event.get_group_id() or '')))
@@ -274,7 +274,7 @@ class FatFishGuard(Star):
             self.confirm.items.pop((umo,sender),None)
             if event and event.get_extra('_feiyu_access_checked',False):
                 from astrbot.core.feiyu_p2c import gateway
-                from p2c.gateway import event_scope
+                from ffa_components.gateway.gateway import event_scope
                 key=(sender,event_scope(not group,str(event.get_group_id() or '')))
                 item=gateway.pending.pending.get(key)
                 if item and item[1]=='memory_reset':gateway.pending.pending.pop(key,None)
@@ -289,7 +289,7 @@ class FatFishGuard(Star):
         protect_memory_engine(eng)
         if cmd=="/记忆撤销":
             from astrbot.core.feiyu_p2c import gateway
-            from p2c.gateway import event_scope
+            from ffa_components.gateway.gateway import event_scope
             entry=event.get_extra('_p2f_restore_memory',None)
             if not entry or gateway.undo_reference(event) is not entry:
                 return '没有可撤销的近期记忆操作。'
@@ -315,7 +315,7 @@ class FatFishGuard(Star):
             code=self.confirm.issue(umo,sender)
             if event and event.get_extra('_feiyu_access_checked',False):
                 from astrbot.core.feiyu_p2c import gateway
-                from p2c.gateway import event_scope
+                from ffa_components.gateway.gateway import event_scope
                 gateway.pending.issue(sender,event_scope(not group,str(event.get_group_id() or '')),'memory_reset',(umo,code,str(event.get_group_id() or '')))
                 return '这会清除'+label+'可用的长期记忆和当前上下文，其他会话不动；旧记录、备份和日志仍保留。90秒内发送 /confirm 或「确定执行」才会执行，或用 '+('/groupmemory cancel' if group else '/memory cancel')
             return "这会清除你在本私聊的长期记忆和当前聊天上下文，其他人的不动；备份和既有日志不会一并抹除。90秒内发送 /memory confirm "+code+" 才会执行，或用 /memory cancel"

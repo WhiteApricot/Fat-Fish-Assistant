@@ -24,3 +24,10 @@ models/
 *.gguf
 *.exe
 *.dll
+
+/tests/
+.pytest_cache/
+.coverage
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

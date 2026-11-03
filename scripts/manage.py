@@ -164,8 +164,9 @@ def _activate_locked(instance,release,fail=False,crash=False):
         temp.write_text(json.dumps(candidate));temp.replace(pointer)
         if crash:os._exit(88)
         if fail:raise RuntimeError('Injected upgrade failure')
-        required=['astrbot/astrbot/core/feiyu_p2c.py','src/p2c/instance_identity.py']
-        if any(not (release/name).is_file() for name in required):raise ValueError('Incomplete release')
+        required=['astrbot/astrbot/core/feiyu_p2c.py']
+        identity_modules=('src/ffa_components/core/instance_identity.py','src/p2c/instance_identity.py')
+        if any(not (release/name).is_file() for name in required) or not any((release/name).is_file() for name in identity_modules):raise ValueError('Incomplete release')
     except Exception:
         temp.write_bytes(before);temp.replace(pointer)
         current_plugins.rename(instance/('.plugin-failed-'+suffix))

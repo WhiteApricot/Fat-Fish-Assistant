@@ -12,7 +12,7 @@
     "license_source": "https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/LICENSE",
     "strip_prefix": "AstrBot-f61a7f42696da6df25dc7a249ec9b8d54ed9da18/",
     "patches": "patches/astrbot/changes.json",
-    "patch_sha256": "dfc27563a18dc90360d91ba7513694a3f3a5fad5eb5c4abd77716a9be547ac38"
+    "patch_sha256": "690344201ffa2b36c23a67e612eb3eaeb3ce6ff1dd11ef31a0cba85928fdc0ac"
   },
   {
     "name": "astrbot_plugin_livingmemory",
@@ -66,7 +66,7 @@
     "url": "https://codeload.github.com/chengzhi-c/astrbot_plugin_self_initiated_reply/zip/11be8206a6bb26b9ebeccf301213e2654087d512",
     "filename": "selfreply-11be8206.zip",
     "license": "GPL-3.0",
-    "target": "src/p2d/upstream_selfreply",
+    "target": "src/ffa_components/participation/upstream_selfreply",
     "select": [
       "decision.py",
       "models.py",

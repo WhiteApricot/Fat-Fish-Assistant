@@ -35,7 +35,7 @@
   {
     "path": "astrbot/core/feiyu_p2c.py",
     "before": null,
-    "after": "65041482f2a23e63d08867080c48175b2578c1f80845e71da00722c7f0ad74be",
+    "after": "f4a8bd9b8b6d59c1669a05e52042f7a3d90b2b0d8c5bd1aceec15cf5749f31ea",
     "edits": [
       {
         "start": 0,
@@ -47,7 +47,7 @@
           "from pathlib import Path\n",
           "source=Path(os.environ['FEIYU_SOURCE_ROOT']).resolve()\n",
           "sys.path.insert(0,str(source))\n",
-          "from p2c.scoped_gateway import ScopedGateway\n",
+          "from ffa_components.gateway.scoped_gateway import ScopedGateway\n",
           "gateway=ScopedGateway(Path(os.environ['FEIYU_RUNTIME_ROOT'])/'private/p2c-access.json')\n"
         ]
       }
@@ -288,7 +288,7 @@
   {
     "path": "astrbot/core/pipeline/process_stage/method/agent_sub_stages/internal.py",
     "before": "dbe18dec7382d788432e089b513c009dda038a9fc0225ca1fc1e2b2b8c8bd8dd",
-    "after": "90324e59bdee0f247072c017250c8ec4e46100dce3cfb9df2c5aaf7c030331f8",
+    "after": "aea8cba6ff8b6f336742b89b9d37dc0467e85b09583c18e12d781f145edded76",
     "edits": [
       {
         "start": 0,
@@ -305,7 +305,7 @@
         "new": [
           "        profile_restore=event.get_extra('_feiyu_persona_turn_restore')\n",
           "        if profile_restore and event.is_private_chat() and event.get_extra('_feiyu_access_checked',False):\n",
-          "            from p2c.private_persona import restore_for_storage\n",
+          "            from ffa_components.persona.private_persona import restore_for_storage\n",
           "            all_messages=restore_for_storage(all_messages,profile_restore)\n",
           "\n"
         ]

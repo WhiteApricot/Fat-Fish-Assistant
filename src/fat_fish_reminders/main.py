@@ -1,6 +1,6 @@
 import asyncio
 from astrbot.api.star import Star
-from p2f.reminders import ReminderStore
+from ffa_components.reminders.reminders import ReminderStore
 
 class FatFishReminders(Star):
     async def initialize(self):
@@ -42,7 +42,7 @@ class FatFishReminders(Star):
     async def checked_send(self,row):
         from astrbot.api.event import MessageChain
         from astrbot.api.message_components import Plain,At
-        from p2f.persona_reply import render
+        from ffa_components.persona.persona_reply import render
         scope=row['platform']+(':GroupMessage:'+row['scope'] if row['scope'] else ':FriendMessage:'+row['target'])
         cfg,_=self.gateway.load()
         notes=cfg.get('group_persona_notes',{}).get(row['scope'],'') if row['scope'] else cfg.get('private_persona_notes',{}).get(row['target'],'')

@@ -1,5 +1,5 @@
 from astrbot.api.star import Star
-from p2f.forwards import ForwardReader,install_collector_bridge,remove_collector_bridge
+from ffa_components.integrations.forwards import ForwardReader,install_collector_bridge,remove_collector_bridge
 
 class FatFishForwards(Star):
     async def initialize(self):

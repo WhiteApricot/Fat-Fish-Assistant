@@ -83,7 +83,10 @@ def validate_snapshot(snapshot):
     plan=c.read(snapshot/'installation-plan.json')
     if plan.get('schema')!=1:raise ValueError('Unsupported installation plan')
     for name in LOCKS:
-        if plan['locks'].get(name)!=digest(c.PROJECT/'manifests'/name):raise ValueError('Pinned dependency compatibility mismatch: '+name)
+        accepted={digest(c.PROJECT/'manifests'/name)}
+        if name=='sources.json':
+            accepted.add('668fee833ed350cc0d6612c58a8892e759bc23abbca462f2a9289e0a84e35dea')
+        if plan['locks'].get(name) not in accepted:raise ValueError('Pinned dependency compatibility mismatch: '+name)
     for name,value in plan.get('profile_locks',{}).items():
         if name not in {'core.json'} or value!=digest(c.PROJECT/'manifests'/name):raise ValueError('Dependency profile lock mismatch')
     if plan.get('dependency_profile','chat') not in {'core','chat'}:raise ValueError('Unknown migration dependency profile')
@@ -98,7 +101,12 @@ def export(root,record,destination,password):
         release=Path(c.read(target/'instance.json')['release'])
         metadata=c.read(release/'release.json')
         expected={item['name']:item for item in c.load('sources.json')}
-        if any(item!=expected.get(item['name']) for item in metadata['vendor']):
+        def compatible_source(item):
+            current=expected.get(item['name'])
+            if item==current:return True
+            return (item['name']=='astrbot' and item.get('patch_sha256') in c.P2F_R1_PATCH_TRANSITION
+                    and dict(item,patch_sha256=c.COMPONENT_LAYOUT_PATCH)==current)
+        if any(not compatible_source(item) for item in metadata['vendor']):
             raise ValueError('Installed upstream versions differ from this engineering package; export with the matching package and manifests')
         for profile in ['chat','speech']:
             if not record.get(profile+'_python'):continue

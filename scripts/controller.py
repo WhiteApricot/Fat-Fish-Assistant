@@ -30,11 +30,13 @@ class Fault(Exception):
 class Parser(argparse.ArgumentParser):
     def error(self,message):raise Fault('invalid',message,'Run the command with --help for accepted options.')
 
-# The tested P2F-R1 transition changes only the project's AstrBot tool guard.
+# Allow the known tool-guard and component-layout revisions of the same pinned sources.
 P2F_R1_PATCH_TRANSITION=(
     '48ab060e53723c3b5f320c6085073d87ac432510a014ba356700db6e1dab313d',
     'dfc27563a18dc90360d91ba7513694a3f3a5fad5eb5c4abd77716a9be547ac38',
 )
+
+COMPONENT_LAYOUT_PATCH = '690344201ffa2b36c23a67e612eb3eaeb3ce6ff1dd11ef31a0cba85928fdc0ac'
 
 def repair_release_compatible(before,after):
     if before.get('schema')!=after.get('schema'):return False
@@ -43,9 +45,19 @@ def repair_release_compatible(before,after):
         rows=before.get(key)
         if not isinstance(rows,list):return False
         astrbot=[row for row in rows if row['name']=='astrbot']
-        if len(astrbot)!=1 or astrbot[0].get('patch_sha256')!=P2F_R1_PATCH_TRANSITION[0]:return False
-        expected=[dict(row,patch_sha256=P2F_R1_PATCH_TRANSITION[1]) if row['name']=='astrbot' else row for row in rows]
-        if expected!=after.get(key):return False
+        if len(astrbot)!=1:return False
+        previous_patch=astrbot[0].get('patch_sha256')
+        allowed=[]
+        if previous_patch==P2F_R1_PATCH_TRANSITION[0]:allowed.append(P2F_R1_PATCH_TRANSITION[1])
+        if previous_patch in P2F_R1_PATCH_TRANSITION:allowed.append(COMPONENT_LAYOUT_PATCH)
+        for patch in allowed:
+            expected=[dict(row,patch_sha256=patch) if row['name']=='astrbot' else row for row in rows]
+            if patch==COMPONENT_LAYOUT_PATCH:
+                expected=[dict(row,target='src/ffa_components/participation/upstream_selfreply')
+                          if row['name']=='selfreply-decision' and row['target']=='src/p2d/upstream_selfreply' else row
+                          for row in expected]
+            if expected==after.get(key):break
+        else:return False
     return before.get('dashboard')==after.get('dashboard')
 
 def read(path):return json.loads(Path(path).read_text(encoding='utf-8-sig'))
