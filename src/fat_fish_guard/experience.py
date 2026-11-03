@@ -49,6 +49,8 @@ def protect_memorize_tool(tool):
     async def call(context, memory, *args, **kwargs):
         event = context.context.event
         text = event.message_str
+        if '[P2F_FORWARD_MATERIAL]' in text or event.get_extra('_p2f_material',False):
+            return json.dumps({'memorized':False,'error':'Forwarded speakers are external material'},ensure_ascii=False)
         explicit = bool(re.search(r'记住|记一下|记下来|remember', text, re.I))
         denied = bool(re.search(r'不要.{0,8}记|别记|不用记|假设|假如|比如|角色扮演|开玩笑|测试口令|(?:只是|临时|这是).{0,4}测试', text))
         valid = explicit or (durable_content(text) and not text.rstrip().endswith(('？','?')))
@@ -69,6 +71,8 @@ def protect_memory_engine(engine):
 
     @functools.wraps(original_add)
     async def add(content, session_id=None, persona_id=None, importance=0.5, metadata=None, **kwargs):
+        if '[P2F_FORWARD_MATERIAL]' in json.dumps(kwargs.get('source_messages'),ensure_ascii=False,default=str):
+            raise ValueError('Forwarded material cannot be stored as the current speaker memory')
         if contains_secret({'content': content, 'metadata': metadata or {}, 'sources': kwargs.get('source_messages')}):
             raise ValueError('Credential content cannot be stored in long-term memory')
         direct = (metadata or {}).get('source') == 'explicit_user' or (metadata or {}).get('memory_origin') == 'agent_memorize_tool' or 'previous_id' in (metadata or {})

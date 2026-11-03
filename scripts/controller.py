@@ -220,7 +220,7 @@ def install_asset(root,name,spec,target,cache,offline=False,notify=progress):
         parts=Path(relative).parts
         if name=='napcat-node':
             # Upstream Node mode stores account/runtime data here, never code.
-            return relative=='beacon_report.log' or parts[0].lower() in {'logs','cache','temp'} or (parts[0]=='napcat' and mutable_napcat(parts[1:]))
+            return relative in {'beacon_report.log','guild1.db','guild1.db-shm','guild1.db-wal'} or parts[0].lower() in {'logs','cache','temp'} or (parts[0]=='napcat' and mutable_napcat(parts[1:]))
         return name=='napcat' and (parts[0].lower() in {'config','logs','cache','temp'} or relative in {'.feiyu-process.json','.feiyu-process.lock','guild1.db','guild1.db-shm','guild1.db-wal'})
     def mutable_napcat(parts):
         return bool(parts) and (parts[0].lower() in {'config','logs','cache','temp'} or '/'.join(parts) in {'.feiyu-process.json','.feiyu-process.lock','guild1.db','guild1.db-shm','guild1.db-wal'})
@@ -231,7 +231,7 @@ def install_asset(root,name,spec,target,cache,offline=False,notify=progress):
         receipt=read(marker)
         expected={key:value for key,value in receipt.get('files',{}).items() if not mutable(key)}
         if receipt.get('sha256')!=spec['sha256'] or not target.exists() or expected!=contents(target):
-            raise Fault('integrity','Installed asset receipt or content mismatch')
+            raise Fault('integrity','Installed asset receipt or content mismatch: '+name)
         return
     pending=marker.with_suffix('.pending.json')
     if target.exists():
@@ -313,7 +313,7 @@ def install(root,args):
         atomic(journal,{'schema_version':SCHEMA,'requested':sorted(chosen),'state':'running','started_at':time.time()})
         def save():atomic(root/'installation.json',record)
         progress('1/5','preflight and pinned component plan')
-        check=inspect_environment(root,network=not args.offline)
+        check=inspect_environment(root,network=not args.offline and not (args.repair and record.get('instance')))
         missing_runtime=next((x for x in check['checks'] if x['name']=='microsoft_runtime' and not x['ok']),None)
         if missing_runtime and args.accept_external_licenses:
             progress('runtime','缺少 Microsoft 运行库；将下载已固定哈希的官方安装程序，仅此必要步骤可能请求系统确认')
@@ -355,7 +355,12 @@ def install(root,args):
             if release.exists():
                 from instance import verify_release
                 verify_release(release)
-            else:build_release(release,cache,plugins,args.offline,progress)
+            else:
+                reuse=None
+                if args.repair and record.get('instance'):
+                    reuse=Path(read(instance(root,record)/'instance.json')['release']).resolve()
+                    reuse.relative_to((root/'releases').resolve())
+                build_release(release,cache,plugins,args.offline,progress,reuse=reuse)
             if record.get('instance'):
                 active=Path(read(instance(root,record)/'instance.json')['release']).resolve()
                 if active!=release:
@@ -438,7 +443,7 @@ def guidance(root,record):
     if not record.get('instance'):return ['Software is ready; initialize with your own QQ identity or restore a verified backup into a new instance.']
     target=instance(root,record);cfg=read(target/'data/cmd_config.json');port=cfg['dashboard']['port']
     return [f'肥鱼助手 / Fat-Fish-Assistant: start opens only the local service at http://127.0.0.1:{port}.',
-            'Dashboard credentials are saved with Windows DPAPI; use dashboard_login.py --update once after changing the password.',
+            'Dashboard credentials are saved with Windows DPAPI; use the desktop launcher to securely update the saved password after changing it.',
             'The pinned official Node/QQ runtime is prepared automatically; NapCat QR login and device authorization remain manual. Never copy another user\'s login session, owner identity, key or approved groups.',
             'No group is approved by default. Dagu, Work and the P6 GUI are not implemented in this stage.']
 
@@ -586,7 +591,7 @@ def daily_start(root,record):
             if name=='astrbot':raise
             warnings.append({'component':name,'message':str(exc),'hint':getattr(exc,'hint','Inspect installation and instance logs')})
     # A listening port alone does not establish dashboard identity or QQ login.
-    dashboard=invoke(root,chat_python(root,record),'authenticated_health.py','--instance',instance(root,record),json_output=True)
+    dashboard=invoke(root,chat_python(root,record),'authenticated_health.py','--instance',instance(root,record),'--allow-login-required',json_output=True)
     connection={'napcat_installed':bool(record.get('components',{}).get('napcat',{}).get('installed')),'qq_login':False,'onebot':dashboard.get('onebot_connection',{'connected':False,'reason':'unavailable'})}
     if connection['napcat_installed']:
         try:
@@ -679,7 +684,7 @@ def parser():
     setup.add_argument('--repair',action='store_true',help='Explicit same-dependency repair through the existing transactional upgrade mechanism')
     nap=sub.add_parser('prepare-napcat');nap.add_argument('--accept-external-licenses',action='store_true');nap.add_argument('--cache',type=Path);nap.add_argument('--offline',action='store_true')
     for name in ['status','components','start','daily-start','stop','restart','health','diagnose','wizard','rollback']:sub.add_parser(name)
-    component=sub.add_parser('component');component.add_argument('name',choices=list(COMPONENTS));component.add_argument('action',choices=['status','version','dependencies','start','stop','restart','health','integrity','login-status','recover-login'])
+    component=sub.add_parser('component');component.add_argument('name',choices=list(COMPONENTS));component.add_argument('action',choices=['status','version','dependencies','start','stop','restart','health','integrity','login-status','recover-login','connection-health'])
     conf=sub.add_parser('config');conf.add_argument('config_action',choices=['show','validate','apply','initialize-chat','initialize-onebot','initialize-experience','initialize-local-models']);conf.add_argument('--file',default='-');conf.add_argument('--onebot-port',type=int,default=6199);conf.add_argument('--model',choices=['deepseek-chat','deepseek-reasoner'],default='deepseek-chat');conf.add_argument('--bot-id')
     backup=sub.add_parser('backup');backup.add_argument('--destination',required=True,type=Path)
     restore=sub.add_parser('restore');restore.add_argument('--snapshot',required=True,type=Path);restore.add_argument('--destination',type=Path)
@@ -748,6 +753,10 @@ def dispatch(args):
             info=record.get('components',{}).get('napcat',{})
             if not info.get('installed') or info.get('ownership')!='managed':raise Fault('read_only','Only the owned NapCat login state can be queried')
             return invoke(root,chat_python(root,record),'napcat_health.py','--root',resolve(root,info['path']),'--allow-pending',json_output=True)
+        if args.action=='connection-health':
+            if args.name!='astrbot':raise Fault('invalid','Connection evidence is only available for AstrBot')
+            from connection_health import read_connection
+            return {'onebot_connection':read_connection(instance(root,record))}
         if args.action in {'status','version','dependencies'}:return component_status(root,record,args.name)
         if args.action in {'start','stop','restart'}:
             with installation_lock(root):return operate(root,record,args.action,[args.name])

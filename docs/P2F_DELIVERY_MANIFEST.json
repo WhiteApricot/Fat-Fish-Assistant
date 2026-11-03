@@ -1,0 +1,193 @@
+{
+  "phase": "P2F",
+  "date": "2026-11-03",
+  "scope": "formal source, plugin metadata, tests and docs only",
+  "tests": {
+    "suites": 25,
+    "unittest_cases": 151,
+    "script_checks": 8,
+    "qq_real_device": "not-executed"
+  },
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "fd607ea2024cb5bc06905d2983a070eca5228d7113e9d888a0c6765cd6e9be5a",
+      "kind": "updated"
+    },
+    {
+      "path": "docs/P2F_INTERNAL_TEST_REPORT.md",
+      "sha256": "3437a95729ac06848e22f27099afa8bee4fc48d7a156726309e3dc6dc2af8bad",
+      "kind": "new"
+    },
+    {
+      "path": "docs/P2F_PERMISSION_DESIGN.md",
+      "sha256": "7ad4caacd9af14b3622e2c88d58af33c81fc8cfd62e0380b2b4ed97cd822f8a7",
+      "kind": "new"
+    },
+    {
+      "path": "docs/P2F_PLUGIN_REVIEW.md",
+      "sha256": "94f2b112c6f27b1c0dc33cf3ba732ae81984465f4472c4bc5c866714c390bfc2",
+      "kind": "updated"
+    },
+    {
+      "path": "docs/P2F_QQ_CALL_FEASIBILITY.md",
+      "sha256": "080a58f68a1c9a250c9841aa885cb2db95711953c3dccac1faee10d5360dec74",
+      "kind": "new"
+    },
+    {
+      "path": "docs/P2F_QQ_REAL_DEVICE_TEST_CHECKLIST.md",
+      "sha256": "e655eccb666f2e4e6c6f799c0a4c41adc47a362ad4c632f74b8b8a4474fd0ff9",
+      "kind": "new"
+    },
+    {
+      "path": "docs/P2F_USAGE_AND_ARCHITECTURE.md",
+      "sha256": "dfd2a63e64056c9cd9cc54ec1261915d9cab9235fc9c25f56e09d895d35bb62a",
+      "kind": "new"
+    },
+    {
+      "path": "README.md",
+      "sha256": "e80e5133cb391eb983d628fc933f07d0b65d3a004e53239a0bced9dfa4fd5a0e",
+      "kind": "updated"
+    },
+    {
+      "path": "RELEASE_STATUS.json",
+      "sha256": "674b8793d807aa75b1cfe16f2ed92800334cf5825f893d6f217750b65e1c4758",
+      "kind": "updated"
+    },
+    {
+      "path": "scripts/dependencies.py",
+      "sha256": "b3b14f6a390fc4f3198633420d54586b168208fab097d0c64fced4477f7b98e8",
+      "kind": "updated"
+    },
+    {
+      "path": "scripts/instance.py",
+      "sha256": "0f2ab4c5bbc6d197a2b08d6f59ad09c200de34f94721e8fc68fe56b0cede94d3",
+      "kind": "updated"
+    },
+    {
+      "path": "src/fat_fish_forwards/main.py",
+      "sha256": "33a258f86604e689f6e8c44e3f238e93bce3adc0b91dc1bb3a60aa08e78a026e",
+      "kind": "new"
+    },
+    {
+      "path": "src/fat_fish_forwards/metadata.yaml",
+      "sha256": "075c95f3a3a431eacdc6b651ea34892950242ebd3d47c5d9e3290aeecfc17e4f",
+      "kind": "new"
+    },
+    {
+      "path": "src/fat_fish_guard/experience.py",
+      "sha256": "ea830e064993c519dc747d6fa9cff535e6f9d30e955485d9212a18cb20e2ad5b",
+      "kind": "updated"
+    },
+    {
+      "path": "src/fat_fish_guard/main.py",
+      "sha256": "0a1714b20f2c562d69aea7f78f772348d4ca748cd349c323511b45804f9597a1",
+      "kind": "updated"
+    },
+    {
+      "path": "src/fat_fish_reminders/main.py",
+      "sha256": "96fb54f422db68964135dcb72a1b68a796bffa753f2bed594416054a2aab6ea3",
+      "kind": "new"
+    },
+    {
+      "path": "src/fat_fish_reminders/metadata.yaml",
+      "sha256": "c459039f0b7cf124ff453c827d37ed85e521f2d0fb7fec752025e763c4200206",
+      "kind": "new"
+    },
+    {
+      "path": "src/p2c/dedup.py",
+      "sha256": "bb7618f564b7fe3c978321e833c122e4150dec69efe889c486c868d0b7b86a5c",
+      "kind": "updated"
+    },
+    {
+      "path": "src/p2c/gateway.py",
+      "sha256": "bce052df0b66c81a06d5ebacce5d271628abd60b05a1c37872203c15aa9978b6",
+      "kind": "updated"
+    },
+    {
+      "path": "src/p2c/policy.py",
+      "sha256": "5c8515c50c56b6e46d90b416eb6f2302e6d05693ff1486f3fe2c929cedd82d30",
+      "kind": "updated"
+    },
+    {
+      "path": "src/p2c/scoped_gateway.py",
+      "sha256": "12f02cdf7ed1404df9329ff8ece71bf75b3b5220fba8107fe7a1c4614973c125",
+      "kind": "updated"
+    },
+    {
+      "path": "src/p2f/__init__.py",
+      "sha256": "3201bb8184cec6be550f12063ce3f069c819c872adc011431cbea8b9696b2b70",
+      "kind": "new"
+    },
+    {
+      "path": "src/p2f/forwards.py",
+      "sha256": "577586898f7727d94bac90fff53cdfe9c770c7e5860ff9ce01af150bded61050",
+      "kind": "new"
+    },
+    {
+      "path": "src/p2f/intents.py",
+      "sha256": "dae66a154f191e9736454bcfae1610be2336358b0e6bdd2a405f99d461e0fce4",
+      "kind": "new"
+    },
+    {
+      "path": "src/p2f/reminders.py",
+      "sha256": "ef7999fc98fe582469ed4cf695b87639e9b2378faf9c16573879661740a15ea9",
+      "kind": "new"
+    },
+    {
+      "path": "src/p2f/timing.py",
+      "sha256": "20a44a5c9c9dd2a16bc4f73d9336f8f0d4732f303dc9e5727c05ad7ffa68a893",
+      "kind": "new"
+    },
+    {
+      "path": "tests/run_p2f.py",
+      "sha256": "3478de5852a39a66188b3e0a52fcde7de0f5e89453af1e05ba084962a43b48e5",
+      "kind": "new"
+    },
+    {
+      "path": "tests/test_p2f.py",
+      "sha256": "026b4c55de095efda03cc98227f1e06db5e29cde273591ec3deac5836d2d0758",
+      "kind": "new"
+    },
+    {
+      "path": "tests/test_p2f_deployment.py",
+      "sha256": "8624b56e3d2464a5f3403b78a5fa7f4e55c61312f095995761c5031f70487311",
+      "kind": "new"
+    },
+    {
+      "path": "tests/test_p2f_loading.py",
+      "sha256": "12122431d68a7710f56e601aff748c39a45faf966023eda6d75384371049dd8b",
+      "kind": "new"
+    },
+    {
+      "path": "tests/test_p2f_native.py",
+      "sha256": "16bc934dbbb29e38008b6b8614a78bf303581ed72446dad490a9776f89a25603",
+      "kind": "new"
+    },
+    {
+      "path": "tests/test_p2f_permissions.py",
+      "sha256": "d7231487300baf36edf572a0db5aef2b543fe85c86058dfe0d4e6296fdf0f924",
+      "kind": "new"
+    },
+    {
+      "path": "tests/Verify-P2C-NativeBoundary.py",
+      "sha256": "5f77eb2bae076103baf0a5430908c61abb945648c14ac11790f224635629dfd7",
+      "kind": "updated"
+    },
+    {
+      "path": "tests/Verify-P2C-Scoped.py",
+      "sha256": "1e40326d086359d2e6f6b639f86da1afa65b61b0e168b47f4ebeb233af96f2bc",
+      "kind": "updated"
+    }
+  ],
+  "manifest_self_hash": "recorded in local sync-receipt.json",
+  "rollback_archive": "Fat-Fish-Assistant.local/p2f/rollback/before-P2F.zip",
+  "excluded": [
+    "runtime databases",
+    "test instances",
+    "credentials",
+    "logs",
+    "third-party runtime payloads"
+  ],
+  "formatting": "Unchanged lines retain their original LF/CRLF bytes; new files use LF. Python AST and normalized content unchanged."
+}

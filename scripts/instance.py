@@ -93,7 +93,7 @@ def initialize(destination, owner, release,seed_persona=True):
     import imageio_ffmpeg
     (destination/'bin').mkdir()
     link_or_copy(imageio_ffmpeg.get_ffmpeg_exe(),destination/'bin/ffmpeg.exe')
-    cfg = {'owner':owner,'admins':[],'blocked':[],'approved_groups':[],'groups':{},
+    cfg = {'owner':owner,'global_admins':[],'admins':[],'blocked':[],'approved_groups':[],'groups':{},
            'group_admins':{},'group_blocked':{},'identity_salt':secrets.token_hex(32),'epoch':0}
     (destination/'private/p2c-access.json').write_text(json.dumps(cfg))
     (destination/'private/instance-identity.json').write_text(json.dumps({'owner':owner}))

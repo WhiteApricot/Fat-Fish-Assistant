@@ -27,3 +27,16 @@
 - [架构](docs/ARCHITECTURE.md)、[工程设计](docs/ENGINEERING_DESIGN.md)、[治理](docs/GOVERNANCE.md)、[补丁](patches/README.md)。
 - [阶段规划](docs/ROADMAP.md)、[更名记录](docs/RENAMING.md)、[Windows VM 检查表](docs/VM_INSTALL_CHECKLIST.md)。
 - [第三方声明](THIRD_PARTY_NOTICES.md)、[LICENSE](LICENSE)。自有代码及必要派生补丁按 AGPL-3.0 组织，外部组件独立遵守各自许可；下载能力不代表再分发授权。
+
+
+## P2F：全局管理员、转发阅读与提醒
+
+P2F提供全局管理员、分级确认、QQ合并转发阅读、持久化文字提醒和共用命令处理器的自然语言管理。内部合成验收和QQ人工验收分开记录；本轮不自动登录QQ、不运行真实账号发送，也不启用电脑操作。
+
+- [使用、命令、时间规则与架构](docs/P2F_USAGE_AND_ARCHITECTURE.md)
+- [权限与指令风险分类](docs/P2F_PERMISSION_DESIGN.md)
+- [内部测试报告](docs/P2F_INTERNAL_TEST_REPORT.md)
+- [可填写的QQ实机清单](docs/P2F_QQ_REAL_DEVICE_TEST_CHECKLIST.md)
+- [QQ电话评估](docs/P2F_QQ_CALL_FEASIBILITY.md)
+
+已有实例通过原有安装修复流程获取新插件，Start及Migrate继续沿用同一发布包和冷备份路径。电话、自定义音频和屏幕查看尚未接入；不影响普通文字提醒。

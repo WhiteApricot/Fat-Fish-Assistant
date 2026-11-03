@@ -13,7 +13,11 @@ from .group_platform import GroupPlatform
 
 ALIASES = {'帮助':'help','权限':'role','白名单':'whitelist','黑名单':'blacklist',
            '确认':'confirm','群聊模式':'groupmode','群聊设置':'groupsettings',
-           '个人设置':'personal','记忆管理':'memory','新对话':'new','comfirm':'confirm','群人格':'grouppersona','群记忆':'groupmemory','私聊人格':'privatepersona'}
+           '个人设置':'personal','记忆管理':'memory','新对话':'new','comfirm':'confirm','群人格':'grouppersona','群记忆':'groupmemory','私聊人格':'privatepersona','全局管理员':'globaladmin','提醒':'reminder','remind':'reminder'}
+
+def system_result(text):
+    return '【系统】'+text
+
 
 class Gateway:
     def __init__(self, path):
@@ -22,11 +26,13 @@ class Gateway:
         self.pending = PendingActions()
         self.lock = asyncio.Lock()
         self.notices = {}
+        self.command_history = {}
         self.active = {}
         self.participation = Participation()
         self.group_media = GroupMedia()
         self.group_platform=GroupPlatform()
         self.seen = SeenMessages(self.path.with_suffix(".seen.db"))
+        self.forward_seen = SeenMessages(self.path.with_suffix('.forwards.db'),ttl=60)
 
     def epoch(self,cfg,group):
         return cfg.get('epoch',0)
@@ -63,6 +69,62 @@ class Gateway:
         except OSError:
             pass
 
+    def record_command(self,event,command,result,args=()):
+        group=str(event.get_group_id() or '')
+        key=(str(event.get_sender_id()),group)
+        now=time.monotonic()
+        if command=='new' or (command=='memory' and result.startswith((
+            '本群可用的长期记忆与当前上下文已清除','本私聊的长期记忆已清除',
+        ))):
+            self.command_history.pop(key,None)
+            return
+        if command in {'history','clarify'}:
+            return
+        from fat_fish_guard.experience import contains_secret
+        from p2f.intents import ROUTES
+        label=command
+        if args and args[0] in ROUTES.get(command,{}):
+            label+=' '+args[0]
+        target=event.get_extra('_p2f_reminder_reference',None) if command=='reminder' else None
+        if command in {'memory','groupmemory'} or (
+            command in {'privatepersona','grouppersona'} and (not args or args[0]!='reset')
+        ):
+            receipt='[已返回回执，记忆正文或自定义人格内容已隐藏]'
+        else:
+            receipt='[已返回回执，敏感内容已隐藏]' if contains_secret(result) else result[:800]
+        if '90秒内发送' in receipt:
+            # Current pending state is reconstructed separately from the policy.
+            return
+        recent=[entry for entry in self.command_history.pop(key,[]) if now-entry[0]<1800]
+        self.command_history[key]=[*recent[-7:],(now,label,receipt,target)]
+        if len(self.command_history)>512:
+            self.command_history.pop(next(iter(self.command_history)))
+
+    def admin_undo_reference(self,event):
+        return None
+
+    def command_records(self,event):
+        key=(str(event.get_sender_id()),str(event.get_group_id() or ''))
+        return [record for record in self.command_history.get(key,()) if time.monotonic()-record[0]<1800]
+
+    def command_receipts(self,event):
+        return [f'{command}：{receipt}' for _,command,receipt,_ in self.command_records(event)]
+
+    def resolve_command_reference(self,event,records,args):
+        action,index,*values=args
+        index=int(index)-1
+        if not 0<=index<len(records) or records[index] not in self.command_records(event):
+            return 'history',['unresolved']
+        _,label,receipt,target=records[index]
+        if action=='receipt':
+            return 'history',[label+'：'+receipt]
+        if target is None:
+            return 'history',['unresolved']
+        return 'reminder',[action,target,*values]
+
+    def recent_commands(self,event):
+        return self.command_receipts(event)
+
     async def reject(self, event, text=None, reason='stopped'):
         self.audit('decision',event,reason)
         event.stop_event()
@@ -70,9 +132,51 @@ class Gateway:
             await event.send(event.plain_result(text))
         return False
 
-    async def process(self, event):
+    async def process(self,event):
+        admitted=await self._process(event)
+        outcome=event.get_extra('_p2f_command_outcome',None)
+        if outcome is not None:
+            from p2f.persona_reply import send_command_reply
+            await send_command_reply(self,event,outcome)
+        return admitted
+
+    async def _process(self, event):
         if event.get_platform_name() != 'aiocqhttp':
             return True
+        from p2f.intents import IntentUnavailable, classify, contains_external_material, is_confirmation, mentioned_role, recognize
+        natural=None
+        raw_text=event.message_str.strip()
+        private_chat=event.is_private_chat()
+        group_id='' if private_chat else str(event.get_group_id())
+        actor=str(event.get_sender_id())
+        is_mentioned=any(p.__class__.__name__=='At' and str(p.qq)==str(event.get_self_id()) for p in event.get_messages())
+        context=getattr(self,'context',None)
+        can_classify=(private_chat or is_mentioned or context is None) and not raw_text.startswith('/') and not contains_external_material(event)
+        intent_unavailable=context is None
+        mentions=[str(p.qq) for p in event.get_messages() if p.__class__.__name__=='At' and str(p.qq)!=str(event.get_self_id())]
+        confirmation=is_confirmation(raw_text)
+        undo_reference=None
+        reference_records=[]
+        if can_classify and not confirmation and context is not None and raw_text:
+            try:
+                _, current_policy=self.load()
+            except Exception:
+                return await self.reject(event)
+            if actor != str(event.get_self_id()) and actor not in current_policy.blocked_for(group_id):
+                admitted=(current_policy.level(actor)>=1 or await self.friends.contains(actor,event.bot)) if private_chat else group_id in current_policy.groups
+                if admitted:
+                    try:
+                        undo_reference=self.admin_undo_reference(event)
+                        reference_records=self.command_records(event)
+                        references=[
+                            {'index':i,'command':label,'receipt':receipt,'reminder':target is not None}
+                            for i,(_,label,receipt,target) in enumerate(reference_records,1)
+                        ]
+                        natural=await classify(context,event,raw_text,group_id,mentions,references=references,
+                                               recent=self.recent_commands(event),can_undo=undo_reference is not None)
+                    except IntentUnavailable as exc:
+                        intent_unavailable=True
+                        self.audit('intent_unavailable',event,str(exc))
         async with self.lock:
             try:
                 cfg, policy = self.load()
@@ -100,6 +204,8 @@ class Gateway:
                         self.participation.capture(group,self.epoch(cfg,group),'__system__',notice)
                         event.set_extra('_feiyu_notice_text',notice)
                 return await self.reject(event)
+            if group and hasattr(policy,'qq_group_admins'):
+                self.group_platform.bind_actor(policy,group,sender,platform_raw)
             friend = False
             if sender != policy.owner and (private or sender not in getattr(policy,'group_admins',{}).get(group,policy.admins)):
                 friend = await self.friends.contains(sender, event.bot)
@@ -107,21 +213,42 @@ class Gateway:
             event.set_extra('_feiyu_level', level)
             event.set_extra('_feiyu_blocked_ids', tuple(policy.blocked_for(group)))
             if private and level == 0:
-                text = '请先添加肥鱼助手为 QQ 好友，再来私聊吧。请联系此实例的主人说明来意；好友申请由主人审核'
-                return await self.reject(event, text,reason='stranger_private')
+                text = '请先添加肥鱼助手为 QQ 好友，再来私聊吧。请联系此实例的主人说明来意；好友申请由主人审核。主人 QQ：'+policy.owner
+                result=await self.reject(event,text,reason='stranger_private')
+
+                return result
             # Drop an entire quoted message when its original author is blocked.
             # Avoid retaining text or media through another user's quote.
             for segment in event.get_messages():
                 if not private and self.barrier(cfg,group):
-                    if segment.__class__.__name__ in {'Forward','Node','Nodes'}:
-                        return await self.reject(event)
                     if segment.__class__.__name__=='Reply' and float(getattr(segment,'time',0) or 0)<=self.barrier(cfg,group):
                         return await self.reject(event)
                 if segment.__class__.__name__ == 'Reply' and str(getattr(segment,'sender_id','')) in policy.blocked_for(group):
                     return await self.reject(event)
             raw = event.message_str.strip()
+            import re
+            event.set_extra('_p2f_execute_material',bool(re.fullmatch(r'(?:请)?(?:执行|完成)(?:这份|该|这段)?(?:合并转发|转发|聊天记录|记录)(?:里|中|中的|里的)?(?:的)?(?:任务|事项)',raw)))
+            if natural is None and can_classify and (intent_unavailable or confirmation):
+                target=mentioned_role(raw,mentions) if group else None
+                natural=('role',['add',target,group]) if target is not None else recognize(raw,group,mentions)
+                if natural==('role',['undo']):
+                    undo_reference=self.admin_undo_reference(event)
+            if natural==('role',['undo']) and undo_reference!=self.admin_undo_reference(event):
+                return await self.reject(event,system_result('近期授权已经变化，请明确指定要撤销的账号和范围'))
+            if natural and natural[0]=='role' and natural[1][:1]==['add'] and group:
+                target=mentioned_role(raw,mentions)
+                if target is not None:
+                    natural=('role',['add',target,group])
+            referenced=natural is not None and natural[0]=='reference'
+            if referenced:
+                natural=self.resolve_command_reference(event,reference_records,natural[1])
+            if natural:
+                event.set_extra('_p2f_natural',True)
+                cmd,args=natural
+                raw='/'+cmd+(' '+' '.join(args) if args else '')
+                event.message_str=raw
             if raw.startswith('/'):
-                parts = raw[1:].split()
+                parts = [natural[0],*natural[1]] if natural else raw[1:].split()
                 if not parts:
                     return await self.reject(event)
                 cmd = ALIASES.get(parts[0], parts[0].lower())
@@ -131,18 +258,46 @@ class Gateway:
                 if cmd=='memory' and args and private and level>=1:
                     operations={'help':'记忆帮助','remember':'记住','search':'记忆查询','update':'记忆更新','delete':'记忆删除','reset':'记忆重置','confirm':'记忆确认','cancel':'记忆取消'}
                     if args[0] not in operations:
-                        return await self.reject(event,'/memory help|remember|search|update|delete|reset|confirm|cancel；也可使用中文记忆指令')
+                        return await self.reject(event,system_result('/memory help|remember|search|update|delete|reset|confirm|cancel；也可使用中文记忆指令'))
                     event.message_str='/'+operations[args[0]]+(' '+' '.join(args[1:]) if len(args)>1 else '')
                     return True
-                if cmd in {'help','role','whitelist','blacklist','confirm','groupmode','groupsettings','personal','memory','grouppersona','groupmemory','privatepersona'}:
-                    text = self.command(cfg, policy, sender, level, private, group, cmd, args, event=event)
+                if cmd in {'reminder','globaladmin','help','history','clarify','role','whitelist','blacklist','confirm','groupmode','groupsettings','personal','memory','grouppersona','groupmemory','privatepersona'}:
+                    if group and hasattr(policy,'qq_group_admins') and (
+                        (cmd=='role' and args and args[0] in {'list','remove','set'}) or (cmd=='blacklist' and len(args)==2)
+                    ):
+                        roster_verified=await self.group_platform.bind_roster(policy,group,event.bot,sender)
+                        if cmd=='blacklist' and args[0]=='add' and level==2 and not roster_verified:
+                            text='暂时无法核实目标的QQ群管理身份，请稍后再试'
+                            if event.get_extra('_p2f_natural',False):event.set_extra('_p2f_command_outcome',text)
+                            return await self.reject(event,system_result(text),reason='group_roster_unavailable')
+                    if cmd=='role' and args[:2]==['add','']:
+                        text='请明确指定目标，在这条消息中只 @ 一位要授权的成员，并同时 @ 肥鱼助手'
+                    else:
+                        text=None
+                    try:
+                        if cmd=='clarify' or (referenced and cmd=='history' and args==['unresolved']):
+                            text='请明确要继续处理哪项操作，以及你希望做什么'
+                        elif referenced and cmd=='history':
+                            text='该次指令 /'+args[0]
+                        elif cmd=='history':
+                            receipts=self.command_receipts(event)
+                            text=('上一条指令 /'+receipts[-1]) if receipts else '当前会话没有可查询的近期指令回执'
+                        elif text is None:
+                            text=self.command(cfg,policy,sender,level,private,group,cmd,args,event=event)
+                    except Exception:
+                        self.audit('command_error',event,cmd)
+                        text='指令执行失败，不能确认是否完整生效；请检查本机日志后再试'
                     if text is None:return True
-                    return await self.reject(event, text)
+                    self.audit('command',event,cmd)
+                    self.record_command(event,cmd,text,args)
+                    result=await self.reject(event,system_result(text))
+                    if event.get_extra('_p2f_natural',False):event.set_extra('_p2f_command_outcome',text)
+                    return result
                 # Existing personal-memory commands stay in the P2B handler.
                 event.set_extra('_feiyu_personal_native',parts[0]=='new')
                 personal = parts[0] in {'记住','记忆帮助','记忆查询','记忆更新','记忆删除','记忆重置','记忆确认','记忆取消','new'}
                 if not (private and level >= 1 and personal) and level != 3:
-                    return await self.reject(event, '这个指令不在你的权限范围内，使用 /help 查看')
+                    return await self.reject(event, system_result('这个指令不在你的权限范围内，使用 /help 查看'))
             if not private:
                 # Mention mode is strict: / wake prefixes and quoted Bot messages
                 # cannot silently enable ordinary group chatting.
@@ -296,6 +451,26 @@ class Gateway:
             return await downstream()
         decision=await self.process(event)
         if not decision:return
+        from p2f.forwards import recover_forward_components
+        recover_forward_components(event)
+        if any(p.__class__.__name__ in {'Forward','Node','Nodes'} for p in event.get_messages()):
+            reader=getattr(self,'forward_reader',None)
+            if reader is None or not reader.available():return await self.reject(event,'合并转发阅读插件或消息收集插件未启用')
+            cfg,policy=self.load();group=str(event.get_group_id() or '')
+            epoch=self.epoch(cfg,group)
+            ids=[str(p.id) for p in event.get_messages() if p.__class__.__name__=='Forward']
+            claimed={ident for ident in ids if self.forward_seen.claim(event.get_platform_id()+':'+group+':'+str(event.get_sender_id())+':'+str(epoch),ident)}
+            if ids and not claimed:
+                return await self.reject(event,'这份转发记录刚刚已接收，已避免重复处理；需要再次分析请稍后重新发送')
+            if ids:event.get_messages()[:]=[p for p in event.get_messages() if p.__class__.__name__!='Forward' or str(p.id) in claimed]
+            material,images=await reader.read(event,policy.blocked_for(group),self.barrier(cfg,group) if group else 0)
+            latest,p=self.load()
+            if str(event.get_sender_id()) in p.blocked_for(group) or self.epoch(latest,group)!=epoch:return await self.reject(event)
+            from astrbot.api.message_components import Plain,Image
+            event.get_messages()[:]=[p for p in event.get_messages() if p.__class__.__name__ not in {'Forward','Node','Nodes'}]+[Plain(material)]+[Image(file=ref,url=ref) for ref in images]
+            event.message_str+='\n'+material
+            event.message_obj.message_str=event.message_str
+            event.set_extra('_p2f_material',True)
         if not event.is_private_chat() and decision!='passive':
             cfg,policy=self.load();group=str(event.get_group_id());epoch=self.epoch(cfg,group)
             event.session_id='p2c'+str(epoch)+'_'+group
@@ -380,8 +555,18 @@ class Gateway:
             if sender in policy.blocked_for(group) or (group and (group not in policy.groups or self.epoch(current,group)!=event.get_extra('_feiyu_security_epoch',epoch) or (event.get_extra('_feiyu_smart',False) and policy.groups.get(group)!='smart'))):
                 event.stop_event()
                 return
+            if event.get_extra('_feiyu_personal_native',False) and hasattr(message,'chain'):
+                from astrbot.api.message_components import Plain
+                message.chain.insert(0,Plain(text='【系统】'))
             result=await original_send(message)
+            if event.get_extra('_feiyu_personal_native',False):
+                self.record_command(event,'new','')
             self.audit('send',event)
+            if event.get_extra('_p2f_natural',False) and event.get_extra('_feiyu_personal_native',False) and not event.get_extra('_p2f_new_feedback',False):
+                event.set_extra('_p2f_new_feedback',True)
+                outcome=message.get_plain_text() if hasattr(message,'get_plain_text') else str(message)
+                from p2f.persona_reply import send_command_reply
+                await send_command_reply(self,event,outcome,send=original_send)
             if group:
                 text=message.get_plain_text() if hasattr(message,'get_plain_text') else ''
                 room=self.participation.capture(group,epoch,'__bot__',text or '[Bot已回复图片或其他内容]')

@@ -1,0 +1,5 @@
+name: fat_fish_forwards
+display_name: 肥鱼合并转发阅读
+author: Fat-Fish-Assistant
+desc: 保留发送者的受限转发阅读与现有消息收集桥接
+version: 1.0.0

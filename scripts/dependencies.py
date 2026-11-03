@@ -188,17 +188,38 @@ def apply_patches(target,spec):
         if hashlib.sha256(data).hexdigest()!=change['after']:raise ValueError('Patch result hash mismatch')
         path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
 
-def build_release(destination,cache,plugins=None,offline=False,progress=None):
+def build_release(destination,cache,plugins=None,offline=False,progress=None,*,reuse=None):
     destination=external(destination)
     if destination.exists():raise ValueError('Release destination exists')
     plugins=DEFAULT_PLUGINS if plugins is None else plugins
     if set(plugins)-set(DEFAULT_PLUGINS):raise ValueError('Unknown plugin selection')
-    stage=destination.with_name(destination.name+'.staging-'+secrets.token_hex(5));stage.mkdir(parents=True)
+    stage=destination.with_name(destination.name+'.staging-'+secrets.token_hex(5))
     selected=[x for x in load('sources.json') if x['name'] in ['astrbot','selfreply-decision',*plugins]]
+    dashboard=load('dashboard.json')
+    reusable_files=[]
+    if reuse is not None:
+        previous=json.loads((reuse/'release.json').read_text(encoding='utf-8'))
+        if previous.get('external_sources')==selected and previous.get('dashboard')==dashboard:
+            from instance import verify_release
+            verify_release(reuse)
+            reusable_files=json.loads((reuse/'payload-manifest.json').read_text(encoding='utf-8'))
+    def copy_verified_tree(relative):
+        prefix=relative.rstrip('/')+'/'
+        matched=False
+        for row in reusable_files:
+            if row['path'].startswith(prefix):
+                output=safe_path(stage,row['path'])
+                output.parent.mkdir(parents=True,exist_ok=True)
+                shutil.copy2(safe_path(reuse,row['path']),output)
+                matched=True
+        if matched and progress:progress('reuse-installed',relative)
+        return matched
+    stage.mkdir(parents=True)
     try:
         shutil.copytree(PROJECT/'src',stage/'src',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         (stage/'plugins').mkdir()
         for spec in selected:
+            if copy_verified_tree(spec['target']):continue
             archive=acquire(spec,cache,offline,progress)
             target=safe_path(stage,spec['target'])
             selection=spec.get('select')
@@ -213,21 +234,31 @@ def build_release(destination,cache,plugins=None,offline=False,progress=None):
             unpack(archive,target,spec['strip_prefix'],selection)
             apply_patches(target,spec)
             if spec['name']=='selfreply-decision':(target/'__init__.py').write_text('"""Externally acquired GPL-3.0 decision subset; see LICENSE."""\n')
-        dashboard=load('dashboard.json')
-        archive=acquire(dashboard,cache,offline,progress)
         target=safe_path(stage,dashboard['target'])
-        unpack(archive,target,dashboard['strip_prefix'])
+        if not target.exists():
+            archive=acquire(dashboard,cache,offline,progress)
+            unpack(archive,target,dashboard['strip_prefix'])
         if (target/'assets/version').read_text(encoding='utf-8').strip()!=dashboard['version'] or not (target/'index.html').is_file():
             raise ValueError('Pinned dashboard version/content mismatch')
         shutil.copytree(PROJECT/'src/fat_fish_guard',stage/'plugins/fat_fish_guard',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         shutil.copytree(PROJECT/'src/fat_fish_health',stage/'plugins/fat_fish_health',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+        for plugin in ('fat_fish_forwards','fat_fish_reminders'):
+            shutil.copytree(PROJECT/'src'/plugin,stage/'plugins'/plugin,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         if 'meme_manager' in plugins:
             catalog=load('starter-memes.json')
             resources=stage/'resources/starter-memes';resources.mkdir(parents=True)
             for row in catalog['files']:
-                acquired=acquire(row,cache,offline,progress)
+                relative='resources/starter-memes/'+row['path']
+                previous_file=safe_path(reuse,relative) if reusable_files else None
+                if previous_file and previous_file.is_file() and digest(previous_file)==row['sha256']:
+                    acquired=previous_file
+                else:
+                    acquired=acquire(row,cache,offline,progress)
                 output=safe_path(resources,row['path']);output.parent.mkdir(parents=True,exist_ok=True)
-                link_or_copy(acquired,output)
+                if acquired==previous_file:
+                    shutil.copy2(acquired,output)
+                else:
+                    link_or_copy(acquired,output)
             (resources/'catalog.json').write_text(json.dumps(catalog,ensure_ascii=False),encoding='utf-8')
         vendor=[x for x in selected if x['name']!='selfreply-decision']
         (stage/'release.json').write_text(json.dumps({'schema':1,'project':'Fat-Fish-Assistant','vendor':vendor,'external_sources':selected,'dashboard':dashboard}),encoding='utf-8')

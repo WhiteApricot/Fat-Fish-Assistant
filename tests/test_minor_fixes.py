@@ -17,6 +17,10 @@ class Handler(BaseHTTPRequestHandler):
   body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
   self.seen.append((self.path,body))
   if self.mode=='redirect':self.send_response(302);self.send_header('Location','https://example.invalid/');self.end_headers();return
+  if self.mode in {'challenge','wrong'}:
+   data={'totp_required':True} if self.mode=='challenge' else {}
+   self.send_response(401);self.end_headers()
+   self.wfile.write(json.dumps({'status':'error','data':data}).encode());return
   self.response({'token':'synthetic-session','username':'synthetic','totp_required':self.mode=='totp','md5_pwd_hint':self.mode=='upgrade'})
  def do_GET(self):
   self.seen.append((self.path,self.headers.get('Authorization')))
@@ -34,13 +38,38 @@ class Fixes(unittest.TestCase):
   url=login_url(self.root);parts=urllib.parse.urlsplit(url)
   self.assertNotIn('synthetic-session',parts.path+parts.query);state=json.loads(urllib.parse.unquote(parts.fragment[10:]));self.assertEqual(state['token'],'synthetic-session')
   self.assertEqual(Handler.seen[0][1]['password'],'synthetic-password');self.assertNotIn('synthetic-password',url)
-  self.assertEqual(Handler.seen[0][1]['username'],'astrbot')
+  self.assertEqual(Handler.seen[0][1]['username'],'synthetic')
  def test_authenticated_health_uses_encrypted_credential(self):
   import subprocess
   self.cfg['platform']=[];self.save()
   result=subprocess.run([sys.executable,'-B',str(Path(__file__).resolve().parents[1]/'scripts/authenticated_health.py'),'--instance',str(self.root)],capture_output=True,text=True,check=True)
   self.assertEqual(json.loads(result.stdout)['authenticated_dashboard'],'pass')
   self.assertFalse((self.root/'private/dashboard-password.txt').exists())
+ def test_password_update_uses_stdin_and_reopens_without_password(self):
+  import subprocess
+  cli=[sys.executable,'-B',str(Path(__file__).resolve().parents[1]/'scripts/dashboard_login.py'),'--instance',str(self.root)]
+  updated=subprocess.run(cli+['--update'],input=json.dumps({'password':'new-Synthetic密码'}),capture_output=True,text=True,check=True)
+  self.assertTrue(json.loads(updated.stdout)['data']['saved'])
+  self.assertNotIn('new-Synthetic',updated.stdout+updated.stderr)
+  self.assertNotIn(b'new-Synthetic',(self.root/'private/dashboard-credential.dpapi').read_bytes())
+  self.assertEqual(Handler.seen[-2][1]['password'],'new-Synthetic密码')
+  next_start=subprocess.run(cli,capture_output=True,text=True,check=True)
+  self.assertEqual(json.loads(next_start.stdout)['data']['mode'],'automatic')
+  self.assertEqual(Handler.seen[-2][1]['password'],'new-Synthetic密码')
+ def test_2fa_preserves_password_verification_without_issuing_session(self):
+  import subprocess
+  cli=[sys.executable,'-B',str(Path(__file__).resolve().parents[1]/'scripts/dashboard_login.py'),'--instance',str(self.root)]
+  Handler.mode='challenge'
+  updated=subprocess.run(cli+['--update'],input=json.dumps({'password':'synthetic-2fa'}),capture_output=True,text=True,check=True)
+  data=json.loads(updated.stdout)['data'];self.assertTrue(data['saved'])
+  self.assertEqual(data['mode'],'two_factor');self.assertNotIn('#',data['url'])
+  saved=(self.root/'private/dashboard-credential.dpapi').read_bytes()
+  again=subprocess.run(cli,capture_output=True,text=True,check=True)
+  self.assertEqual(json.loads(again.stdout)['data']['mode'],'two_factor')
+  Handler.mode='wrong'
+  wrong=subprocess.run(cli+['--update'],input=json.dumps({'password':'incorrect'}),capture_output=True,text=True)
+  self.assertNotEqual(wrong.returncode,0)
+  self.assertEqual((self.root/'private/dashboard-credential.dpapi').read_bytes(),saved)
  def test_native_security_upgrade_is_preserved(self):
   Handler.mode='upgrade';url=login_url(self.root);state=json.loads(urllib.parse.unquote(urllib.parse.urlsplit(url).fragment[10:]));self.assertTrue(state['md5_pwd_hint'])
  def test_no_auth_redirect_or_remote_page(self):

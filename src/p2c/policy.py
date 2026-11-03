@@ -84,6 +84,14 @@ class PendingActions:
         self.pending[(str(actor), scope)] = (code, operation, tuple(arguments), self.clock()+90)
         return code
 
+    def peek(self, actor, scope):
+        key=(str(actor),scope)
+        item=self.pending.get(key)
+        if item and self.clock() >= item[3]:
+            self.pending.pop(key)
+            return None
+        return item
+
     def consume_latest(self, actor, scope):
         item=self.pending.get((str(actor),scope))
         return self.consume(actor,scope,item[0]) if item else None
@@ -109,7 +117,12 @@ class ScopedPolicy:
     group_admins: dict[str,set[str]] = field(default_factory=dict)
     blocked: set[str] = field(default_factory=set)
     group_blocked: dict[str,set[str]] = field(default_factory=dict)
-    admins: set[str] = field(default_factory=set)  # intentionally empty
+    admins: set[str] = field(default_factory=set)  # legacy field; never promoted
+    global_admins: set[str] = field(default_factory=set)
+    qq_group_admins: dict[str,set[str]] = field(default_factory=dict)
+
+    def administrators(self,group):
+        return self.group_admins.get(group,set()) | self.qq_group_admins.get(group,set())
 
     def blocked_for(self,group=''):
         return self.blocked | self.group_blocked.get(str(group),set())
@@ -118,19 +131,21 @@ class ScopedPolicy:
         sender=str(sender)
         if sender in self.blocked_for(group):return -1
         if sender==self.owner:return 3
-        if group and sender in self.group_admins.get(str(group),set()):return 2
+        if sender in self.global_admins:return 2.5
+        if group in self.groups and sender in self.administrators(group):return 2
         return 1 if friend else 0
 
     def authorize(self,sender,operation,*,private,group='',friend=False,target=''):
         level=self.level(sender,friend,group)
         if level<0:return False
         if operation in {'work','owner'}:return False
-        if operation=='admin':return level==3 and str(target)!=self.owner and bool(group)
-        if operation=='whitelist':return level==3
+        if operation=='global_admin':return level==3 and str(target)!=self.owner
+        if operation=='admin':return level in {3,2.5} and str(target)!=self.owner and bool(group)
+        if operation=='whitelist':return level in {3,2.5}
         if operation=='blacklist':
-            if str(target)==self.owner:return False
-            if private:return level==3
-            return group in self.groups and (level==3 or (level==2 and str(target) not in self.group_admins.get(group,set())))
+            if str(target)==self.owner or (str(target) in self.global_admins and sender!=self.owner):return False
+            if private:return level in {3,2.5}
+            return group in self.groups and (level in {3,2.5} or (level==2 and str(target) not in self.administrators(group)))
         if operation in {'group','persona'}:return not private and group in self.groups and level>=2
         if operation in {'personal','memory'}:return private and level>=1
         return False

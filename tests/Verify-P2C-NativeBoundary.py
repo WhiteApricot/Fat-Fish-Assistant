@@ -48,7 +48,7 @@ async def main():
   def filter(self,event,cfg):called.append(True);return False
  command=Filter('danger');handler=types.SimpleNamespace(event_filters=[command],handler_module_path='fixture')
  with patch('astrbot.core.pipeline.waking_check.stage.star_handlers_registry.get_handlers_by_event_type',return_value=[handler]),patch('astrbot.core.pipeline.waking_check.stage.SessionPluginManager.filter_handlers_by_session',new=AsyncMock(return_value=[])):
-  for level,text in [(1,'danger'),(1,'/danger'),(2,'danger'),(2,'/danger')]:await stage.process(E(level,text))
+  for level,text in [(1,'danger'),(1,'/danger'),(2,'danger'),(2,'/danger'),(2.5,'danger'),(2.5,'/danger')]:await stage.process(E(level,text))
   assert not called
   await stage.process(E(3));assert len(called)==1
   command.command_name='new';await stage.process(E(1,'/new',True));assert len(called)==2

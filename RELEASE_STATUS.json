@@ -1,7 +1,7 @@
 {
   "project": "Fat-Fish-Assistant",
-  "date": "2026-11-02",
-  "status": "P2E-UX 本机实现、人工体验和最终25组冻结回归通过；干净Windows及真正跨主机待验收",
+  "date": "2026-11-03",
+  "status": "P2F 阶段检查点，QQ 实机验收暂未通过",
   "engineering_closure": "passed",
   "single_group_manual_smoke": "passed",
   "complete_runtime": "passed-with-manual-QQ-login",
@@ -9,7 +9,7 @@
   "cross-host-migration": "not-executed",
   "second_group": "deferred",
   "full_private_merge_matrix": "incomplete",
-  "P2F": "conditional-foundation-only-not-started",
+  "P2F": "checkpoint-qq-acceptance-not-passed",
   "P3_linux": "planned-not-implemented",
   "repository": "https://github.com/WhiteApricot/Fat-Fish-Assistant",
   "distribution": "private repository only; no public release",
@@ -43,5 +43,18 @@
     "real_model_automatic_memory": "passed",
     "qq_client_visual_confirmation": "not-executed",
     "distribution": "local-source-submission-package-no-push"
+  },
+  "p2f": {
+    "internal_suites": 25,
+    "unittest_cases": 151,
+    "script_checks": 8,
+    "qq_real_device": "not-executed-awaiting-user",
+    "qq_phone": "deferred",
+    "audio_upload": "deferred",
+    "screen_read_only": "design-only",
+    "work": "not-implemented-not-executed",
+    "sync": "formal-files-sha256-verified",
+    "report": "docs/P2F_INTERNAL_TEST_REPORT.md",
+    "checklist": "docs/P2F_QQ_REAL_DEVICE_TEST_CHECKLIST.md"
   }
 }
