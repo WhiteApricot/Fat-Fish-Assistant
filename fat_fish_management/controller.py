@@ -26,7 +26,7 @@ from pathlib import Path
 
 from fat_fish_management.dependencies import PROJECT,acquire,build_release,clean_environment,digest,external,install_environment,load,profile_fingerprint,run_logged,unpack,verify_environment_versions,link_or_copy,RELEASE_LAYOUT,extend_core_environment
 
-SERVICE_SCRIPTS = {'Install-Runtime.ps1': 'scripts/build/Install-Runtime.ps1', 'NapCat.ps1': 'scripts/services/NapCat.ps1', 'Local-Models.ps1': 'scripts/services/Local-Models.ps1', 'Check-Environment.ps1': 'scripts/diagnostics/Check-Environment.ps1'}
+SERVICE_SCRIPTS = {'Install-Runtime.ps1': 'scripts/build/Install-Runtime.ps1', 'Invoke-NapCat.ps1': 'scripts/services/Invoke-NapCat.ps1', 'Invoke-LocalModels.ps1': 'scripts/services/Invoke-LocalModels.ps1', 'Check-Environment.ps1': 'scripts/diagnostics/Check-Environment.ps1'}
 
 SCHEMA=1
 COMPONENTS=load('components.json')['components']
@@ -57,7 +57,8 @@ def source_descriptor_compatible(before,current):
             return False
         return dict(before,target='src/fat_fish/participation/upstream_selfreply')==current
     allowed={PRE_NORMALIZATION_PATCHES.get(name)}
-    if name=='astrbot':allowed.update((*P2F_R1_PATCH_TRANSITION,COMPONENT_LAYOUT_PATCH))
+    if name=='astrbot':allowed.update((*P2F_R1_PATCH_TRANSITION,COMPONENT_LAYOUT_PATCH,
+                                      'd867da82a7d9401fa97c8fea4bffa3e70dcf641616deb1995d6d77c61d6a342f'))
     return (before.get('patch_sha256') is not None and before['patch_sha256'] in allowed and 'patch_sha256' in current
             and dict(before,patch_sha256=current['patch_sha256'])==current)
 
@@ -505,13 +506,13 @@ def component_status(root,record,name):
         result.update(invoke(root,chat_python(root,record),'manage.py','status','--instance',instance(root,record),json_output=True))
         result['maintenance_pending']=(instance(root,record)/'private/upgrade-journal.json').exists()
     elif name=='napcat':
-        result.update(shell(root,'NapCat.ps1','-Action','Status','-Root',resolve(root,info['path']),json_output=True))
+        result.update(shell(root,'Invoke-NapCat.ps1','-Action','Status','-Root',resolve(root,info['path']),json_output=True))
     elif name in {'embedding','speech'}:
         if not record.get('instance'):
             result.update({'running':False,'ready':False,'needs_input':'Initialize an instance before configuring local provider credentials.'});return result
         marker=instance(root,record)/'private'/(name.title()+'.pid')
         if marker.exists() or (marker.parent/(name.title()+'.process.json')).exists():
-            result['running']=bool(shell(root,'Local-Models.ps1','-Action','Status','-Runtime',instance(root,record),'-Component',name.title(),json_output=True))
+            result['running']=bool(shell(root,'Invoke-LocalModels.ps1','-Action','Status','-Runtime',instance(root,record),'-Component',name.title(),json_output=True))
         else:result['running']=False
     if name=='plugins':
         if record.get('instance'):
@@ -554,7 +555,7 @@ def operate(root,record,action,selected=None):
                 if info.get('runtime')!='node':
                     if not record.get('qq_executable'):raise Fault('needs_input','Prepare the independent QQ runtime with prepare-napcat')
                     argv+=['-QQExecutable',record['qq_executable']]
-            result=shell(root,'NapCat.ps1',*argv)
+            result=shell(root,'Invoke-NapCat.ps1',*argv)
         elif name in {'embedding','speech'}:
             argv=['-Action',action.title(),'-Runtime',instance(root,record),'-Component',name.title()]
             cfg=read(instance(root,record)/'data/cmd_config.json')
@@ -564,7 +565,7 @@ def operate(root,record,action,selected=None):
                 if endpoint.scheme!='http' or endpoint.hostname not in {'127.0.0.1','localhost'}:raise Fault('invalid','Local model endpoint must use loopback')
                 argv+=['-Port',endpoint.port or 80]
             if name=='speech' and action=='start':argv+=['-SpeechPython',resolve(root,record['speech_python'])]
-            result=shell(root,'Local-Models.ps1',*argv)
+            result=shell(root,'Invoke-LocalModels.ps1',*argv)
         else:raise Fault('incompatible','This component has no service lifecycle: '+name)
         results.append({'id':name,**result})
     return {'operations':results}
@@ -816,7 +817,7 @@ def dispatch(args):
         if args.name in {'astrbot','plugins'}:
             return invoke(root,chat_python(root,record),'doctor.py','--instance',instance(root,record),json_output=True)
         if args.name=='napcat':
-            return shell(root,'NapCat.ps1','-Action','Diagnose','-Root',resolve(root,record['components']['napcat']['path']))
+            return shell(root,'Invoke-NapCat.ps1','-Action','Diagnose','-Root',resolve(root,record['components']['napcat']['path']))
         if args.name in {'embedding','speech'}:
             runtime=instance(root,record)
             for row in load('model-runtime-lock.json'):

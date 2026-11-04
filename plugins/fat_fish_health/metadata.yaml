@@ -1,5 +1,6 @@
 name: fat_fish_health
-desc: Private read-only managed OneBot protocol health, without message handlers
 author: Fat-Fish-Assistant
 version: 0.1.0
+display_name: 肥鱼助手 · 连接健康
+desc: 发布 OneBot 连接及实例健康证据，并提供管理启动视图。
 astrbot_version: ">=4.29.3,<5"

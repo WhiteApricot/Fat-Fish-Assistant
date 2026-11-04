@@ -1,4 +1,0 @@
-numpy==2.2.6
-pip==24.0
-sherpa-onnx-core==1.12.40
-sherpa_onnx==1.12.40

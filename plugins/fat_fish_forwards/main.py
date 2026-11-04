@@ -8,7 +8,8 @@ class FatFishForwards(Star):
         self.collector=None
         md=self.context.get_registered_star('astrbot_plugin_continuous_message')
         if not md or not md.activated:raise RuntimeError('合并转发需要启用现有消息收集插件')
-        self.collector=md.star_cls;install_collector_bridge(self.collector)
+        install_collector_bridge(md.star_cls, md.version)
+        self.collector=md.star_cls
         gateway.forward_reader=self.reader
     async def terminate(self):
         if getattr(self,'collector',None):remove_collector_bridge(self.collector)

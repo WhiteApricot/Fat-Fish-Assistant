@@ -1,5 +1,6 @@
 name: fat_fish_guard
-desc: Explicit silence and trusted self-scope memory confirmation adapter
 author: Fat-Fish-Assistant
 version: 0.2.0
+display_name: 肥鱼助手 · 核心接入
+desc: 注册消息和模型钩子，处理人格、记忆保护及命令回执。
 astrbot_version: ">=4.29.3,<5"

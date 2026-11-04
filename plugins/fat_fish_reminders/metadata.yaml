@@ -1,5 +1,6 @@
 name: fat_fish_reminders
-display_name: 肥鱼持久提醒
 author: Fat-Fish-Assistant
-desc: 原生调度器驱动的权限受控文字提醒
 version: 1.0.0
+display_name: 肥鱼助手 · 持久提醒
+desc: 保存文字提醒，复核权限并通过 AstrBot 调度器发送。
+astrbot_version: ">=4.29.3,<5"

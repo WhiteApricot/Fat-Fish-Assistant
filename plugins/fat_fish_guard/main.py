@@ -197,42 +197,12 @@ class FatFishGuard(Star, MemoryCommands):
         if tool.name in {'web_search_deepseek','deepseek_fetch_web_page'}:
             event.set_extra('_ffa_web_material',True)
 
-    @filter.on_agent_done(priority=100000)
-    async def report_unknown_tool(self,event,run_context,response):
-        if response is None or not event.get_extra('_ffa_turn_tools') or event.get_extra('_ffa_system_sent'):
-            return
-        for message in reversed(run_context.messages):
-            if message.role=='user':
-                break
-            if (message.role=='tool' and isinstance(message.content,str)
-                    and message.content.startswith('error: Tool ') and ' not found.' in message.content):
-                from astrbot.api.event import MessageChain
-                reply='【系统】模型选择的工具不可用，未执行该操作。'
-                response.completion_text=reply
-                response.result_chain=MessageChain().message(reply)
-                return
-
     @filter.on_llm_response(priority=100000)
     async def reject_literal_tool_markup(self,event,response):
         text=response.completion_text or ""
         if "DSML" in text and ("invoke" in text or "calls" in text):
             from astrbot.api.event import MessageChain
             safe="【系统】模型未返回可执行的工具调用，本次没有执行。"
-            turn=event.get_extra('_ffa_turn_tools',None)
-            if turn and not turn.calls and not turn.finished:
-                try:
-                    async with asyncio.timeout(12):
-                        provider=await self.context.get_using_provider_async(event.unified_msg_origin)
-                        retry=await provider.text_chat(prompt=turn.request.prompt,contexts=[],
-                            system_prompt=turn.request.system_prompt+'\n上一回复的工具标记无效。重新判断当前请求；需要工具时使用原生函数调用。',
-                            func_tool=turn.toolset,request_max_retries=1)
-                    if len(retry.tools_call_name)==len(retry.tools_call_args)==1:
-                        name=retry.tools_call_name[0]
-                        tool=turn.toolset.get_tool(name)
-                        if tool and turn.owns(tool):
-                            await tool.handler(event,**retry.tools_call_args[0])
-                except Exception:
-                    logger.warning("Native tool retry did not complete")
             if event.get_extra('_ffa_system_sent',False):
                 safe=''
             response.completion_text=safe

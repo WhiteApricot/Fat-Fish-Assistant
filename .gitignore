@@ -2,7 +2,6 @@ __pycache__/
 *.pyc
 .env
 .env.*
-!.env.example
 Backup/
 Fat-Fish-Assistant.local/
 private/
@@ -31,3 +30,9 @@ models/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+*.pyo
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.partial

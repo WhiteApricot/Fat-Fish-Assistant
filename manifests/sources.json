@@ -12,7 +12,7 @@
     "license_source": "https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/LICENSE",
     "strip_prefix": "AstrBot-f61a7f42696da6df25dc7a249ec9b8d54ed9da18/",
     "patches": "patches/astrbot/changes.json",
-    "patch_sha256": "d867da82a7d9401fa97c8fea4bffa3e70dcf641616deb1995d6d77c61d6a342f"
+    "patch_sha256": "4ceaa69c97a195cd093de050e9b247025672d45197aad61d7f523add71773183"
   },
   {
     "name": "astrbot_plugin_livingmemory",

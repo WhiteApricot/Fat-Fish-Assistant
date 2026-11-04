@@ -293,7 +293,8 @@ class Gateway:
                         return await self.reject(event,system_result('请使用 /help 查看英文指令。'))
                     from fat_fish.commands.command_help import HELP, SYNTAX
                     if args==['help'] and cmd in HELP:
-                        return await self.reject(event,system_result(HELP[cmd]))
+                        return await self.reject(event,system_result(self.command(
+                            cfg,policy,sender,level,private,group,'help',[cmd],event=event)))
                     if args and cmd in SYNTAX and cmd not in {'help','undo','confirm'}:
                         variants=SYNTAX[cmd]
                         allowed={suffix.split()[0] for suffix in variants if suffix}

@@ -91,6 +91,7 @@ def validate_snapshot(snapshot):
     for name in LOCKS:
         accepted={digest(c.PROJECT/'manifests'/name)}
         if name=='sources.json':
+            accepted.add('6bc2f780fc30a1c8d8c6d5d221aa19d920f28fef6bce514e03257b92ed797f44')
             accepted.add('edb17b62829418773d2fe2f97f5769710717c55128725862c390342b5d173fc6')
             accepted.add('668fee833ed350cc0d6612c58a8892e759bc23abbca462f2a9289e0a84e35dea')
         if plan['locks'].get(name) not in accepted:raise ValueError('Pinned dependency compatibility mismatch: '+name)

@@ -6,8 +6,8 @@
 )
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
-. (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'scripts/process/Process-Identity.ps1')
-. (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'scripts/process/Native-Process.ps1')
+. (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'scripts/process/Import-ProcessIdentity.ps1')
+. (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'scripts/process/Import-NativeProcess.ps1')
 if(-not $LockFile){$LockFile=Join-Path $PSScriptRoot '..\..\manifests\napcat-runtime-lock.json'}
 $napRoot=(Resolve-Path -LiteralPath $Root).Path
 $executable=Join-Path $napRoot 'NapCatWinBootMain.exe'

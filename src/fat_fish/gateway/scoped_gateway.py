@@ -195,17 +195,10 @@ class ScopedGateway(Gateway):
             if not policy.authorize(sender,'global_admin',private=private,group=group,target=args[1]):return '不能修改主人身份'
             return self.request(cfg,policy,sender,private,group,'global_admin',tuple(args),'变更全局管理员 '+args[1])
         if cmd=='help':
-            from fat_fish.commands.command_help import HELP
-            if args:
-                target=ALIASES.get(args[0],args[0].lower())
-                return HELP.get(target,'没有这个子菜单。')
-            names=['help','role','reminder','history','confirm','cancel','undo']
-            if private and level>=1:names+=['memory','personal','privatepersona','new','persona','naturalcommand']
-            if not private and level>=2:names+=['groupmemory','groupmode','groupsettings','grouppersona','persona','naturalcommand','blacklist']
-            if level>=2.5:
-                names+=['globaladmin','globalpersona','whitelist']
-                if private:names.append('blacklist')
-            return '\n'.join('/'+name for name in names)
+            from fat_fish.commands.command_help import scoped_help
+            target=ALIASES.get(args[0].lower(),args[0].lower()) if args else None
+            return scoped_help(policy,sender,level,private,group,target,
+                               reminders=getattr(self,'reminders',None) is not None)
         if cmd=='role':
             if args==['undo']:
                 return self.undo_admin(cfg,policy,sender,level,private,group)

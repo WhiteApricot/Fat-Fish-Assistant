@@ -1,5 +1,6 @@
 name: fat_fish_forwards
-display_name: 肥鱼合并转发阅读
 author: Fat-Fish-Assistant
-desc: 保留发送者的受限转发阅读与现有消息收集桥接
 version: 1.0.0
+display_name: 肥鱼助手 · 合并转发
+desc: 读取受限的 QQ 合并转发并接入固定版本的消息收集插件。
+astrbot_version: ">=4.29.3,<5"

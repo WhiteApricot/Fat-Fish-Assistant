@@ -4,7 +4,7 @@ $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Windows.Forms
 $project=Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $registry=Join-Path $env:LOCALAPPDATA 'Fat-Fish-Assistant-launcher\installation.txt'
-. (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'scripts/desktop/Desktop-Interaction.ps1')
+. (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'scripts/desktop/Initialize-DesktopInteraction.ps1')
 function ShowProgress([string]$Line){
  if($script:desktopLog){Add-Content -LiteralPath $script:desktopLog -Value $Line -Encoding UTF8}
  if($Line -match '^\[Fat-Fish-Assistant\] transfer: (.*)$'){ShowTransfer ($Matches[1]|ConvertFrom-Json);return}

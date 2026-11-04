@@ -2,7 +2,7 @@
   {
     "path": "astrbot/core/astr_agent_hooks.py",
     "before": "accd70ee25c31732f4915f3dfb5cedfd5c1ca2e2890c4d8fa070eb4c74d12317",
-    "after": "a446f61e8757319bb230c701d423194ca2d040b18c6ea78e0e99df863580a910",
+    "after": "ad5f6068c920bd25a0bbeed863db63e85327d4442a1c451e1de4fd08cec4a993",
     "edits": [
       {
         "start": 0,
@@ -24,8 +24,7 @@
           "            group=str(event.get_group_id() or '')\n",
           "            if str(event.get_sender_id()) in policy.blocked_for(group) or (group and (group not in policy.groups or gateway.epoch(cfg,group)!=event.get_extra('_ffa_security_epoch'))):\n",
           "                raise PermissionError('Fat-Fish-Assistant access revoked before tool execution')\n",
-          "            turn=event.get_extra('_ffa_turn_tools',None)\n",
-          "            if getattr(tool, 'name', '') not in {'memorize_long_term_memory','web_search_deepseek','deepseek_fetch_web_page'} and not (turn and turn.owns(tool)):\n",
+          "            if getattr(tool, 'name', '') not in {'memorize_long_term_memory','web_search_deepseek','deepseek_fetch_web_page'}:\n",
           "                raise PermissionError('Tool outside the chat capability boundary')\n",
           "            gateway.audit('tool_start',event)\n"
         ]

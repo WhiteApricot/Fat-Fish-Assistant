@@ -10,4 +10,4 @@
 
 模型服务需按实际配置提供凭据。分发条件、模型与素材声明见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
 
-[依赖约束及锁文件](../packaging/requirements) 集中归档。实际下载和组装以 [固定清单](../manifests) 为准。
+[固定清单](../manifests) 是下载和组装的唯一依赖来源。Python、AstrBot 和 Dashboard 是核心。QQ 接入需安装 NapCat 组件。语音、嵌入模型及外部插件按安装选项启用。

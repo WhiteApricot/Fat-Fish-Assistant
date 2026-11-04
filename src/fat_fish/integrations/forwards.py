@@ -140,9 +140,32 @@ class ForwardReader:
         if incomplete:note+='记录未完整取得（平台失败、超时或安全上限），请明确告知用户缺失，不可声称完整。'
         return MARKER+'\n'+note+'\n'+json.dumps(entries,ensure_ascii=False),images
 
-def install_collector_bridge(collector):
+def install_collector_bridge(collector, version):
     """Reuse upstream collection; forwarding is an eight-second batch, no new queue."""
+    import inspect
+
+    if version != '2.9.3':
+        raise RuntimeError(f'合并转发需要固定版本 2.9.3 的消息收集插件，实际版本为 {version!r}')
     if getattr(collector,'_ffa_wait_original',None):return
+    methods = {
+        '_calculate_wait_duration': (('text', 'session', 'has_image'), False),
+        '_is_private_message_event': (('event',), False),
+        '_finalize_merged': (('event', 'buffer', 'images'), True),
+    }
+    for name, (expected, asynchronous) in methods.items():
+        method = getattr(collector, name, None)
+        try:
+            parameters = inspect.signature(method).parameters
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f'合并转发无法识别消息收集接口 {name}') from exc
+        if (tuple(parameters) != expected
+                or any(parameter.kind != inspect.Parameter.POSITIONAL_OR_KEYWORD
+                       for parameter in parameters.values())
+                or inspect.iscoroutinefunction(method) != asynchronous
+                or (name == '_calculate_wait_duration'
+                    and (parameters['session'].default is not None
+                         or parameters['has_image'].default is not False))):
+            raise RuntimeError(f'合并转发检测到不兼容的消息收集接口 {name}')
     original=collector._calculate_wait_duration
     def wait(text,session=None,has_image=False):
         material=MARKER in (text or '') or any(MARKER in x for x in (session or {}).get('buffer',[]))
