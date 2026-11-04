@@ -12,7 +12,7 @@
     "license_source": "https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/LICENSE",
     "strip_prefix": "AstrBot-f61a7f42696da6df25dc7a249ec9b8d54ed9da18/",
     "patches": "patches/astrbot/changes.json",
-    "patch_sha256": "690344201ffa2b36c23a67e612eb3eaeb3ce6ff1dd11ef31a0cba85928fdc0ac"
+    "patch_sha256": "d867da82a7d9401fa97c8fea4bffa3e70dcf641616deb1995d6d77c61d6a342f"
   },
   {
     "name": "astrbot_plugin_livingmemory",
@@ -27,7 +27,7 @@
     "license_source": "https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory/blob/e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b/LICENSE",
     "strip_prefix": "astrbot_plugin_livingmemory-e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b/",
     "patches": "patches/astrbot_plugin_livingmemory/changes.json",
-    "patch_sha256": "77ecabeea6b288758c6b1ea4584fbbedb2a377471563ee231a0761a29bc0585f"
+    "patch_sha256": "22871a48905b003f05aae5efe66180ee71ea784a0d10a74557c38e77d14568a1"
   },
   {
     "name": "astrbot_plugin_continuous_message",
@@ -42,7 +42,7 @@
     "license_source": "https://github.com/aliveriver/astrbot_plugin_continuous_message/blob/4a2a52ba90544d1527a72602762ae5ce3ae27dca/LICENSE",
     "strip_prefix": "astrbot_plugin_continuous_message-4a2a52ba90544d1527a72602762ae5ce3ae27dca/",
     "patches": "patches/astrbot_plugin_continuous_message/changes.json",
-    "patch_sha256": "3c24c6ea166fcbdcfcd6f1ffd162e1b9805d1e013bce3da9e08c2727b018c4c5"
+    "patch_sha256": "23e2c74a7003856b8252d10fc92c7e65e9a94522dbfb9726c5a5a04892688887"
   },
   {
     "name": "meme_manager",
@@ -66,7 +66,7 @@
     "url": "https://codeload.github.com/chengzhi-c/astrbot_plugin_self_initiated_reply/zip/11be8206a6bb26b9ebeccf301213e2654087d512",
     "filename": "selfreply-11be8206.zip",
     "license": "GPL-3.0",
-    "target": "src/ffa_components/participation/upstream_selfreply",
+    "target": "src/fat_fish/participation/upstream_selfreply",
     "select": [
       "decision.py",
       "models.py",

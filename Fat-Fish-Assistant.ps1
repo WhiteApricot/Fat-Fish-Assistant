@@ -37,7 +37,7 @@ try{
    $identity=Get-Content -Raw -Encoding UTF8 -LiteralPath $marker|ConvertFrom-Json
    if($identity.project -ne 'Fat-Fish-Assistant' -or $identity.schema_version -ne 1){throw 'Unknown management root marker; refusing bootstrap'}
    [Console]::Error.WriteLine('[Fat-Fish-Assistant] Preparing pinned independent Python; no registry or system Python changes.')
-   & (Join-Path $projectRoot 'scripts\Bootstrap-Python.ps1') -Destination $runtime -Cache (Join-Path $Root 'cache') 1>$null
+   & (Join-Path $projectRoot 'scripts\build\Bootstrap-Python.ps1') -Destination $runtime -Cache (Join-Path $Root 'cache') 1>$null
    $Python=$candidate
   }else{
    @{schema_version=1;project='Fat-Fish-Assistant';request_id=[guid]::NewGuid().ToString('N');ok=$false;code=21;data=@{windows=[Environment]::OSVersion.VersionString;python_available=$false};errors=@(@{type='needs_input';message='Python 3.12.3 x64 is missing';hint='Run install to bootstrap an independent interpreter, or specify -Python.'})}|ConvertTo-Json -Depth 6 -Compress

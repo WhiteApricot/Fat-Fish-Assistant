@@ -2,14 +2,14 @@
   {
     "path": "astrbot/core/astr_agent_hooks.py",
     "before": "accd70ee25c31732f4915f3dfb5cedfd5c1ca2e2890c4d8fa070eb4c74d12317",
-    "after": "4719a5ac1ba05bc287c5d10cfdb9a064ffaedb287d4c62610e74c6d18f89f516",
+    "after": "a446f61e8757319bb230c701d423194ca2d040b18c6ea78e0e99df863580a910",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -18,36 +18,36 @@
         "old": [],
         "new": [
           "        event=run_context.context.event\n",
-          "        if event.get_extra('_feiyu_access_checked', False):\n",
-          "            from astrbot.core.feiyu_p2c import gateway\n",
+          "        if event.get_extra('_ffa_access_checked', False):\n",
+          "            from astrbot.core.fat_fish_gateway import gateway\n",
           "            cfg,policy=gateway.load()\n",
           "            group=str(event.get_group_id() or '')\n",
-          "            if str(event.get_sender_id()) in policy.blocked_for(group) or (group and (group not in policy.groups or gateway.epoch(cfg,group)!=event.get_extra('_feiyu_security_epoch'))):\n",
-          "                raise PermissionError('P2C access revoked before tool execution')\n",
-          "            turn=event.get_extra('_p2f_turn_tools',None)\n",
+          "            if str(event.get_sender_id()) in policy.blocked_for(group) or (group and (group not in policy.groups or gateway.epoch(cfg,group)!=event.get_extra('_ffa_security_epoch'))):\n",
+          "                raise PermissionError('Fat-Fish-Assistant access revoked before tool execution')\n",
+          "            turn=event.get_extra('_ffa_turn_tools',None)\n",
           "            if getattr(tool, 'name', '') not in {'memorize_long_term_memory','web_search_deepseek','deepseek_fetch_web_page'} and not (turn and turn.owns(tool)):\n",
-          "                raise PermissionError('Tool outside the P2C chat capability boundary')\n",
+          "                raise PermissionError('Tool outside the chat capability boundary')\n",
           "            gateway.audit('tool_start',event)\n"
         ]
       }
     ]
   },
   {
-    "path": "astrbot/core/feiyu_p2c.py",
+    "path": "astrbot/core/fat_fish_gateway.py",
     "before": null,
-    "after": "f4a8bd9b8b6d59c1669a05e52042f7a3d90b2b0d8c5bd1aceec15cf5749f31ea",
+    "after": "2ceea8b7da1c361f4b15580b74cf9bd305bb90225e9188f8d5700f071862a219",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n",
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n",
           "import os,sys\n",
           "from pathlib import Path\n",
           "source=Path(os.environ['FEIYU_SOURCE_ROOT']).resolve()\n",
           "sys.path.insert(0,str(source))\n",
-          "from ffa_components.gateway.scoped_gateway import ScopedGateway\n",
+          "from fat_fish.gateway.scoped_gateway import ScopedGateway\n",
           "gateway=ScopedGateway(Path(os.environ['FEIYU_RUNTIME_ROOT'])/'private/p2c-access.json')\n"
         ]
       }
@@ -56,14 +56,14 @@
   {
     "path": "astrbot/builtin_stars/astrbot/main.py",
     "before": "3874fac08eaa87398d1211080e064d0aa5e4988170cc17710cb266cfc00617ac",
-    "after": "e1b7353e2be6c4796789e5cb8d658f03de4db9e1d53ec4fd49c3006092e90f9f",
+    "after": "d9d0b6ecfcefcc856bd0171b6ac620c06b02493dc0ca47fc00bd8da3f0a31d87",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -71,7 +71,7 @@
         "end": 153,
         "old": [],
         "new": [
-          "        if event.get_extra('_feiyu_group_persisted',False):\n",
+          "        if event.get_extra('_ffa_group_persisted',False):\n",
           "            return\n"
         ]
       }
@@ -80,14 +80,14 @@
   {
     "path": "astrbot/core/pipeline/context_utils.py",
     "before": "55f64c4cc05781ba792f91641976e1ee3e2808888b0948932dc15e794ca245ed",
-    "after": "68629747235a0814de087c980ca8c1d2070f48e2f46457b5797919b50baff50a",
+    "after": "9e2024575de2bee83b10d7ade4ae2e13cc902fba50817eceaaf7379daf5c552e",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n",
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n",
           "import asyncio\n"
         ]
       },
@@ -105,14 +105,14 @@
   {
     "path": "astrbot/core/pipeline/scheduler.py",
     "before": "dfdb757e1ec30ebc84fa6c98d4ab7de3b4c5f967a5b57a4055c7ec307cc882a2",
-    "after": "3bfcdfa0638986803fcfa5e123a295e38a43377f6cd194c3084b93bc32021266",
+    "after": "9914d55bbf8348126d4b3858b092cd6717e70f83642d5e45f727ac61b5a815a5",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -122,7 +122,7 @@
           "            await self._process_stages(event)\n"
         ],
         "new": [
-          "            from astrbot.core.feiyu_p2c import gateway\n",
+          "            from astrbot.core.fat_fish_gateway import gateway\n",
           "            gateway.context=self.ctx.plugin_manager.context\n",
           "            if event.get_platform_name() == 'aiocqhttp' and not event.is_private_chat():\n",
           "                gateway.participation.provider = await self.ctx.plugin_manager.context.get_using_provider_async()\n",
@@ -134,14 +134,14 @@
   {
     "path": "astrbot/core/agent/runners/tool_loop_agent_runner.py",
     "before": "ac20138ada8ce83bc88ffec72e40ef4d5ac174a3695a27ae84ad2d9912537645",
-    "after": "86c4e3b7724fb8884437aa8fd74eb9ef67101e98e33f213dcdc033035d4ac203",
+    "after": "48d4ba58ec66dfbf3872b1f54306854a44c19343f8b20c4da6b358d4349653f6",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -152,8 +152,8 @@
           "        # Metadata-only diagnostic after context processing, at the actual\n",
           "        # provider boundary. Never log prompts or private persona text.\n",
           "        event = getattr(getattr(self.run_context, \"context\", None), \"event\", None)\n",
-          "        if event is not None and event.is_private_chat() and event.get_extra('_feiyu_access_checked', False):\n",
-          "            from astrbot.core.feiyu_p2c import gateway\n",
+          "        if event is not None and event.is_private_chat() and event.get_extra('_ffa_access_checked', False):\n",
+          "            from astrbot.core.fat_fish_gateway import gateway\n",
           "            cfg, _ = gateway.load()\n",
           "            notes = cfg.get('private_persona_notes', {})\n",
           "            actor = str(event.get_sender_id())\n",
@@ -168,14 +168,14 @@
   {
     "path": "astrbot/core/pipeline/preprocess_stage/stage.py",
     "before": "826ddcaa85c61f48b6dbf50222a798359192df5b2b859afade3a930b325114c0",
-    "after": "8210fedc5dd83e526efdae5a999a88ef8b6bb6e1727ba8d4a8d756f9cb09160f",
+    "after": "eb42772fb69718081c4ef38235cfc5f5b643a349b3daeef1ddb067e5a766d941",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -193,14 +193,14 @@
   {
     "path": "astrbot/core/pipeline/respond/stage.py",
     "before": "b005932bfed844a001bc42627088df7fb498fba470e0f2ea7c0e1215f180f592",
-    "after": "6058cdb59e8ffe6b228ce29378dd3f4d87577366198b9bd9a1d76ccf025ba34c",
+    "after": "f161fbe01bd4d635419b871cb050605bee948b0f3d7f3cc08e32a0ea22f893bc",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -208,11 +208,11 @@
         "end": 362,
         "old": [],
         "new": [
-          "                        # Feiyu local patch: a subsequent turn may cancel the\n",
+          "                        # Fat-Fish-Assistant integration: a subsequent turn may cancel the\n",
           "                        # remaining segments; report only successfully sent ones.\n",
-          "                        delivered = event.get_extra(\"_feiyu_delivered_parts\", [])\n",
+          "                        delivered = event.get_extra(\"_ffa_delivered_parts\", [])\n",
           "                        delivered.append(str(getattr(comp, \"text\", \"[图片或语音]\"))[:400])\n",
-          "                        event.set_extra(\"_feiyu_delivered_parts\", delivered[-8:])\n"
+          "                        event.set_extra(\"_ffa_delivered_parts\", delivered[-8:])\n"
         ]
       }
     ]
@@ -220,14 +220,14 @@
   {
     "path": "astrbot/core/pipeline/waking_check/stage.py",
     "before": "d880be8a1e23561f86c3883cedad65c7e7be34fc2eeccec647bd2ddfc1b55a65",
-    "after": "7496101c7d7b1b1e4fc64f5185585175ac947b829c733eca6c0bcbbe64cccc8a",
+    "after": "043d4fd59c2acbfa4b00dc81d80b1c703881e7d8989c933758467f32f32611b3",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -245,7 +245,7 @@
           "        is_wake = False\n"
         ],
         "new": [
-          "        is_wake = bool(event.get_extra('_feiyu_access_checked', False) and event.get_extra('_feiyu_smart', False) and not event.is_private_chat())\n"
+          "        is_wake = bool(event.get_extra('_ffa_access_checked', False) and event.get_extra('_ffa_smart', False) and not event.is_private_chat())\n"
         ]
       },
       {
@@ -253,9 +253,9 @@
         "end": 161,
         "old": [],
         "new": [
-          "            if event.get_extra('_feiyu_access_checked', False) and event.get_extra('_feiyu_level', -1) < 3:\n",
+          "            if event.get_extra('_ffa_access_checked', False) and event.get_extra('_ffa_level', -1) < 3:\n",
           "                commands=[f for f in handler.event_filters if isinstance(f,(CommandFilter,CommandGroupFilter))]\n",
-          "                if commands and not (event.is_private_chat() and event.get_extra('_feiyu_personal_native',False) and all(getattr(f,'command_name','')=='new' for f in commands)):\n",
+          "                if commands and not (event.is_private_chat() and event.get_extra('_ffa_personal_native',False) and all(getattr(f,'command_name','')=='new' for f in commands)):\n",
           "                    continue\n"
         ]
       }
@@ -264,14 +264,14 @@
   {
     "path": "astrbot/core/pipeline/whitelist_check/stage.py",
     "before": "c186cecd1f66be22aeba29c27bf40d5fbada6c1b6e97a15d689a3e6de5dabccd",
-    "after": "8f76288a8442b10b494e623abc8876b08ebd7a04bb49d64ad162318dcb2a0314",
+    "after": "523f385b819ccd181481f4cca75dd2bf5030be7d4a719e3084e893bd1530eca6",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -279,7 +279,7 @@
         "end": 34,
         "old": [],
         "new": [
-          "        if event.get_extra('_feiyu_access_checked', False):\n",
+          "        if event.get_extra('_ffa_access_checked', False):\n",
           "            return\n"
         ]
       }
@@ -288,14 +288,14 @@
   {
     "path": "astrbot/core/pipeline/process_stage/method/agent_sub_stages/internal.py",
     "before": "dbe18dec7382d788432e089b513c009dda038a9fc0225ca1fc1e2b2b8c8bd8dd",
-    "after": "aea8cba6ff8b6f336742b89b9d37dc0467e85b09583c18e12d781f145edded76",
+    "after": "185d17981b8d8ed599791e083d11bc3aa5d048d71013da330eb3e876c4ce5010",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -303,9 +303,9 @@
         "end": 515,
         "old": [],
         "new": [
-          "        profile_restore=event.get_extra('_feiyu_persona_turn_restore')\n",
-          "        if profile_restore and event.is_private_chat() and event.get_extra('_feiyu_access_checked',False):\n",
-          "            from ffa_components.persona.private_persona import restore_for_storage\n",
+          "        profile_restore=event.get_extra('_ffa_persona_turn_restore')\n",
+          "        if profile_restore and event.is_private_chat() and event.get_extra('_ffa_access_checked',False):\n",
+          "            from fat_fish.persona.private_persona import restore_for_storage\n",
           "            all_messages=restore_for_storage(all_messages,profile_restore)\n",
           "\n"
         ]

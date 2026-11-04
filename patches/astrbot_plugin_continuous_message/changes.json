@@ -2,14 +2,14 @@
   {
     "path": "forward_handler.py",
     "before": "ad1f0fa5b02976eddbced8235bd0c5ee0c8d876e1693b6aeeb9476a3ddd28b25",
-    "after": "40e8940ef1eca248635e09992425b84928e1e9ebfaf87eb1885c8a61c33298c5",
+    "after": "12c11b38785f3291ad182774bb8e1ea203c2adcf47782dd6968b8bf7b9f2a4f4",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -102,14 +102,14 @@
   {
     "path": "main.py",
     "before": "3f8413fb99524bdfeb8da7b6f23e9fd0ee4859c03725b700a56b700c51d9c359",
-    "after": "d5c28020501e6e5573335ca2f3538f97f7bb64d1c214988a59d8f509190bcf93",
+    "after": "e1686f82c5162bc7732eb8e21873180fef7d319eff310007ee2cd38bfb43cf5c",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -117,7 +117,7 @@
         "end": 77,
         "old": [],
         "new": [
-          "        # Feiyu local patch: retain only live, cancellable chat turns.\n",
+          "        # Fat-Fish-Assistant integration: retain only live, cancellable chat turns.\n",
           "        self.inflight = {}\n"
         ]
       },
@@ -140,7 +140,7 @@
           "\n",
           "    @filter.on_using_llm_tool(priority=100000)\n",
           "    async def protect_started_tool(self, event, tool, tool_args):\n",
-          "        event.set_extra('_feiyu_tool_started', True)\n",
+          "        event.set_extra('_ffa_tool_started', True)\n",
           "\n",
           "    def _finish_turn(self, uid, event):\n",
           "        turn = self.inflight.get(uid)\n",
@@ -179,7 +179,7 @@
           "        access_mode = self.access_control.get_mode(event)\n"
         ],
         "new": [
-          "        access_mode = 'debounce' if event.get_extra('_feiyu_access_checked', False) else self.access_control.get_mode(event)\n"
+          "        access_mode = 'debounce' if event.get_extra('_ffa_access_checked', False) else self.access_control.get_mode(event)\n"
         ]
       },
       {
@@ -203,9 +203,9 @@
           "        # Commands and unlisted/group sessions have already bypassed this path.\n",
           "        # Never replay a turn once a tool might have produced side effects.\n",
           "        previous = self.inflight.get(uid)\n",
-          "        if previous and not previous['task'].done() and not previous['event'].get_extra('_feiyu_tool_started', False):\n",
+          "        if previous and not previous['task'].done() and not previous['event'].get_extra('_ffa_tool_started', False):\n",
           "            old_event = previous['event']\n",
-          "            delivered = old_event.get_extra('_feiyu_delivered_parts', [])\n",
+          "            delivered = old_event.get_extra('_ffa_delivered_parts', [])\n",
           "            carry = list(previous['buffer'])\n",
           "            if delivered:\n",
           "                carry.append('[上一轮被新消息打断；实际已发送：' + '\\n'.join(delivered)[-1200:] + '。结合后面的补充继续回答，不重复已经发过的内容，不假设其他草稿已送达。]')\n",
@@ -246,21 +246,21 @@
   {
     "path": "quote_thread.py",
     "before": null,
-    "after": "f5493a2bdbdeebd342520d8f2894b4f935c673caa4ce9f3cb2fe84ca2fcd94b5",
+    "after": "b0ac492d027133492bad831276422fc476c754161374e1393e2f41b3f3fdf383",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n",
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n",
           "\"\"\"Bounded quote ancestry; only the active QQ conversation may be read.\"\"\"\n",
           "import asyncio\n",
           "from html import escape\n",
           "from astrbot.api.message_components import Plain, Image, Reply\n",
           "\n",
           "async def resolve_quote_thread(event, reply):\n",
-          "    blocked = set(event.get_extra('_feiyu_blocked_ids', ()))\n",
+          "    blocked = set(event.get_extra('_ffa_blocked_ids', ()))\n",
           "    seen, entries, images = set(), [], []\n",
           "    current = reply\n",
           "    budget = 6000\n",

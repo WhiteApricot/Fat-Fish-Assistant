@@ -2,14 +2,14 @@
   {
     "path": "core/memory_scope.py",
     "before": "35720e27f868c1fffaeba5e56b87d6eb29154193246653f9a84d025e812eaece",
-    "after": "8c1cacdec748a9a33acb42a10783df2c61ba50591e3c3a25e457276661a402da",
+    "after": "4ab42040acf08ddb5498847db79a5cbfcde6428de979c67b526ceb219bb0f4cd",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -17,8 +17,8 @@
         "end": 99,
         "old": [],
         "new": [
-          "    if getattr(event, 'get_extra', lambda *a: False)('_feiyu_access_checked', False):\n",
-          "        return event.get_extra('_feiyu_level', -1) >= 0\n"
+          "    if getattr(event, 'get_extra', lambda *a: False)('_ffa_access_checked', False):\n",
+          "        return event.get_extra('_ffa_level', -1) >= 0\n"
         ]
       }
     ]
@@ -26,14 +26,14 @@
   {
     "path": "core/passive_group_capture.py",
     "before": "bb60b8be01be4695ca436ab9f3e1be42ac73bda528fd3247a46caa008715ea22",
-    "after": "0907009fb297ec09a4148db383a7df52dac33f1c18285f72b17118ddbfd1581e",
+    "after": "44c4411c93bc3e33d50b4bc751a182917b81492b38307b29ab38d20a877c1547",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -41,7 +41,7 @@
         "end": 120,
         "old": [],
         "new": [
-          "        if event.get_extra('_feiyu_skip_group_capture',False):return False\n"
+          "        if event.get_extra('_ffa_skip_group_capture',False):return False\n"
         ]
       }
     ]
@@ -49,14 +49,14 @@
   {
     "path": "core/retrieval/vector_retriever.py",
     "before": "c10511f2f302f8f31ae2e8f98e54f48d17025543101daf276d26a0f5e315f23c",
-    "after": "1851a5bd3285fcd75bb00127cd76b5cdd3d853ca2fec55a68feac279242f6431",
+    "after": "984ec614167318880d0186f021caf4475d9e3733f33d679d380e14fd25dcc308",
     "edits": [
       {
         "start": 0,
         "end": 0,
         "old": [],
         "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and docs/THIRD_PARTY.md.\n"
+          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
         ]
       },
       {
@@ -66,7 +66,7 @@
           "        _MAX_QUERY_CHARS = 2000\n"
         ],
         "new": [
-          "        # Feiyu local patch: this pinned BGE-small encoder has a 512-token context.\n",
+          "        # Fat-Fish-Assistant integration: this pinned BGE-small encoder has a 512-token context.\n",
           "        _MAX_QUERY_CHARS = 300\n"
         ]
       }

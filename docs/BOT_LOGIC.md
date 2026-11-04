@@ -7,3 +7,5 @@
 5. 提醒插件通过 AstrBot 的定时调度独立检查到期任务。
 
 参见 [权限](PERMISSIONS.md) 与 [事件约定](protocols/MESSAGE_EVENT_CONTRACT.md)。
+
+维护入口分别是 [消息网关](../src/fat_fish/gateway)、[Guard 插件](../plugins/fat_fish_guard) 和 [记忆指令](../src/fat_fish/memory/commands.py)。

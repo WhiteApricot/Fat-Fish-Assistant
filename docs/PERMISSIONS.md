@@ -4,4 +4,4 @@
 
 授权等敏感变更进入待确认流程。待办与操作者和会话绑定，过期要重新申请。/confirm 确认，/cancel 取消。/history 查看近期回执，/undo 尝试撤销符合条件的近期操作。状态已变化或清空记忆等不可逆操作无法通过撤销覆盖。
 
-命令与参数见 [指令手册](COMMAND_REFERENCE.md)，实现见 [权限策略](../src/ffa_components/permissions/policy.py) 和 [作用域网关](../src/ffa_components/gateway/scoped_gateway.py)。
+命令与参数见 [指令手册](COMMAND_REFERENCE.md)，实现见 [权限策略](../src/fat_fish/permissions/policy.py) 和 [作用域网关](../src/fat_fish/gateway/scoped_gateway.py)。

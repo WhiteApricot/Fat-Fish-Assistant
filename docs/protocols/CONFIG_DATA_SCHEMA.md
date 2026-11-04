@@ -9,4 +9,4 @@
 | instance/private/instance-identity.json、p2c-access.json | 固定主人与作用域权限、白黑名单及相关设置 |
 | instance/data/data_v4.db、data/plugin_data | 聊天及插件持久化数据，包括记忆索引 |
 
-管理响应字段以 [JSON Schema](../../manifests/management-response.schema.json) 为准。备份、软件版本检查与恢复以 [实例管理器](../../scripts/instance.py) 为准。数据库、路径和配置兼容键随实例迁移。
+管理响应字段以 [JSON Schema](../../manifests/management-response.schema.json) 为准。备份、软件版本检查与恢复以 [实例管理器](../../fat_fish_management/instance.py) 为准。数据库、路径和配置兼容键随实例迁移。

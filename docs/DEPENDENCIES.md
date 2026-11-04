@@ -9,3 +9,5 @@
 | 嵌入与语音组件 | 可选本地记忆检索与语音识别 | [模型清单](../manifests/model-runtime-lock.json) |
 
 模型服务需按实际配置提供凭据。分发条件、模型与素材声明见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
+
+[依赖约束及锁文件](../packaging/requirements) 集中归档。实际下载和组装以 [固定清单](../manifests) 为准。

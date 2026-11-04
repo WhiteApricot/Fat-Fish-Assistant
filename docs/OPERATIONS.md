@@ -29,7 +29,7 @@ CMD 使用 `daily-start`，仍调用既有组件管理和健康接口：依次�
 - DIRTY：不能直接清除。先检查一致性；主记忆索引可通过既有 MemoryEngine/IndexValidator 修复，原 DB/索引及故障标记保留副本，失败保留 DIRTY。缺少 Embedding、损坏 SQLite、graph_memory 或未知向量状态时拒绝自动恢复。
 - upgrade-journal.json：日常入口先调用原 recover-upgrade，不与失效生命周期标记混用。活动或状态模糊时停止恢复，保留证据。
 
-手工索引修复工具仍为 scripts/rebuild_memory.py；升级/回滚仍由 manage.py 管理。普通用户无需运行工具或手动删除标记。诊断在安装根 logs、instance/logs、private/data-integrity.log 及 private 下的生命周期/索引修复历史；不得直接公开这些私人材料。
+手工索引修复工具仍为 fat_fish_management/rebuild_memory.py；升级/回滚仍由 manage.py 管理。普通用户无需运行工具或手动删除标记。诊断在安装根 logs、instance/logs、private/data-integrity.log 及 private 下的生命周期/索引修复历史；不得直接公开这些私人材料。
 
 ## 迁移与切换
 
@@ -50,3 +50,5 @@ CMD 使用 `daily-start`，仍调用既有组件管理和健康接口：依次�
 - 非空未知目标或已有实例：换新空目录；禁止伪造管理标记。
 - 协议未连接：检查向导中的机器人 QQ、独立运行包完整性和手动登录；查看本机日志，不通过扩大群权限解决。
 - SQLite/向量状态不支持：保留原件，按诊断使用测试过的恢复适配器；不能删除 DIRTY 强行启动。
+
+代码更新后通过原安装向导的修复入口重建并切换发布。当前源码对比覆盖核心及自有插件。引导、生命周期、配置和迁移的维护入口见 [系统设计](work/SYSTEM_DESIGN.md)。
