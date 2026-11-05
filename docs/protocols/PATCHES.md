@@ -1,6 +1,6 @@
 # 固定版本的最小兼容补丁
 
-来源及官方归档 SHA 在 manifests/sources.json。AstrBot 11 个、LivingMemory 3 个、continuous_message 4 个修改文件；meme_manager 无修改。数字是修改文件数，不等于独立功能数。
+来源及官方归档 SHA 见 [来源清单](../../manifests/sources.json)。AstrBot 11 个、LivingMemory 3 个、continuous_message 4 个修改文件；meme_manager 无修改。数字是修改文件数，不等于独立功能数。
 
 changes.json 只保存变更行段：path、before/after SHA-256、edits[start,end,old,new]。下标按原文件行号，按逆序应用；前置字节 SHA、原行段、补丁文件 SHA 和最终字节 SHA 均校验。新建的自有桥接文件 before=null。没有完整上游 overlay 或上游 ZIP。
 
