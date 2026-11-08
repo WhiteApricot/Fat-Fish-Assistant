@@ -11,3 +11,10 @@
 模型服务需按实际配置提供凭据。分发条件、模型与素材声明见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
 
 [固定清单](../manifests) 是下载和组装的唯一依赖来源。Python、AstrBot 和 Dashboard 是核心。QQ 接入需安装 NapCat 组件。语音、嵌入模型及外部插件按安装选项启用。
+
+## Linux 阶段 1 依赖锁
+
+- [Ubuntu 24.04 x86_64 直接前置](../manifests/linux-x86_64/ubuntu-24.04.tsv)区分运行和构建包。安装器校验固定版本和缺件归档的 SHA256。传递系统依赖由 Ubuntu APT 签名索引管理，离线系统安装还需预备对应的索引和传递包。
+- [Python 3.12 core 锁](../manifests/linux-x86_64/core.json)记录 P2 对应版本、Linux wheel ABI、下载来源和哈希。aiocqhttp 与 jieba 保留固定 sdist，构建工具复用 build.json。pywin32 属 Windows 平台。chat 扩展和可选语音环境另行验证。
+- [QQ 与 NapCat Shell](../manifests/linux-x86_64/napcat.json)固定阶段 0 实机通过的 QQ、Shell 和启动器源码。QQ deb 的 SHA256 来自已验收的腾讯下载样本。组件组装和启动适配在后续批次接入 ffa.py。
+- 系统前置脚本位于 scripts/linux/system-prerequisites.sh，支持 --check、--install 和 --offline。在线补包使用 curl 下载锁定的直接依赖，优先清华镜像，随后试用 Ubuntu 官方源。传递包使用系统已配置的 APT 源。verify_cache.py 在组装前验证平铺缓存。WSL 浏览器转发和软件渲染参数单独维护。

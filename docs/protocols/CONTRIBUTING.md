@@ -46,3 +46,13 @@ NapCat 管理 QQ 接入，OneBot 提供传输与平台动作，AstrBot 管理事
 维护者可以运行 `python -B fat_fish_management/audit_release.py --repo .` 检查当前文件、暂存区和历史的凭据格式及意外载荷。它不会代替人工核对。
 
 回退由安装器验证过的可选依赖扩展时，先停用依赖扩展的适配器和文档工具，再用受管 Python 运行 `fat_fish_management/rollback_optional_dependencies.py --root <安装根> --confirm-optional-features-disabled`。工具要求匹配扩展回执，停服务后仅卸载该次扩展添加的包，保留核心依赖。此入口供维护者恢复受管环境。
+
+## P3 双平台工程规范
+
+Windows 和 Linux 是独立且平等的运行平台。两端完整支持聊天、独立安装、启停、备份及恢复，共用 ffa.py 管理核心、命令契约和迁移包格式。Windows 保留 CMD/PowerShell，Linux 使用 Bash，系统操作由适配层处理。迁移验收覆盖 Windows → Linux、Linux → Windows 和往返，采用停机迁移。机器人账号同一时间只运行一个托管实例。Windows 主人 QQ 可继续运行，按账号和实例归属识别机器人。
+
+管理面板采用共用终端菜单，提供启动、停止、重启、状态、日志、备份、迁移及打开管理页面。NapCat 和 AstrBot 保留专业 WebUI。菜单按需从受管 NapCat 读取当前有效 Token 并直接打开登录地址，普通日志不输出地址中的秘密、密码或 Token。WSL 使用 Windows 浏览器，云端使用 SSH 隧道，服务默认监听回环。
+
+APT 和 PyPI 优先使用国内镜像，官方源备用。GitHub 使用固定归档、Release 和本地缓存。依赖锁记录版本、来源、SHA256，适用时记录 ABI 和许可。优先从校验后的缓存离线安装。核心依赖升级需有兼容性证据。WSL 转发及图形环境处理单独记录，通用安装器适用于原生 Ubuntu。
+
+全部开发和测试在 E:/AI_Chat/Fat-Fish-Assistant.local 进行。每个重大批次先测试并提交差异供用户审查，获确认后才同步 E:/AI_Chat/Fat-Fish-Assistant 并提交、推送一次。小修不提交或推送。

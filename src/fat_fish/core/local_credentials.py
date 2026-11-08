@@ -1,9 +1,11 @@
-"""Windows current-user DPAPI storage for the local AstrBot dashboard only."""
+"""Platform-specific storage for the local AstrBot dashboard."""
 import ctypes
 import json
 import logging
 import os
 import re
+import stat
+import tempfile
 from ctypes import wintypes
 from pathlib import Path
 
@@ -33,9 +35,30 @@ def _crypt(value, decrypt=False):
         kernel.LocalFree(ctypes.cast(output.data, ctypes.c_void_p))
 
 
+def _posix_credential_path(root):
+    private = Path(root) / 'private'
+    info = private.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        raise ValueError('Dashboard credential directory must be owned by the service user')
+    private.chmod(0o700)
+    if private.stat().st_mode & 0o077:
+        raise ValueError('Dashboard credential directory cannot be protected')
+    return private / 'dashboard-credential.json'
+
 def save_password(root, password):
     if not isinstance(password, str) or not password:
         raise ValueError('Empty dashboard password')
+    if os.name != 'nt':
+        path = _posix_credential_path(root)
+        fd, name = tempfile.mkstemp(prefix='.dashboard-', dir=path.parent)
+        pending = Path(name)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                json.dump({'username': 'astrbot', 'password': password}, stream)
+            pending.replace(path)
+        finally:
+            pending.unlink(missing_ok=True)
+        return
     path = Path(root)/'private/dashboard-credential.dpapi'
     # DPAPI binds to the Windows account; no machine-wide or plaintext fallback.
     raw = _crypt(json.dumps({'username': 'astrbot', 'password': password}).encode())
@@ -46,6 +69,16 @@ def save_password(root, password):
 
 def load_password(root):
     root = Path(root)
+    if os.name != 'nt':
+        path = _posix_credential_path(root)
+        try:
+            with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), encoding='utf-8') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                    raise ValueError('Dashboard credential permissions are unsafe')
+                return json.load(stream)['password']
+        except FileNotFoundError as exc:
+            raise ValueError('Update the saved AstrBot dashboard password once') from exc
     path = root/'private/dashboard-credential.dpapi'
     legacy = root/'private/dashboard-password.txt'
     if path.exists():
@@ -71,7 +104,7 @@ class InitialPasswordFilter(logging.Filter):
         match = re.search(r'Initial password:\s*([^\s]+)', message)
         if match:
             save_password(self.root, match[1])
-            record.msg = message[:match.start(1)]+'[saved with Windows DPAPI]'+message[match.end(1):]
+            record.msg = message[:match.start(1)]+('[saved with Windows DPAPI]' if os.name == 'nt' else '[saved in protected storage]')+message[match.end(1):]
             record.args = ()
             record._ffa_credential_redacted = True
         return True

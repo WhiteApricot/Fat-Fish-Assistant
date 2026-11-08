@@ -98,7 +98,7 @@ def initialize(destination, owner, release,seed_persona=True):
     protect_boundary(destination)
     import imageio_ffmpeg
     (destination/'bin').mkdir()
-    link_or_copy(imageio_ffmpeg.get_ffmpeg_exe(),destination/'bin/ffmpeg.exe')
+    link_or_copy(imageio_ffmpeg.get_ffmpeg_exe(),destination/'bin'/('ffmpeg.exe' if os.name=='nt' else 'ffmpeg'))
     cfg = {'owner':owner,'global_admins':[],'admins':[],'blocked':[],'approved_groups':[],'groups':{},
            'group_admins':{},'group_blocked':{},'identity_salt':secrets.token_hex(32),'epoch':0}
     (destination/'private/p2c-access.json').write_text(json.dumps(cfg))
@@ -141,7 +141,7 @@ def _backup_locked(instance, destination):
             parts=tuple(part.casefold() for part in rel.parts)
             if path.is_symlink() or path.is_junction():raise ValueError('Linked data requires an explicit migration adapter')
             if '__pycache__' in parts or path.suffix=='.pyc':continue
-            if parts==('bin','ffmpeg.exe'):
+            if parts==('bin','ffmpeg.exe' if os.name=='nt' else 'ffmpeg'):
                 import imageio_ffmpeg
                 if digest(path)!=digest(Path(imageio_ffmpeg.get_ffmpeg_exe())):raise ValueError('Managed FFmpeg was modified; explicit compatibility review required')
                 continue
@@ -213,7 +213,7 @@ def restore(snapshot,destination,release,installation_root=None):
                 if db.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise ValueError('Restore database check failed; staging quarantined')
     import imageio_ffmpeg
     (stage/'bin').mkdir(exist_ok=True)
-    link_or_copy(imageio_ffmpeg.get_ffmpeg_exe(),stage/'bin/ffmpeg.exe')
+    link_or_copy(imageio_ffmpeg.get_ffmpeg_exe(),stage/'bin'/('ffmpeg.exe' if os.name=='nt' else 'ffmpeg'))
     (stage/'logs').mkdir(exist_ok=True)
     identity=manifest.get('instance_identity',{'schema':SCHEMA})
     if identity.get('schema')!=SCHEMA:raise ValueError('Unsupported instance identity schema')

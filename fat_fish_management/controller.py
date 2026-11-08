@@ -24,7 +24,7 @@ import uuid
 import tempfile
 from pathlib import Path
 
-from fat_fish_management.dependencies import PROJECT,acquire,build_release,clean_environment,digest,external,install_environment,load,profile_fingerprint,run_logged,unpack,verify_environment_versions,link_or_copy,RELEASE_LAYOUT,extend_core_environment
+from fat_fish_management.dependencies import PROJECT,acquire,build_release,clean_environment,digest,external,install_environment,load,profile_fingerprint,run_logged,unpack,verify_environment_versions,link_or_copy,RELEASE_LAYOUT,extend_core_environment,profile_rows
 
 SERVICE_SCRIPTS = {'Install-Runtime.ps1': 'scripts/build/Install-Runtime.ps1', 'Invoke-NapCat.ps1': 'scripts/services/Invoke-NapCat.ps1', 'Invoke-LocalModels.ps1': 'scripts/services/Invoke-LocalModels.ps1', 'Check-Environment.ps1': 'scripts/diagnostics/Check-Environment.ps1'}
 
@@ -200,8 +200,12 @@ def shell(root,script,*args,json_output=False):
 def inspect_environment(root,network=False):
     checks=[]
     def add(name,ok,detail,hint='',severity='error'):checks.append({'name':name,'ok':bool(ok),'severity':severity,'detail':detail,'hint':hint})
-    add('windows_x64',os.name=='nt' and platform.machine().lower() in {'amd64','x86_64'},platform.platform(),'Use Windows x64; this release does not claim Linux validation.')
-    if os.name=='nt':add('windows_version',sys.getwindowsversion().major>=10,str(sys.getwindowsversion()),'Use Windows 10/11 x64; older Windows versions are not supported.')
+    if sys.platform.startswith('linux'):
+        info=platform.freedesktop_os_release()
+        add('ubuntu_x64',info.get('ID')=='ubuntu' and info.get('VERSION_ID')=='24.04' and platform.machine()=='x86_64',platform.platform(),'Use Ubuntu 24.04 x86_64')
+    else:
+        add('windows_x64',os.name=='nt' and platform.machine().lower() in {'amd64','x86_64'},platform.platform(),'Use Windows x64; this release does not claim Linux validation.')
+        if os.name=='nt':add('windows_version',sys.getwindowsversion().major>=10,str(sys.getwindowsversion()),'Use Windows 10/11 x64; older Windows versions are not supported.')
     add('python',sys.version_info[:3]==(3,12,3),platform.python_version(),'Use the pinned bootstrap interpreter or explicitly provide Python 3.12.3 x64.')
     parent=root
     while not parent.exists():parent=parent.parent
@@ -352,9 +356,12 @@ def install(root,args):
                     if not marker.exists() or read(marker).get('lock_sha256')!=profile_fingerprint(environment_profile(root,record,profile)):
                         raise Fault('incompatible','Repair will not switch a data instance to changed dependency versions; use a tested upgrade adapter')
         chosen=selection(args.components);record.setdefault('components',{})
+        if sys.platform.startswith('linux') and (chosen & {'embedding','speech'} or dependency_profile!='core'):
+            raise Fault('incompatible','Linux supports the core chat installation profile; optional model runtimes require a platform lock')
         journal=root/'install-journal.json'
         if journal.exists():atomic(root/'install-history'/(uuid.uuid4().hex+'.json'),read(journal))
-        atomic(journal,{'schema_version':SCHEMA,'requested':sorted(chosen),'state':'running','started_at':time.time()})
+        args.install_attempt=uuid.uuid4().hex
+        atomic(journal,{'schema_version':SCHEMA,'requested':sorted(chosen),'state':'running','attempt':args.install_attempt,'started_at':time.time()})
         def save():atomic(root/'installation.json',record)
         progress('1/5','preflight and pinned component plan')
         check=inspect_environment(root,network=not args.offline and not (args.repair and record.get('instance')))
@@ -420,7 +427,13 @@ def install(root,args):
         progress('4/5','optional external assets')
         specs={x['id']:x for x in load('assets.json')}
         wanted=[]
-        if 'napcat' in chosen:wanted.append(('napcat-node',specs['napcat-node-v4.18.41'],root/'services/napcat-node-v4.18.41'))
+        if sys.platform.startswith('linux') and 'napcat' in chosen:
+            if not args.accept_external_licenses:
+                raise Fault('needs_input','Review and accept the external QQ and NapCat conditions')
+            from fat_fish_management import linux_platform
+            record['components']['napcat']=linux_platform.install_napcat(root,cache,args.offline,progress)
+            save()
+        elif 'napcat' in chosen:wanted.append(('napcat-node',specs['napcat-node-v4.18.41'],root/'services/napcat-node-v4.18.41'))
         if 'embedding' in chosen:
             wanted.extend([('embedding-engine',specs['llama-b11946-win-cpu'],root/'assets/llama-b11946'),('embedding-model',specs['embedding-bge-small-zh-v1.5'],root/'assets/bge-small-zh-v1.5-f16.gguf')])
         if 'speech' in chosen:wanted.append(('speech-model',specs['sensevoice-int8-20250909'],root/'assets/sensevoice-int8-20250909'))
@@ -451,6 +464,12 @@ def install(root,args):
                     proof={'transaction':secrets.token_hex(16),'root_deployment':read(root/'.ffa-managed.json')['deployment_id'],'owner':args.owner,'release':str(release)}
                     atomic(receipt,proof)
                     invoke(root,chat_python(root,record),'instance.py','init','--destination',stage,'--release',resolve(root,record['release']),'--owner',args.owner)
+                    if sys.platform.startswith('linux'):
+                        cfg_path=stage/'data/cmd_config.json'
+                        cfg=read(cfg_path)
+                        cfg['dashboard']['port']=available_loopback_port(6185)
+                        atomic(cfg_path,cfg)
+                        invoke(root,chat_python(root,record),'configure_chat.py','--instance',stage,'--onebot-only','--onebot-port',available_loopback_port(6199))
                     atomic(stage/'private/install-origin.json',proof)
                     stage.rename(target)
                 record['instance']=rel(root,target);save()
@@ -486,6 +505,8 @@ def prepare_instance_assets(root,record,runtime):
 def guidance(root,record):
     if not record.get('instance'):return ['Software is ready; initialize with your own QQ identity or restore a verified backup into a new instance.']
     target=instance(root,record);cfg=read(target/'data/cmd_config.json');port=cfg['dashboard']['port']
+    if sys.platform.startswith('linux'):
+        return [f'AstrBot Dashboard: http://127.0.0.1:{port}', 'Use start.sh menu for service controls and the NapCat login page.']
     return [f'肥鱼助手 / Fat-Fish-Assistant: start opens only the local service at http://127.0.0.1:{port}.',
             'Dashboard credentials are saved with Windows DPAPI; use the desktop launcher to securely update the saved password after changing it.',
             'The pinned official Node/QQ runtime is prepared automatically; NapCat QR login and device authorization remain manual. Never copy another user\'s login session, owner identity, key or approved groups.',
@@ -505,8 +526,15 @@ def component_status(root,record,name):
         result['path']=rel(root,active/'astrbot');result['version']=next(x['commit'] for x in metadata['vendor'] if x['name']=='astrbot')
         result.update(invoke(root,chat_python(root,record),'manage.py','status','--instance',instance(root,record),json_output=True))
         result['maintenance_pending']=(instance(root,record)/'private/upgrade-journal.json').exists()
+        if sys.platform.startswith('linux'):
+            from fat_fish_management import linux_platform
+            result.update(linux_platform.astrbot_status(root,record,result['running']))
     elif name=='napcat':
-        result.update(shell(root,'Invoke-NapCat.ps1','-Action','Status','-Root',resolve(root,info['path']),json_output=True))
+        if sys.platform.startswith('linux'):
+            from fat_fish_management import linux_platform
+            result.update(linux_platform.napcat_status(root,resolve(root,info['path'])))
+        else:
+            result.update(shell(root,'Invoke-NapCat.ps1','-Action','Status','-Root',resolve(root,info['path']),json_output=True))
     elif name in {'embedding','speech'}:
         if not record.get('instance'):
             result.update({'running':False,'ready':False,'needs_input':'Initialize an instance before configuring local provider credentials.'});return result
@@ -527,6 +555,9 @@ def operate(root,record,action,selected=None):
         raise Fault('busy','Source is suspended after migration; target must be stopped before explicit source reactivation')
     selected=selected or [x for x in ['napcat','embedding','speech','astrbot'] if record.get('components',{}).get(x,{}).get('installed')]
     if not selected:raise Fault('needs_input','No service components are installed')
+    if sys.platform.startswith('linux'):
+        from fat_fish_management import linux_platform
+        return linux_platform.operate(root,record,action,selected)
     if action=='restart':
         operate(root,record,'stop',selected)
         return operate(root,record,'start',selected)
@@ -578,7 +609,7 @@ def verify_runtime_environment(root,record,profile):
     if not receipt.exists() or read(receipt).get('lock_sha256')!=profile_fingerprint(actual):raise Fault('incompatible','Runtime environment completion receipt or dependency lock mismatch: '+profile)
     log=root/'logs'/(profile+'-startup-environment.log')
     run_logged([python,'-I','-c','import sys,struct; assert sys.version_info[:3]==(3,12,3) and struct.calcsize("P")==8'],log)
-    verify_environment_versions(python,load(actual+'.json'),log)
+    verify_environment_versions(python,profile_rows(actual),log)
     run_logged([python,'-I','-m','pip','--isolated','check'],log)
 
 def recover_napcat_login(root,record):
@@ -679,6 +710,7 @@ def configure(root,record,args):
         with installation_lock(root):
             return invoke(root,chat_python(root,record),'configure_chat.py','--instance',instance(root,record),'--onebot-port',args.onebot_port,'--model',args.model,json_output=True)
     if args.config_action=='initialize-onebot':
+        if sys.platform.startswith('linux'):raise Fault('needs_input','Use connect-qq after logging in through Linux NapCat WebUI')
         if not args.bot_id:raise Fault('needs_input','Provide your own Bot identity with --bot-id; no default account is imported')
         if component_status(root,record,'napcat')['running']:raise Fault('busy','Stop owned NapCat before connection initialization')
         with installation_lock(root):
@@ -688,13 +720,17 @@ def configure(root,record,args):
         if not view['identity_valid'] or view['dashboard']['host']!='127.0.0.1':raise Fault('integrity','Identity or loopback configuration mismatch')
         return {'configuration_valid':True,'secrets_redacted':True}
     data=read_stdin() if args.file=='-' else read(args.file)
-    if set(data)-{'dashboard_port','deepseek_api_key','qq_executable','napcat_webui_port'}:raise Fault('invalid','Only dashboard_port, deepseek_api_key, qq_executable and napcat_webui_port are writable here; owner/groups are not generic settings')
+    fields={'dashboard_port','deepseek_api_key','qq_executable','napcat_webui_port'}
+    if sys.platform.startswith('linux'):fields=(fields-{'qq_executable'})|{'onebot_port'}
+    if set(data)-fields:raise Fault('invalid','Unsupported writable configuration field on this platform')
     target=instance(root,record)
     with installation_lock(root):
         from fat_fish_management.lifecycle_lock import exclusive
         with exclusive(target):
             if any((target/'private'/x).exists() for x in ['RUNNING','DIRTY','upgrade-journal.json']):raise Fault('busy','Stop cleanly before changing configuration')
-            if 'dashboard_port' in data and (type(data['dashboard_port']) is not int or not 1024<=data['dashboard_port']<=65535):raise Fault('invalid','Dashboard port must be an integer from 1024 to 65535')
+            for field in ('dashboard_port','onebot_port'):
+                if field in data and (type(data[field]) is not int or not 1024<=data[field]<=65535):
+                    raise Fault('invalid',field+' must be an integer from 1024 to 65535')
             if 'qq_executable' in data and (not Path(data['qq_executable']).is_file() or Path(data['qq_executable']).name.lower()!='qq.exe'):raise Fault('invalid','Provide an existing QQ.exe path')
             if 'deepseek_api_key' in data and (not isinstance(data['deepseek_api_key'],str) or not data['deepseek_api_key'].strip()):raise Fault('invalid','API key must be a nonempty string')
             if 'napcat_webui_port' in data:
@@ -703,14 +739,19 @@ def configure(root,record,args):
                 if not info.get('installed') or info.get('ownership')!='managed':raise Fault('read_only','Only an owned NapCat installation can be configured')
                 if component_status(root,record,'napcat')['running']:raise Fault('busy','Stop the owned NapCat before configuration')
                 nap_root=resolve(root,info['path']);nap_root.resolve().relative_to(root.resolve())
-                nap_path=nap_root/'config/webui.json'
+                nap_path=nap_root/('napcat/config/webui.json' if sys.platform.startswith('linux') else 'config/webui.json')
                 nap_cfg=read(nap_path) if nap_path.exists() else {'token':secrets.token_hex(32),'loginRate':10,'autoLoginAccount':''}
                 nap_cfg.update(host='127.0.0.1',port=data['napcat_webui_port'],disableWebUI=False,accessControlMode='whitelist',ipWhitelist=['127.0.0.1','::1'],enableXForwardedFor=False)
             history=target/'private/config-history'/uuid.uuid4().hex;history.mkdir(parents=True)
             shutil.copy2(target/'data/cmd_config.json',history/'cmd_config.json')
             if (target/'private/deepseek-key.txt').exists():shutil.copy2(target/'private/deepseek-key.txt',history/'deepseek-key.txt')
             cfg=read(target/'data/cmd_config.json')
-            if 'dashboard_port' in data:cfg['dashboard']['port']=data['dashboard_port'];atomic(target/'data/cmd_config.json',cfg)
+            if 'dashboard_port' in data:cfg['dashboard']['port']=data['dashboard_port']
+            if 'onebot_port' in data:
+                onebot=next((p for p in cfg.get('platform',[]) if p.get('id')=='feiyu-onebot'),None)
+                if onebot is None:raise Fault('needs_input','Initialize the OneBot adapter first')
+                onebot['ws_reverse_port']=data['onebot_port']
+            if {'dashboard_port','onebot_port'} & data.keys():atomic(target/'data/cmd_config.json',cfg)
             if 'deepseek_api_key' in data:(target/'private/deepseek-key.txt').write_text(data['deepseek_api_key'].strip(),encoding='utf-8')
             if 'qq_executable' in data:record['qq_executable']=str(Path(data['qq_executable']).resolve());atomic(root/'installation.json',record)
             if 'napcat_webui_port' in data:
@@ -730,6 +771,10 @@ def parser():
     setup.add_argument('--repair',action='store_true',help='Explicit same-dependency repair through the existing transactional upgrade mechanism')
     nap=sub.add_parser('prepare-napcat');nap.add_argument('--accept-external-licenses',action='store_true');nap.add_argument('--cache',type=Path);nap.add_argument('--offline',action='store_true')
     for name in ['status','components','start','daily-start','stop','restart','health','diagnose','wizard','rollback']:sub.add_parser(name)
+    sub.add_parser('logs')
+    menu=sub.add_parser('menu');menu.add_argument('--napcat-browser-port',type=int);menu.add_argument('--astrbot-browser-port',type=int)
+    web=sub.add_parser('open-webui');web.add_argument('service',choices=['napcat','astrbot']);web.add_argument('--browser-port',type=int)
+    sub.add_parser('connect-qq')
     component=sub.add_parser('component');component.add_argument('name',choices=list(COMPONENTS));component.add_argument('action',choices=['status','version','dependencies','start','stop','restart','health','integrity','login-status','recover-login','connection-health'])
     conf=sub.add_parser('config');conf.add_argument('config_action',choices=['show','validate','apply','initialize-chat','initialize-onebot','initialize-experience','initialize-local-models']);conf.add_argument('--file',default='-');conf.add_argument('--onebot-port',type=int,default=6199);conf.add_argument('--model',choices=['deepseek-chat','deepseek-reasoner'],default='deepseek-chat');conf.add_argument('--bot-id')
     backup=sub.add_parser('backup');backup.add_argument('--destination',required=True,type=Path)
@@ -747,7 +792,20 @@ def dispatch(args):
     if args.command=='check':return inspect_environment(root,args.network)
     if args.command=='install':return install(root,args)
     root=owned_root(root);record=state(root)
+    if args.command in {'logs','menu','open-webui','connect-qq'}:
+        if not sys.platform.startswith('linux'):
+            raise Fault('incompatible','Use the Windows desktop management entrypoint')
+        from fat_fish_management import linux_platform
+        return linux_platform.manage(root,record,args)
     if args.command=='prepare-napcat':
+        if sys.platform.startswith('linux'):
+            if not args.accept_external_licenses:raise Fault('needs_input','Review and accept the external QQ and NapCat conditions')
+            from fat_fish_management import linux_platform
+            with installation_lock(root):
+                record=state(root)
+                record['components']['napcat']=linux_platform.install_napcat(root,args.cache or root/'cache',args.offline,progress)
+                atomic(root/'installation.json',record)
+            return {'prepared':True,'runtime':'linux-shell','manual_login_required':True}
         if not args.accept_external_licenses:raise Fault('needs_input','Accept the QQ, Node and NapCat licenses before preparing the independent runtime')
         with installation_lock(root):
             target=instance(root,record)
@@ -787,11 +845,17 @@ def dispatch(args):
             if args.name in record.get('components',{}):raise Fault('read_only','Existing component record will not be replaced')
             record.setdefault('components',{})[args.name]={'installed':True,'ownership':'external-readonly','version':args.version,'path':str(args.path.resolve())};atomic(root/'installation.json',record)
         return {'registered_read_only':True,'id':args.name}
+    if args.command=='daily-start' and sys.platform.startswith('linux'):
+        with installation_lock(root):return operate(root,record,'start')
     if args.command=='daily-start':
         with installation_lock(root):return daily_start(root,record)
     if args.command in {'start','stop','restart'}:
         with installation_lock(root):return operate(root,record,args.command)
     if args.command=='component':
+        if sys.platform.startswith('linux') and args.name=='napcat' and args.action in {'login-status','health','integrity'}:
+            from fat_fish_management import linux_platform
+            if args.action=='integrity':linux_platform.verify_napcat(linux_platform.napcat_path(root,record))
+            return component_status(root,record,'napcat')
         if args.action in {'login-status','recover-login'}:
             if args.name!='napcat':raise Fault('invalid','Login state is only available for NapCat')
             if args.action=='recover-login':
@@ -799,6 +863,8 @@ def dispatch(args):
             info=record.get('components',{}).get('napcat',{})
             if not info.get('installed') or info.get('ownership')!='managed':raise Fault('read_only','Only the owned NapCat login state can be queried')
             return invoke(root,chat_python(root,record),'napcat_health.py','--root',resolve(root,info['path']),'--allow-pending',json_output=True)
+        if args.action=='connection-health' and sys.platform.startswith('linux') and args.name=='astrbot':
+            return {'onebot_connection':component_status(root,record,'astrbot').get('onebot_connection',{'connected':False,'reason':'not_installed'})}
         if args.action=='connection-health':
             if args.name!='astrbot':raise Fault('invalid','Connection evidence is only available for AstrBot')
             from fat_fish_management.connection_health import read_connection
@@ -826,6 +892,9 @@ def dispatch(args):
                 if digest(path)!=row['sha256']:raise Fault('integrity','Model artifact hash mismatch')
             return {'component':args.name,'pinned_artifact_integrity':'pass'}
         if args.name=='python':
+            if sys.platform.startswith('linux') and record.get('chat_python'):
+                verify_runtime_environment(root,record,'chat')
+                return {'locked_environment':'pass'}
             profiles=[x for x in ['chat','speech'] if record.get(x+'_python')]
             if 'chat' in profiles:
                 argv=['-ChatPython',resolve(root,record['chat_python'])]
@@ -838,6 +907,9 @@ def dispatch(args):
     if args.command=='config':return configure(root,record,args)
     if args.command=='wizard':return {'manual_steps':guidance(root,record),'secret_input':'Use config apply --file - with JSON on stdin; secrets are never command-line arguments or echoed in results.'}
     if args.command in {'health','diagnose'}:
+        if sys.platform.startswith('linux'):
+            from fat_fish_management import linux_platform
+            return linux_platform.health(root,record,diagnose=args.command=='diagnose')
         result={'components':[component_status(root,record,x) for x in COMPONENTS]}
         if args.command=='diagnose':result['environment']=inspect_environment(root)
         if record.get('instance'):
@@ -868,6 +940,7 @@ def dispatch(args):
     raise Fault('invalid','Unknown operation')
 
 def main(argv=None):
+    if sys.platform.startswith('linux'):os.umask(0o077)
     request=uuid.uuid4().hex
     try:
         args=parser().parse_args(argv);data=dispatch(args)
@@ -876,11 +949,15 @@ def main(argv=None):
     except Exception as exc:
         kind='integrity' if 'hash' in str(exc).lower() else 'missing' if isinstance(exc,FileNotFoundError) else 'invalid' if isinstance(exc,(ValueError,KeyError)) else 'failed'
         value={'schema_version':SCHEMA,'project':'Fat-Fish-Assistant','request_id':request,'ok':False,'code':EXIT[kind],'data':None,'errors':[{'type':kind,'message':str(exc),'hint':'Inspect local logs and retained failed stages; current instances are never overwritten by retry.'}]}
-    if not value['ok'] and 'args' in locals() and args.command=='install':
+    if not value['ok'] and 'args' in locals() and getattr(args,'install_attempt',None):
         try:
-            journal=args.root.resolve()/'install-journal.json'
-            if journal.exists():
-                details=read(journal);details.update(state='failed',error_code=value['code'],errors=value['errors'],failed_at=time.time());atomic(journal,details)
-        except OSError:pass
+            root=args.root.resolve()
+            journal=root/'install-journal.json'
+            with installation_lock(root):
+                details=read(journal)
+                if details.get('attempt')==args.install_attempt:
+                    details.update(state='failed',error_code=value['code'],errors=value['errors'],failed_at=time.time())
+                    atomic(journal,details)
+        except (OSError,Fault):pass
     print(json.dumps(value,ensure_ascii=True))
     return value['code']

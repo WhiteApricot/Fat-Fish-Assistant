@@ -1,0 +1,18 @@
+# profile	package	version	archive path	SHA256
+runtime	ca-certificates	20240203	pool/main/c/ca-certificates/ca-certificates_20240203_all.deb	641de77d8f142cfd62a1a6f964ba67b20754d3337c480efb529d086075a06c9a
+runtime	python3.12	3.12.3-1ubuntu0.17	pool/main/p/python3.12/python3.12_3.12.3-1ubuntu0.17_amd64.deb	6745c9463432e619d7402b117ad4ac86c31dcd3999ba20daa9e395f6f9909d86
+runtime	python3.12-venv	3.12.3-1ubuntu0.17	pool/universe/p/python3.12/python3.12-venv_3.12.3-1ubuntu0.17_amd64.deb	b8d4bfea3df63945b6a202bd0773caf7727dde86d2df91df6e88a8ccf7c18b7e
+runtime	dbus-daemon	1.14.10-4ubuntu4.1	pool/main/d/dbus/dbus-daemon_1.14.10-4ubuntu4.1_amd64.deb	785ad36aafc8912300e44a1cea438e28ea36fb94c631f5849408aea85d2ab2bf
+runtime	xvfb	2:21.1.12-1ubuntu1.9	pool/universe/x/xorg-server/xvfb_21.1.12-1ubuntu1.9_amd64.deb	2011271eabcc2eb460e99995c5ef26e46633e87d04f570e305b62f178f7b452c
+runtime	xauth	1:1.1.2-1build1	pool/main/x/xauth/xauth_1.1.2-1build1_amd64.deb	037e70571f39384e28c4ad0db07b44de11f0911ee6c02445560979b417012650
+runtime	libnss3	2:3.98-1ubuntu0.3	pool/main/n/nss/libnss3_3.98-1ubuntu0.3_amd64.deb	e11fdf8c09a068d0f0c3fd90ed971253dfed7227cc20d3d487fd615d4771f1bb
+runtime	libasound2t64	1.2.11-1ubuntu0.3	pool/main/a/alsa-lib/libasound2t64_1.2.11-1ubuntu0.3_amd64.deb	5d17bfb5683eb99f1be951fe48e1be5bf3c52391913b6b74a8aecf9b4f5e779f
+runtime	libgtk-3-0t64	3.24.41-4ubuntu1.3	pool/main/g/gtk+3.0/libgtk-3-0t64_3.24.41-4ubuntu1.3_amd64.deb	fd61e308234b12d243160798216d0efcb605d83af185bf3414ac99c2ed5166fc
+runtime	libnotify4	0.8.3-1build2	pool/main/libn/libnotify/libnotify4_0.8.3-1build2_amd64.deb	4d856e960ac0ec137e9908b6df0fa295e04c175b0be239450de2243be49524df
+runtime	libxss1	1:1.2.3-1build3	pool/main/libx/libxss/libxss1_1.2.3-1build3_amd64.deb	0ac60a2cc034ccc4bf4e2f846f38110469d7ae43b47e808d67aafc538bc3695e
+runtime	libxtst6	2:1.2.3-1.1ubuntu0.1	pool/main/libx/libxtst/libxtst6_1.2.3-1.1ubuntu0.1_amd64.deb	2340688e034d5dd3f5ec180b1bed32407de16db1679ce85cec3e2d34625f50dd
+runtime	xdg-utils	1.1.3-4.1ubuntu3	pool/main/x/xdg-utils/xdg-utils_1.1.3-4.1ubuntu3_all.deb	499ad8b146f8d6f092ada8f878e7c6d93239caf29ce92c1381fe94e314169986
+runtime	libatspi2.0-0t64	2.52.0-1build1	pool/main/a/at-spi2-core/libatspi2.0-0t64_2.52.0-1build1_amd64.deb	d686ace4080eca9c2d6ce8de69392a5ac56c846701894c0858922d4ce341a1d7
+runtime	libuuid1	2.39.3-9ubuntu6.6	pool/main/u/util-linux/libuuid1_2.39.3-9ubuntu6.6_amd64.deb	7e2992d3a79fc05514dc5966558ee9c66a7214a47edf2a36017b9e2777528665
+runtime	libsecret-1-0	0.21.4-1build3	pool/main/libs/libsecret/libsecret-1-0_0.21.4-1build3_amd64.deb	7d7263ffc92c33042328f99c93433a846e8d9e549876dab18ba18606e6541ecd
+build	g++	4:13.2.0-7ubuntu1	pool/main/g/gcc-defaults/g++_13.2.0-7ubuntu1_amd64.deb	800a84b369c64b18d65f0fb5c1533de0446c880ee4f1cadad64e3363327f63f0

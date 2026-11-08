@@ -1,0 +1,24 @@
+[
+  {
+    "name": "napcat-shell",
+    "version": "4.18.41",
+    "file": "NapCat.Shell.zip",
+    "url": "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.41/NapCat.Shell.zip",
+    "sha256": "6801f93e533846cea05f4f531874a0e84371ab2331c5585b57cd7e3b869cf96b"
+  },
+  {
+    "name": "linuxqq",
+    "version": "3.2.34-53644",
+    "architecture": "amd64",
+    "file": "linuxqq_3.2.34-53644_amd64.deb",
+    "url": "https://qqdl.gtimg.cn/qqfile/QQNT/9.9.36/beta/9ee04bef/linuxqq_3.2.34-53644_amd64.deb",
+    "sha256": "436c65e1dd28422e128a21cbddb5fe4e2e6c079d7f27fec2541e014d38cc336e"
+  },
+  {
+    "name": "napcat-linux-launcher",
+    "version": "557b5ea2de8867ae8d72f5054ab0cdd96c0aa9c7",
+    "file": "launcher.cpp",
+    "url": "https://raw.githubusercontent.com/NapNeko/napcat-linux-launcher/557b5ea2de8867ae8d72f5054ab0cdd96c0aa9c7/launcher.cpp",
+    "sha256": "4bb4c04b379cb6bb361dee6b3561ec24f85f32e13ca86a359895e9c67203e258"
+  }
+]

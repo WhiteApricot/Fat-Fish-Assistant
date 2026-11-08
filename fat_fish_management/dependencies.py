@@ -280,19 +280,32 @@ def clean_environment():
     env.pop('PYTHONHOME',None);env.pop('PYTHONPATH',None)
     return env
 
+def profile_manifest(profile):
+    if sys.platform.startswith('linux'):
+        if profile != 'core':
+            raise ValueError('Linux currently supports the locked core profile only')
+        return PROJECT/'manifests/linux-x86_64/core.json'
+    return PROJECT/'manifests'/(profile+'.json')
+
+
+def profile_rows(profile):
+    return json.loads(profile_manifest(profile).read_text(encoding='utf-8'))
+
+
 def profile_fingerprint(profile):
     # v2 builds the venv at its final versioned path: Windows console launchers
     # embed absolute interpreter paths and must never be moved after installation.
-    data=(PROJECT/'manifests'/(profile+'.json')).read_bytes()+b'\0venv-layout-v2'
+    data=profile_manifest(profile).read_bytes()+b'\0venv-layout-v2'
     if profile in {'chat','core'}:data+=(PROJECT/'manifests/build.json').read_bytes()
     return hashlib.sha256(data).hexdigest()
 
-def run_logged(args,log,env=None):
+def run_logged(args,log,env=None,*,inherited_lock=None):
     log.parent.mkdir(parents=True,exist_ok=True)
     with log.open('ab') as f:
         command=list(map(str,args))
         if Path(command[0]).name.lower() in {'python.exe','pythonw.exe','python','python3','python3.12'}:command[1:1]=['-X','utf8']
-        proc=subprocess.Popen(command,stdout=f,stderr=subprocess.STDOUT,env=env or clean_environment(),creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        options={} if inherited_lock is None else {'pass_fds':(inherited_lock,)}
+        proc=subprocess.Popen(command,stdout=f,stderr=subprocess.STDOUT,env=env or clean_environment(),creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),**options)
         started=time.monotonic()
         while True:
             try:proc.wait(timeout=30);break
@@ -312,6 +325,19 @@ print('All pinned dependency versions match')
     run_logged([python,'-I','-c',code,json.dumps(expected)],log)
 
 def install_environment(base_python,destination,cache,profile='chat',offline=False,progress=None):
+    if not sys.platform.startswith('linux'):
+        return _install_environment(base_python,destination,cache,profile,offline,progress)
+    import fcntl
+    destination=external(destination)
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    lock=destination.with_name(destination.name+'.build-lock')
+    with lock.open('ab') as stream:
+        try:fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError as exc:raise RuntimeError('Interrupted environment still has active workers') from exc
+        return _install_environment(base_python,destination,cache,profile,offline,progress,stream.fileno())
+
+
+def _install_environment(base_python,destination,cache,profile,offline,progress,inherited_lock=None):
     """Build pinned sdists locally; derive a local lock only from verified inputs."""
     destination=external(destination);cache=external(cache)
     fingerprint=profile_fingerprint(profile)
@@ -319,21 +345,30 @@ def install_environment(base_python,destination,cache,profile='chat',offline=Fal
     if destination.exists():
         if marker.exists() and json.loads(marker.read_text()).get('lock_sha256')==fingerprint:
             python=destination/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
-            verify_environment_versions(python,load(profile+'.json'),destination/'validation.log')
+            verify_environment_versions(python,profile_rows(profile),destination/'validation.log')
             run_logged([python,'-I','-m','pip','--isolated','check'],destination/'validation.log')
             return python
         partial=destination/'ffa-environment-building.json'
         if not marker.exists() and partial.exists() and json.loads(partial.read_text()).get('lock_sha256')==fingerprint:
             ensure_build_quiet(destination)
-            destination.rename(destination.with_name(destination.name+'.failed-'+secrets.token_hex(5)))
+            suffix='.failed-'+secrets.token_hex(5)
+            destination.rename(destination.with_name(destination.name+suffix))
+            if os.name!='nt':
+                builder=destination.with_name(destination.name+'-builder')
+                if builder.exists():builder.rename(builder.with_name(builder.name+suffix))
         else:raise ValueError('Existing environment is unmanaged or incompatible; no overwrite')
     stage=destination;stage.mkdir(parents=True)
     (stage/'ffa-environment-building.json').write_text(json.dumps({'project':'Fat-Fish-Assistant','lock_sha256':fingerprint}))
     log=stage.parent/(stage.name+'-'+secrets.token_hex(4)+'.log')
-    run_logged([base_python,'-I','-m','venv',stage],log)
+    venv_options=['--copies'] if os.name!='nt' else []
+    build_env=clean_environment()
+    if os.name!='nt':build_env['FFA_BUILD_ROOT']=str(destination)
+    def run(args,log):
+        run_logged(args,log,env=build_env,inherited_lock=inherited_lock)
+    run([base_python,'-I','-m','venv',*venv_options,stage],log)
     python=stage/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
     wheels=cache/(profile+'-wheels');wheels.mkdir(parents=True,exist_ok=True)
-    rows=load(profile+'.json');sources=[x for x in rows if x['format']=='sdist'];resolved=[];built=[]
+    rows=profile_rows(profile);sources=[x for x in rows if x['format']=='sdist'];resolved=[];built=[]
     for row in rows:
         path=acquire(row,cache/'artifacts',offline,progress)
         if row['format']=='wheel':
@@ -349,23 +384,23 @@ def install_environment(base_python,destination,cache,profile='chat',offline=Fal
             if not target.exists():link_or_copy(path,target)
             if digest(target)!=row['sha256']:raise ValueError('Build tool hash mismatch')
         builder=stage.parent/(stage.name+'-builder')
-        run_logged([base_python,'-I','-m','venv',builder],log)
+        run([base_python,'-I','-m','venv',*venv_options,builder],log)
         build_python=builder/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
         tool_lock=builder/'build.lock.txt';tool_lock.write_text('\n'.join(f"{x['name']}=={x['version']} --hash=sha256:{x['sha256']}" for x in tools)+'\n')
-        run_logged([build_python,'-I','-m','pip','--isolated','install','--no-cache-dir','--no-compile','--no-index','--no-deps','--find-links',tool_cache,'--require-hashes','-r',tool_lock],log)
+        run([build_python,'-I','-m','pip','--isolated','install','--no-cache-dir','--no-compile','--no-index','--no-deps','--find-links',tool_cache,'--require-hashes','-r',tool_lock],log)
         for row in sources:
             if progress:progress('build-from-pinned-source',row['name']+'=='+row['version'])
             source=acquire(row,cache/'artifacts',offline,progress)
             out=stage/(row['name']+'-wheel');out.mkdir()
-            run_logged([build_python,'-I','-m','pip','--isolated','wheel','--no-cache-dir','--no-index','--no-deps','--no-build-isolation','--wheel-dir',out,source],log)
+            run([build_python,'-I','-m','pip','--isolated','wheel','--no-cache-dir','--no-index','--no-deps','--no-build-isolation','--wheel-dir',out,source],log)
             wheel=next(out.glob('*.whl'));hashvalue=digest(wheel)
             shutil.copy2(wheel,wheels/wheel.name)
             resolved.append((row['name'],row['version'],hashvalue))
             built.append({'name':row['name'],'source_sha256':row['sha256'],'wheel_sha256':hashvalue,'file':wheel.name,'build_tools':tools,'source_date_epoch':1704067200})
     lock=stage/'resolved.lock.txt';lock.write_text('\n'.join(f'{n}=={v} --hash=sha256:{h}' for n,v,h in resolved)+'\n')
     if progress:progress('install-locked-packages',profile+': '+str(len(resolved)))
-    run_logged([python,'-I','-m','pip','--isolated','install','--no-cache-dir','--no-compile','--no-index','--no-deps','--find-links',wheels,'--require-hashes','-r',lock],log)
-    run_logged([python,'-I','-m','pip','--isolated','check'],log)
+    run([python,'-I','-m','pip','--isolated','install','--no-cache-dir','--no-compile','--no-index','--no-deps','--find-links',wheels,'--require-hashes','-r',lock],log)
+    run([python,'-I','-m','pip','--isolated','check'],log)
     verify_environment_versions(python,rows,log)
     (stage/'ffa-environment.json').write_text(json.dumps({'schema_version':1,'profile':profile,'lock_sha256':fingerprint,'activation_layout':'final-versioned-path','locally_built':built}),encoding='utf-8')
     if sources:
@@ -375,6 +410,22 @@ def install_environment(base_python,destination,cache,profile='chat',offline=Fal
 
 def ensure_build_quiet(destination):
     """An interrupted install must not archive a directory still used by an orphan builder."""
+    if sys.platform.startswith('linux'):
+        marker=b'FFA_BUILD_ROOT='+os.fsencode(destination)
+        for proc in Path('/proc').iterdir():
+            if not proc.name.isdecimal():continue
+            try:
+                if proc.stat().st_uid!=os.getuid():continue
+                try:
+                    matched=marker in (proc/'environ').read_bytes().split(b'\0')
+                except PermissionError:
+                    # WSL can deny environ reads for unrelated same-user processes.
+                    command=(proc/'cmdline').read_bytes()
+                    matched=os.fsencode(destination)+b'/' in command or os.fsencode(destination)+b'-builder/' in command
+                if matched:raise RuntimeError('Interrupted environment still has active workers')
+            except (FileNotFoundError,ProcessLookupError):
+                continue
+        return
     if os.name!='nt':raise RuntimeError('Interrupted environment recovery needs a supported writer probe')
     powershell=Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
     proc=subprocess.run([str(powershell),'-NoProfile','-ExecutionPolicy','Bypass','-File',str(PROJECT/'scripts/build/Assert-Build-Writers.ps1'),'-Destination',str(destination),'-ControllerPid',str(os.getpid())],capture_output=True,text=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
