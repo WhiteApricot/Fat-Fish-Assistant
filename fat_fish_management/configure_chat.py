@@ -31,6 +31,11 @@ def configure(root,port=6199,model='deepseek-chat'):
         if old_platform is not None and old_platform!=platform:raise ValueError('Existing OneBot settings differ; no overwrite')
         if old is None:providers.append(provider)
         if old_platform is None:platforms.append(platform)
+        # Keep QQ replies in one delivery and show only the final answer.
+        cfg.setdefault('platform_settings',{}).setdefault('segmented_reply',{})['enable']=False
+        settings=cfg.setdefault('provider_settings',{})
+        for name in ('show_tool_use_status','show_tool_call_result','display_reasoning_text'):
+            settings[name]=False
         cfg.setdefault('agent_runner',{}).setdefault('config',{}).setdefault('model',{})['provider_id']='fat-fish-chat'
         history=root/'private/config-history'/('chat-'+secrets.token_hex(6));history.mkdir(parents=True)
         (history/'cmd_config.json').write_bytes(before)

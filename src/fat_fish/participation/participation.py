@@ -67,7 +67,7 @@ class Participation:
         version = room['version']
         # Check cooldown after quiet time: a follow-up received immediately
         # after the final split must not be discarded before it has waited.
-        await asyncio.sleep(4)
+        await asyncio.sleep(0.8)
         if not valid() or room['version'] != version:
             return skip('superseded')
         reason = gate()

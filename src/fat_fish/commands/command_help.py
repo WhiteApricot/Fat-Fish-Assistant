@@ -18,6 +18,7 @@ SYNTAX = {
     'persona': ['list', 'set content', 'add content', 'edit id content', 'remove id', 'reset', 'undo'],
     'globalpersona': ['list', 'set content', 'add content', 'edit id content', 'remove id', 'reset', 'undo'],
     'naturalcommand': ['', 'on', 'off'],
+    'webresearch': ['', 'on', 'off'],
     'history': ['', 'all'],
     'confirm': ['[code]'],
     'cancel': [''],
@@ -44,6 +45,7 @@ DESCRIPTIONS = {
     'persona': '管理当前会话人格',
     'globalpersona': '管理全局人格',
     'naturalcommand': '查看或切换自然语言指令',
+    'webresearch': '查看或切换当前会话联网搜索',
     'history': '查看近期操作',
     'confirm': '确认当前会话待办，可提供确认码',
     'cancel': '取消当前会话待办',
@@ -84,6 +86,8 @@ def help_line(name, syntax, summary=False):
         description = '申请清除当前范围的记忆，需确认'
     elif name == 'reminder' and operation == 'add':
         description = '创建自己的提醒'
+    elif name == 'webresearch' and operation in {'on','off'}:
+        description = ('开启' if operation=='on' else '关闭')+'当前会话联网搜索'
     elif name == 'history' and not syntax:
         description = '查看最近一项操作'
     if summary and '需确认' not in description:
@@ -105,7 +109,7 @@ def scoped_help(policy, sender, level, private, group, target=None, *, reminders
     if group_admin:
         menus.update({name: SYNTAX[name] for name in ('groupmemory','groupmode','groupsettings','grouppersona')})
     if personal or group_admin:
-        menus.update({name: SYNTAX[name] for name in ('persona','naturalcommand')})
+        menus.update({name: SYNTAX[name] for name in ('persona','naturalcommand','webresearch')})
     if policy.authorize(sender,'blacklist',private=private,group=group,target='0'):
         menus['blacklist'] = SYNTAX['blacklist']
     if level>=2.5:

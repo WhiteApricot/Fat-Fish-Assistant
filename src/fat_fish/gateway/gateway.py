@@ -299,9 +299,6 @@ class Gateway:
                         new_note=cfg.get(field,{}).get(group or sender,'')
                     if persona_catalog(current_cfg,key,old_note)!=persona_catalog(cfg,key,new_note):
                         return await self.reject(event,system_result('人格条目已变化，请重新查看编号。'))
-                if command=='websearch':
-                    event.set_extra('_ffa_search_query',raw_text[:128])
-                    natural=None
                 if command=='role' and arguments==['undo'] and undo_snapshot!=self.admin_undo_reference(event):
                     return await self.reject(event,system_result('近期授权已变化，请重新核对。'))
                 if command in {'confirm','cancel'} or (command in {'memory','groupmemory'} and arguments in (['confirm'],['cancel'])):
@@ -351,7 +348,7 @@ class Gateway:
                         return await self.reject(event,system_result('/memory help|remember|search|update|delete|reset|confirm|cancel'))
                     event.message_str='/'+operations[args[0]]+(' '+' '.join(args[1:]) if len(args)>1 else '')
                     return True
-                if cmd in {'reminder','globaladmin','help','history','clarify','cancel','undo','role','whitelist','blacklist','confirm','groupmode','groupsettings','personal','memory','grouppersona','groupmemory','privatepersona','persona','globalpersona','naturalcommand'}:
+                if cmd in {'reminder','globaladmin','help','history','clarify','cancel','undo','role','whitelist','blacklist','confirm','groupmode','groupsettings','personal','memory','grouppersona','groupmemory','privatepersona','persona','globalpersona','naturalcommand','webresearch'}:
                     if group and hasattr(policy,'qq_group_admins') and (
                         (cmd=='undo') or (cmd=='role' and args and args[0] in {'list','remove','set'}) or (cmd=='blacklist' and len(args)==2)
                     ):
@@ -540,6 +537,10 @@ class Gateway:
             return await downstream()
         decision=await self.process(event)
         if not decision:return
+        parts=event.get_messages()
+        if any(p.__class__.__name__ in {'Image','Forward','Node','Nodes','File','Record','Video'} for p in parts):
+            has_text=any(p.__class__.__name__=='Plain' and p.text.strip() for p in parts)
+            event.set_extra('_ffa_reply_window',(event.get_extra('_ffa_reply_started',time.monotonic()),not has_text))
         if any(p.__class__.__name__ == 'File' for p in event.get_messages()):
             from fat_fish.integrations.text_files import read_attachments
             from astrbot.api.message_components import Plain
@@ -663,6 +664,14 @@ class Gateway:
             if event.get_extra('_ffa_personal_native',False) and hasattr(message,'chain'):
                 from astrbot.api.message_components import Plain
                 message.chain.insert(0,Plain(text='【系统】'))
+            from fat_fish.integrations.web_search import clean_message
+            error=event.get_extra('_llm_error_message')
+            if error and hasattr(message,'get_plain_text') and message.get_plain_text().strip()==str(error).strip():
+                message=event.plain_result('这次回复没有生成成功，请稍后再试。')
+            elif clean_message(message) and not message.chain:
+                if event.get_extra('_ffa_diagnostic_replaced',False):return
+                event.set_extra('_ffa_diagnostic_replaced',True)
+                message=event.plain_result('刚才没能整理出有效回复，请再试一次。')
             result=await original_send(message)
             if event.get_extra('_ffa_personal_native',False):
                 self.record_command(event,'new','')

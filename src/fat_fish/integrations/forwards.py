@@ -141,8 +141,11 @@ class ForwardReader:
         return MARKER+'\n'+note+'\n'+json.dumps(entries,ensure_ascii=False),images
 
 def install_collector_bridge(collector, version):
-    """Reuse upstream collection; media alone waits eight seconds, companion text one."""
+    """Start processing early and carry the latest input time to the send gate."""
     import inspect
+    import time
+    from collections import OrderedDict
+    from contextvars import ContextVar
 
     if version != '2.9.3':
         raise RuntimeError(f'合并转发需要固定版本 2.9.3 的消息收集插件，实际版本为 {version!r}')
@@ -167,37 +170,57 @@ def install_collector_bridge(collector, version):
                          or parameters['has_image'].default is not False))):
             raise RuntimeError(f'合并转发检测到不兼容的消息收集接口 {name}')
     original=collector._calculate_wait_duration
+    current=ContextVar('ffa_collector_event',default=None)
+    timing=OrderedDict()
+    markers=(MARKER,'[FFA_FILE_MATERIAL]')
+
+    def media_state(texts,images):
+        material=any(marker in part for part in texts for marker in markers)
+        companion=any(part.split(MARKER,1)[0].split(markers[1],1)[0].strip() for part in texts)
+        return bool(images or material),companion
+
     def wait(text,session=None,has_image=False):
-        texts = [text or '', *(session or {}).get('buffer', [])]
-        material = any(MARKER in part for part in texts)
-        media_batch = bool(has_image or material or (session or {}).get('images'))
-        # Forward payload text is external material, not a companion instruction.
-        companion = any(part.split(MARKER, 1)[0].strip() for part in texts)
-        duration, flush, reason = original(text, session, has_image or material)
-        if media_batch and companion:
-            return min(duration, 1.0), flush, 'media_with_text'
-        if not media_batch:
-            return min(duration, 2.0), flush, reason
-        return duration, flush, reason
+        texts=[text or '',*(session or {}).get('buffer',[])]
+        media,companion=media_state(texts,has_image or (session or {}).get('images'))
+        duration,flush,reason=original(text,session,media)
+        event=current.get()
+        if event is not None:
+            uid=event.unified_msg_origin
+            supplemented=bool(companion or (session and len(session.get('items',()))>1)
+                              or event.get_extra('_ffa_collector_followup',False))
+            timing[uid]=(event.get_extra('_ffa_reply_started',time.monotonic()),supplemented)
+            timing.move_to_end(uid)
+            while len(timing)>512:timing.popitem(last=False)
+        # The existing inflight cancellation merges later messages while a
+        # draft is being prepared or is waiting for its send window.
+        return min(duration,0.8),flush,reason
+
     collector._ffa_wait_original=original;collector._calculate_wait_duration=wait
-    if hasattr(collector,'_is_private_message_event'):
-        predicate=collector._is_private_message_event
-        finalize=collector._finalize_merged
-        def eligible(event):
-            if predicate(event):return True
+    predicate=collector._is_private_message_event
+    finalize=collector._finalize_merged
+    def eligible(event):
+        if not predicate(event):
+            if not event.get_extra('_ffa_access_checked',False) or event.get_extra('_ffa_reply_is_command',False):
+                return False
             origin=event.unified_msg_origin
-            key=origin+'_p2f_'+str(event.get_sender_id())
-            if MARKER in event.message_str or key in collector.sessions:
-                event.set_extra('_ffa_original_umo',origin)
-                event.unified_msg_origin=key
-                return True
-            return False
-        async def finish(event,buffer,images):
-            origin=event.get_extra('_ffa_original_umo','')
-            if origin:event.unified_msg_origin=origin
-            return await finalize(event,buffer,images)
-        collector._ffa_predicate_original=predicate;collector._ffa_finalize_original=finalize
-        collector._is_private_message_event=eligible;collector._finalize_merged=finish
+            event.set_extra('_ffa_original_umo',origin)
+            event.unified_msg_origin=origin+'_ffa_collect_'+str(event.get_sender_id())
+        previous=getattr(collector,'inflight',{}).get(event.unified_msg_origin)
+        if previous and not previous['task'].done() and not previous['event'].get_extra('_ffa_tool_started',False):
+            event.set_extra('_ffa_collector_followup',True)
+        current.set(event)
+        return True
+
+    async def finish(event,buffer,images):
+        latest,supplemented=timing.pop(event.unified_msg_origin,(event.get_extra('_ffa_reply_started',time.monotonic()),False))
+        media,companion=media_state(buffer,images)
+        event.set_extra('_ffa_reply_window',(latest,media and not (companion or supplemented)))
+        origin=event.get_extra('_ffa_original_umo','')
+        if origin:event.unified_msg_origin=origin
+        return await finalize(event,buffer,images)
+
+    collector._ffa_predicate_original=predicate;collector._ffa_finalize_original=finalize
+    collector._is_private_message_event=eligible;collector._finalize_merged=finish
 
 def remove_collector_bridge(collector):
     for key,session in list(getattr(collector,'sessions',{}).items()):

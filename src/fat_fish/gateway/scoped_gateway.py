@@ -48,7 +48,7 @@ class ScopedGateway(Gateway):
         task=event.get_extra('_ffa_memory_undo',None) or event.get_extra('_ffa_reminder_undo',None)
         fields={'private_persona_notes','group_persona_notes','preferences','cooldowns','groups',
                 'approved_groups','group_admins','global_admins','group_blocked','blocked',
-                'persona_entries','global_persona_notes','naturalcommand'}
+                'persona_entries','global_persona_notes','naturalcommand','webresearch'}
         changed={field for field in fields if before.get(field)!=after.get(field)}
         if not changed and not task:
             return
@@ -168,17 +168,19 @@ class ScopedGateway(Gateway):
         if sender in policy.blocked_for(group):return '当前权限不足，未执行'
         if cmd in {'persona','globalpersona'}:
             return self.persona_command(cfg,policy,sender,level,private,group,cmd,args,event)
-        if cmd=='naturalcommand':
+        if cmd in {'naturalcommand','webresearch'}:
+            label='自然语言指令' if cmd=='naturalcommand' else '联网搜索'
             if not policy.authorize(sender,'personal' if private else 'group',private=private,group=group,friend=level>=1):
-                return '只有本人或本群有权的管理员可以切换自然语言指令。'
+                return f'只有本人或本群有权的管理员可以切换{label}。'
             key='private:'+sender if private else 'group:'+group
-            settings=cfg.setdefault('naturalcommand',{})
+            settings=cfg.get(cmd,{})
             if not args or args==['help']:
-                return '当前作用域自然语言指令：'+('开启' if settings.get(key,True) else '关闭')+'。使用 /naturalcommand on|off。'
-            if args not in (['on'],['off']):return '用法：/naturalcommand on|off'
-            settings[key]=args==['on']
+                state='开启' if settings.get(key,True) else '关闭'
+                return f'当前作用域{label}：{state}。使用 /{cmd} on|off。'
+            if args not in (['on'],['off']):return f'用法：/{cmd} on|off'
+            cfg.setdefault(cmd,{})[key]=args==['on']
             self.save(cfg)
-            return '已保存当前作用域的自然语言指令设置：'+('开启' if settings[key] else '关闭')
+            return f'已保存当前作用域的{label}设置：'+('开启' if args==['on'] else '关闭')
         if cmd=='reminder':
             if not event:return '提醒操作需要当前会话'
             store=getattr(self,'reminders',None)

@@ -3,15 +3,21 @@ import asyncio
 import random
 import time
 
-MIN_SECONDS = 3.0
-MAX_SECONDS = 5.0
+MIN_SECONDS = 4.0
+MAX_SECONDS = 6.0
+MEDIA_MIN_SECONDS = 8.0
+MEDIA_MAX_SECONDS = 10.0
 COMMAND_MIN_SECONDS = 2.0
 COMMAND_MAX_SECONDS = 3.0
 
 
-def new_reply_deadline(*, command=False, started=None):
+def new_reply_deadline(*, command=False, media=False, started=None):
     started = time.monotonic() if started is None else started
-    low, high = (COMMAND_MIN_SECONDS, COMMAND_MAX_SECONDS) if command else (MIN_SECONDS, MAX_SECONDS)
+    low, high = (MIN_SECONDS, MAX_SECONDS)
+    if command:
+        low, high = COMMAND_MIN_SECONDS, COMMAND_MAX_SECONDS
+    elif media:
+        low, high = MEDIA_MIN_SECONDS, MEDIA_MAX_SECONDS
     return started + random.uniform(low, high)
 
 
@@ -26,16 +32,22 @@ def bind_event_delay(event, prepare_recheck):
         return
     original_send = event.send
     started = time.monotonic()
-    deadline = new_reply_deadline(started=started)
-    command_deadline = None
+    event.set_extra('_ffa_reply_started', started)
+    # The collector replaces this with the latest admitted message's timestamp.
+    event.set_extra('_ffa_reply_window', (started, False))
+    selected = None
+    deadline = None
 
     async def delayed_send(message):
-        nonlocal command_deadline
+        nonlocal selected, deadline
         still_allowed = prepare_recheck()
         is_command = event.get_extra('_ffa_reply_is_command', False)
-        if is_command and command_deadline is None:
-            command_deadline = new_reply_deadline(command=True, started=started)
-        await wait_before_reply(command_deadline if is_command else deadline)
+        latest, media_only = event.get_extra('_ffa_reply_window', (started, False))
+        window = (latest, media_only, is_command)
+        if window != selected:
+            deadline = new_reply_deadline(command=is_command, media=media_only, started=latest)
+            selected = window
+        await wait_before_reply(deadline)
         if not still_allowed():
             event.stop_event()
             return

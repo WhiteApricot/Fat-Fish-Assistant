@@ -1,5 +1,11 @@
 # 变更记录
 
+## S1 后续修复
+
+- 回复模型按上下文选择 DeepSeek 原生搜索，QQ 回复过滤后台诊断。新增 `/webresearch` 会话开关，关闭后跳过搜索选择。
+- 普通及带补充媒体使用 4–6 秒窗口，单独媒体使用 8–10 秒窗口。合并后从最新消息重算，去除分段等待。
+- 将肥鱼助手在 AstrBot 与 SnowLuma 基础上交付的功能集中到[用户功能总览](docs/FEATURES.md)。
+
 ## S1 Windows SnowLuma 原型验收（2026-11-09）
 
 - 保留 AstrBot 4.29.3/aiocqhttp，使用 SnowLuma v2.4.2 唯一接入；不增加外部核心补丁。
