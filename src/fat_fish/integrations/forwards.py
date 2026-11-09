@@ -38,7 +38,7 @@ class ForwardReader:
         if self.context is None:return True
         md=self.context.get_registered_star('astrbot_plugin_continuous_message')
         if not md or not md.activated:return False
-        install_collector_bridge(md.star_cls)
+        install_collector_bridge(md.star_cls, md.version)
         return True
     async def read(self,event,blocked=(),barrier=0):
         entries=[];images=[];seen=set();size=0;incomplete=False;count=0;voice_count=0
@@ -141,7 +141,7 @@ class ForwardReader:
         return MARKER+'\n'+note+'\n'+json.dumps(entries,ensure_ascii=False),images
 
 def install_collector_bridge(collector, version):
-    """Reuse upstream collection; forwarding is an eight-second batch, no new queue."""
+    """Reuse upstream collection; media alone waits eight seconds, companion text one."""
     import inspect
 
     if version != '2.9.3':
@@ -168,8 +168,17 @@ def install_collector_bridge(collector, version):
             raise RuntimeError(f'合并转发检测到不兼容的消息收集接口 {name}')
     original=collector._calculate_wait_duration
     def wait(text,session=None,has_image=False):
-        material=MARKER in (text or '') or any(MARKER in x for x in (session or {}).get('buffer',[]))
-        return original(text,session,has_image or material)
+        texts = [text or '', *(session or {}).get('buffer', [])]
+        material = any(MARKER in part for part in texts)
+        media_batch = bool(has_image or material or (session or {}).get('images'))
+        # Forward payload text is external material, not a companion instruction.
+        companion = any(part.split(MARKER, 1)[0].strip() for part in texts)
+        duration, flush, reason = original(text, session, has_image or material)
+        if media_batch and companion:
+            return min(duration, 1.0), flush, 'media_with_text'
+        if not media_batch:
+            return min(duration, 2.0), flush, reason
+        return duration, flush, reason
     collector._ffa_wait_original=original;collector._calculate_wait_duration=wait
     if hasattr(collector,'_is_private_message_event'):
         predicate=collector._is_private_message_event

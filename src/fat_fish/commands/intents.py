@@ -86,6 +86,9 @@ class IntentUnavailable(Exception):
 
 
 async def classify(context,event,text,group,mentions,*,recent,pending,reminders,persona_numbers=None):
+    # Anaphoric chat retries do not specify a management action or target.
+    if re.fullmatch(r'[\s，,。.!！?？]*(?:请)?(?:(?:再|重新)(?:给我)?(?:来|发|发送)(?:我)?(?:一(?:个|张)|一下)?|没(?:有)?(?:看|收)到(?:呀|啊|呢)?[，,。\s]*(?:请)?(?:重新|再)(?:给我)?发(?:送)?(?:一下|一张|一个)?)(?:嘛|呀|吧|啊|呗|呢|啦|~|～|[\s，,。.!！?？])*',text):
+        return None
     try:
         async with asyncio.timeout(15):
             provider=await context.get_using_provider_async(event.unified_msg_origin)

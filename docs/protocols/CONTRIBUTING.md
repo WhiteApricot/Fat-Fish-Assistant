@@ -28,7 +28,7 @@ Fat-Fish-Assistant/
 | 跨机迁移与配置 | migration.py 编排源停写及目标恢复，migration_package.py 处理包格式；configure_* 负责原生配置 |
 | Windows 操作 | scripts/desktop 负责操作界面，scripts/services 调用受管模型与 NapCat，scripts/process 检查进程身份和私密权限 |
 
-NapCat 管理 QQ 接入，OneBot 提供传输与平台动作，AstrBot 管理事件、模型、调度和插件。发布的 src/ 装载核心包，plugins/ 每个自有插件仅组装一次。实例初始化将发布的插件材料部署到 data/plugins，由 AstrBot 原生发现。
+S1运行实例由SnowLuma管理QQ接入，OneBot提供传输与平台动作，AstrBot管理事件、模型、调度和插件。上表中的NapCat管理脚本仍是待S2替换的P2安装资产，不能作为SnowLuma实例的启动入口；接入范围见[S1说明](../S1_WINDOWS_SNOWLUMA.md)。发布的 src/ 装载核心包，plugins/ 每个自有插件仅组装一次。实例初始化将发布的插件材料部署到 data/plugins，由 AstrBot 原生发现。
 
 ### 兼容标识与退出条件
 

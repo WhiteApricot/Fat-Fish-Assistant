@@ -1,5 +1,7 @@
 # 迁移操作与数据清单
 
+> 本文中的安装与通信管理步骤为P2遗留实现，尚不适用于SnowLuma S1实例。当前范围及接入方式见 [S1说明](S1_WINDOWS_SNOWLUMA.md)。
+
 普通用户只用 **Migrate-Fat-Fish-Assistant.cmd**；目录快照 backup/restore 保留给维护者，不要求用户执行命令或复制数据库。
 
 ## 迁出

@@ -133,6 +133,20 @@ class Gateway:
         return False
 
     async def process(self,event):
+        from fat_fish.adapters.qq_reply_delay import bind_event_delay
+        def prepare_recheck():
+            before,policy=self.load()
+            actor=str(event.get_sender_id());group=str(event.get_group_id() or '')
+            epoch=self.epoch(before,group) if group and group in policy.groups else None
+            def still_allowed():
+                latest,current=self.load()
+                if event.get_extra('_ffa_block_notice',False):
+                    return actor in current.blocked_for(group) and (not group or (
+                        group in current.groups and self.epoch(latest,group)==epoch))
+                return actor not in current.blocked_for(group) and (epoch is None or (
+                    group in current.groups and self.epoch(latest,group)==epoch))
+            return still_allowed
+        bind_event_delay(event,prepare_recheck)
         original=event.message_str
         admitted=await self._process(event)
         if admitted and event.get_platform_name()=='aiocqhttp':
@@ -199,7 +213,10 @@ class Gateway:
                             reminders=reminders,persona_numbers=persona_numbers)
                     except IntentUnavailable as exc:
                         self.audit('intent_unavailable',event,str(exc))
-                        return await self.reject(event,system_result('暂时无法判断这条消息是否要求执行指令，没有执行。请稍后重试或使用 /help。'))
+                        natural=None
+        if natural and natural[0]=='clarify':
+            self.audit('natural_fallback_chat',event,'ambiguous_intent')
+            natural=None
         async with self.lock:
             try:
                 cfg, policy = self.load()
@@ -208,8 +225,22 @@ class Gateway:
             sender = str(event.get_sender_id())
             private = event.is_private_chat()
             group = str(event.get_group_id()) if not private else ''
-            if sender in policy.blocked_for(group) or sender == str(event.get_self_id()):
-                return await self.reject(event,reason='blocked_or_self')
+            if sender == str(event.get_self_id()):
+                return await self.reject(event,reason='self')
+            if sender in policy.blocked_for(group):
+                # Fixed, rate-limited denial only; never admit this event to plugins/LLM.
+                raw=getattr(getattr(event,'message_obj',None),'raw_message',{})
+                if (not isinstance(raw,dict) or raw.get('post_type','message')=='message') and (
+                        private or (group in policy.groups and str(event.get_self_id()) in mentions)):
+                    key=('blocked',sender,group)
+                    now=time.monotonic()
+                    if now-self.notices.get(key,-1e9)>=60:
+                        self.notices[key]=now
+                        while len(self.notices)>512:self.notices.pop(next(iter(self.notices)))
+                        event.set_extra('_ffa_block_notice',True)
+                        return await self.reject(event,system_result(
+                            '你已被加入肥鱼助手的黑名单，暂时无法使用。若有疑问，请联系实例主人。'),reason='blocked_notice')
+                return await self.reject(event,reason='blocked')
             if not private and group not in policy.groups:
                 return await self.reject(event,reason='unapproved_group')
             ident=getattr(getattr(event,'message_obj',None),'message_id',None)
@@ -283,6 +314,7 @@ class Gateway:
                     raw='/'+command+(' '+' '.join(arguments) if arguments else '')
                     event.message_str=raw
             if raw.startswith('/'):
+                event.set_extra('_ffa_reply_is_command',True)
                 parts = [natural[0],*natural[1]] if natural else raw[1:].split()
                 if not parts:
                     return await self.reject(event)
@@ -508,6 +540,20 @@ class Gateway:
             return await downstream()
         decision=await self.process(event)
         if not decision:return
+        if any(p.__class__.__name__ == 'File' for p in event.get_messages()):
+            from fat_fish.integrations.text_files import read_attachments
+            from astrbot.api.message_components import Plain
+            before,policy=self.load();group=str(event.get_group_id() or '')
+            epoch=self.epoch(before,group)
+            material=await read_attachments(event.get_messages())
+            latest,current=self.load()
+            if str(event.get_sender_id()) in current.blocked_for(group) or (group and (
+                    group not in current.groups or self.epoch(latest,group)!=epoch)):
+                return await self.reject(event)
+            # Feed text through the existing collector so a following question joins it.
+            event.get_messages()[:]=[p for p in event.get_messages() if p.__class__.__name__!='File']+[Plain(material)]
+            event.message_str+='\n'+material
+            event.message_obj.message_str=event.message_str
         from fat_fish.integrations.forwards import recover_forward_components
         recover_forward_components(event)
         if any(p.__class__.__name__ in {'Forward','Node','Nodes'} for p in event.get_messages()):

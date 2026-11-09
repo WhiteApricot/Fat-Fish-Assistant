@@ -40,6 +40,8 @@ class FatFishReminders(Star):
             and self.gateway.epoch(latest,group)==row['epoch'] and row['creator'] not in current.blocked_for(group) and row['target'] not in current.blocked_for(group)
             and (not group or (group in current.groups and (row['target']==row['creator'] or current.authorize(row['creator'],'group',private=False,group=group)))))
     async def checked_send(self,row):
+        from fat_fish.adapters.qq_reply_delay import new_reply_deadline,wait_before_reply
+        deadline=new_reply_deadline()
         from astrbot.api.event import MessageChain
         from astrbot.api.message_components import Plain,At
         from fat_fish.persona.persona_reply import render
@@ -47,6 +49,7 @@ class FatFishReminders(Star):
         cfg,_=self.gateway.load()
         notes=cfg.get('group_persona_notes',{}).get(row['scope'],'') if row['scope'] else cfg.get('private_persona_notes',{}).get(row['target'],'')
         wording=await render(self.context,scope,row['body'],notes=notes)
+        await wait_before_reply(deadline)
         if not await self.authorize(row):return False
         chain=MessageChain()
         chain.chain=([At(qq=row['target'])] if row['scope'] else [])+[Plain(wording or '提醒：'+row['body'])]

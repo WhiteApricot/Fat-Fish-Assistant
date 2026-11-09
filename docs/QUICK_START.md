@@ -1,5 +1,7 @@
 # 快速开始：双击操作
 
+> 本文中的安装与通信管理步骤为P2遗留实现，尚不适用于SnowLuma S1实例。当前范围及接入方式见 [S1说明](S1_WINDOWS_SNOWLUMA.md)。
+
 适用 Windows 10/11 x64。先审阅项目和第三方许可，准备自己的主人 QQ、机器人 QQ、DeepSeek API Key ；无需预装 QQ 客户端。无需输入 Python 或 PowerShell 命令。
 
 ## 首次安装

@@ -128,6 +128,17 @@ def protect_memory_engine(engine):
     engine._ffa_write_guard = True
 
 
+def meme_intent(text):
+    requested = bool(re.search(r'(?:发|来|给|用|要|想看).{0,12}(?:表情|动图)', text) or text.strip()=='表情包')
+    # '不要只用文字描述' requests an image; it does not forbid memes.
+    preference = re.sub(r'(?:不要|别|不用)(?:只|仅)(?:用|发|输出|回复)?(?:纯)?文字(?:描述|回复)?', '', text)
+    denied = bool(re.search(
+        r'(?:不要|别|不用|不许|禁止)(?:再|给我|给|发|发送|用|配|附带|加|带|\s)*(?:任何)?(?:图片|图|动图|表情(?:包)?)'
+        r'|(?:只|仅)(?:要|用|发|输出|回答|回复)?(?:纯)?文字|纯文字'
+        r'|只(?:回答|输出)(?:数字|JSON)', preference, re.I))
+    return requested, denied
+
+
 class MemeCadence:
     def __init__(self, clock=time.monotonic):
         self.clock, self.sessions = clock, OrderedDict()
@@ -144,8 +155,8 @@ class MemeCadence:
         now = self.clock()
         last, skipped = self.sessions.get(scope, (-1e9, 2))
         text = event.message_str
-        requested = bool(re.search(r'(?:发|来|给|用|要|想看).{0,12}(?:表情|动图)', text) or text.strip()=='表情包')
-        denied = bool(re.search(r'(?:不[要用发]|别发|纯文字|不要配图|只[回答输出]+).{0,10}(?:图|表情|文字|数字|JSON)?', text, re.I))
+        requested, denied = meme_intent(text)
+        requested = requested or bool(event.get_extra('_ffa_requested_meme_catalog', False))
         if not requested and event.get_extra('meme_manager_legacy_probability_hit') is False:
             return
         if denied or (not requested and (now-last < 45 or skipped < 2)):

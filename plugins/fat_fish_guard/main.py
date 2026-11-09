@@ -14,6 +14,8 @@ from fat_fish.memory.commands import MemoryCommands
 class FatFishGuard(Star, MemoryCommands):
     def __init__(self,context):
         super().__init__(context);self.context=context;self.confirm=Confirmations();self.locks={};self.meme_cadence=MemeCadence()
+        from fat_fish.integrations.meme_requests import MemeRequestState
+        self.meme_requests=MemeRequestState()
     @filter.event_message_type(filter.EventMessageType.ALL,priority=10001)
     async def unavailable_voice(self,event:AstrMessageEvent):
         # Native preprocessing replaces successfully transcribed Record parts.
@@ -86,6 +88,15 @@ class FatFishGuard(Star, MemoryCommands):
         if event.is_private_chat() and preference in {'简短','详细'}:
             request.system_prompt=(request.system_prompt or '')+'\n当前用户在私聊中选择回复长度：'+preference+'；仅调整详略，不改变人格、事实或权限。'
 
+    @filter.on_llm_request(priority=99998)
+    async def expose_requested_memes(self,event,request):
+        from fat_fish.integrations.meme_requests import expose_requested_catalog
+        try:
+            expose_requested_catalog(self.context,event,request,self.meme_requests)
+        except Exception as exc:
+            logger.error('Requested meme catalog unavailable: '+type(exc).__name__)
+            request.system_prompt=(request.system_prompt or '')+'\n本轮表情库读取失败，请明确说明暂时无法选图，不要声称已发送。'
+
     @filter.on_llm_response(priority=-99999)
     async def clear_retired_style(self,event,response):
         if (response is None or not event.is_private_chat() or
@@ -112,6 +123,8 @@ class FatFishGuard(Star, MemoryCommands):
 
     @filter.on_llm_response(priority=-99998)
     async def limit_automatic_memes(self,event,response):
+        from fat_fish.integrations.meme_requests import ensure_requested_selection
+        ensure_requested_selection(event,response,self.meme_requests)
         self.meme_cadence.apply(event)
 
     @filter.on_llm_request(priority=100000)

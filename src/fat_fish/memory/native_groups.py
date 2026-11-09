@@ -133,7 +133,7 @@ class NativeGroups:
         info=self.gateway.context.get_registered_star('astrbot_plugin_livingmemory')
         plugin=info.star_cls if info and info.activated else None
         if not plugin:return
-        ready,_=await plugin._ensure_plugin_ready()
+        ready,_=await plugin._ensure_plugin_ready(wait=False)
         if not ready:return
         await plugin.event_handler.handle_all_group_messages(event)
         event.set_extra('_ffa_skip_group_capture',True)
