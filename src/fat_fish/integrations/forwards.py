@@ -206,7 +206,9 @@ def install_collector_bridge(collector, version):
             event.set_extra('_ffa_original_umo',origin)
             event.unified_msg_origin=origin+'_ffa_collect_'+str(event.get_sender_id())
         previous=getattr(collector,'inflight',{}).get(event.unified_msg_origin)
-        if previous and not previous['task'].done() and not previous['event'].get_extra('_ffa_tool_started',False):
+        if (previous and not previous['task'].done()
+                and not previous['event'].get_extra('_ffa_tool_started',False)
+                and not previous['event'].get_extra('_ffa_reply_committing',False)):
             event.set_extra('_ffa_collector_followup',True)
         current.set(event)
         return True

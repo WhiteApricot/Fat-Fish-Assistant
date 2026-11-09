@@ -654,7 +654,10 @@ class Gateway:
                             present.add(ref)
                     break
         original_send=event.send
+        from fat_fish.adapters.qq_reply_delay import WEB_PROGRESS_TYPE
+        from fat_fish.integrations.web_chat import finish_web_progress
         async def checked_send(message):
+            if event.get_extra('_ffa_reply_superseded',False):return
             if event.get_extra('_ffa_system_sent',False) and not event.get_extra('_ffa_sending_receipt',False):
                 return
             current,policy=self.load()
@@ -664,15 +667,25 @@ class Gateway:
             if event.get_extra('_ffa_personal_native',False) and hasattr(message,'chain'):
                 from astrbot.api.message_components import Plain
                 message.chain.insert(0,Plain(text='【系统】'))
-            from fat_fish.integrations.web_search import clean_message
+            from fat_fish.integrations.web_search import clean_message,is_intermediate_message
+            progress=getattr(message,'type',None)==WEB_PROGRESS_TYPE
             error=event.get_extra('_llm_error_message')
             if error and hasattr(message,'get_plain_text') and message.get_plain_text().strip()==str(error).strip():
                 message=event.plain_result('这次回复没有生成成功，请稍后再试。')
+            elif not progress and is_intermediate_message(event,message):
+                # AstrBot 4.29 reports a terminal runner error as GENERAL_RESULT before its completion hook.
+                result_type=getattr(event.get_result(),'result_content_type',None)
+                if getattr(result_type,'name',None)!='GENERAL_RESULT':return
+                message=event.plain_result('这次回复没有生成成功，请稍后再试。')
             elif clean_message(message) and not message.chain:
-                if event.get_extra('_ffa_diagnostic_replaced',False):return
-                event.set_extra('_ffa_diagnostic_replaced',True)
-                message=event.plain_result('刚才没能整理出有效回复，请再试一次。')
+                return
+            if progress:
+                if not event.get_extra('_ffa_web_progress_closed',False):
+                    await original_send(message)
+                return
+            await finish_web_progress(event)
             result=await original_send(message)
+            if event.get_extra('_ffa_reply_superseded',False):return result
             if event.get_extra('_ffa_personal_native',False):
                 self.record_command(event,'new','')
             self.audit('send',event)
@@ -692,6 +705,7 @@ class Gateway:
         event.set_extra('_ffa_preference',cfg.get('preferences',{}).get(sender,'标准') if not group else '标准')
         event.set_extra('_ffa_security_epoch',epoch)
         event.set_extra('_ffa_access_checked',True)
+        event.set_extra('enable_streaming',False)
         self.audit('admitted',event)
         event.send=checked_send
         task=asyncio.current_task()
@@ -699,8 +713,11 @@ class Gateway:
         try:
             return await downstream()
         finally:
-            self.active.pop(task,None)
-            event.send=original_send
+            try:
+                await finish_web_progress(event)
+            finally:
+                self.active.pop(task,None)
+                event.send=original_send
 
 def event_scope(private, group):
     return 'private' if private else 'group:'+group

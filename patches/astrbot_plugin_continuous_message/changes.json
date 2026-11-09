@@ -102,7 +102,7 @@
   {
     "path": "main.py",
     "before": "3f8413fb99524bdfeb8da7b6f23e9fd0ee4859c03725b700a56b700c51d9c359",
-    "after": "e1686f82c5162bc7732eb8e21873180fef7d319eff310007ee2cd38bfb43cf5c",
+    "after": "b1258ccfff9ce13ecae5f03304ab7d663c0d39ab57a4dc165499c19ed1585350",
     "edits": [
       {
         "start": 0,
@@ -203,7 +203,9 @@
           "        # Commands and unlisted/group sessions have already bypassed this path.\n",
           "        # Never replay a turn once a tool might have produced side effects.\n",
           "        previous = self.inflight.get(uid)\n",
-          "        if previous and not previous['task'].done() and not previous['event'].get_extra('_ffa_tool_started', False):\n",
+          "        if (previous and not previous['task'].done()\n",
+          "                and not previous['event'].get_extra('_ffa_tool_started', False)\n",
+          "                and not previous['event'].get_extra('_ffa_reply_committing', False)):\n",
           "            old_event = previous['event']\n",
           "            delivered = old_event.get_extra('_ffa_delivered_parts', [])\n",
           "            carry = list(previous['buffer'])\n",
@@ -214,8 +216,8 @@
           "            raw_text = self.merge_separator.join(carry)\n",
           "            current_urls = list(previous['images']) + list(current_urls)\n",
           "            has_image = bool(current_urls)\n",
-          "            old_event.stop_event()\n",
-          "            previous['task'].cancel()\n",
+          "            from fat_fish.adapters.qq_reply_delay import supersede_reply\n",
+          "            supersede_reply(old_event, previous['task'])\n",
           "            self.inflight.pop(uid, None)\n",
           "            logger.info('[消息防抖动] 新消息合并进行中回复；取消旧轮未发送部分')\n"
         ]

@@ -8,4 +8,6 @@ changes.json 只保存变更行段：path、before/after SHA-256、edits[start,e
 
 原因：统一的早期权限/黑名单、撤权 epoch、上下文/工具/引用与唯一发送路径，需要处于扩展 Hook 无法证明同等覆盖的位置。保留这些补丁，不通过关闭检查来减少耦合。判断子集从固定 GPL 上游动态取得，保留 LICENSE，不在自有 src 复制。
 
+Continuous Message 的合并补丁通过 FFA 发送入口通知旧轮退出。等待发送的内容被唤醒并跳过，旧轮正常退出 AstrBot 会话。已经进入传输或开始有副作用工具的轮次保留原发送与授权边界。
+
 恢复/撤销：从清单重建旧 release 并 rollback；仅在停止的隔离目录做 pristine 重建。构建失败的 stage 不激活。上游作者版权及许可继续适用；本项目修改标注 Fat-Fish-Assistant 和日期，不删除原声明。下载脚本不免除 AGPL/GPL 的相应源代码与通知义务。

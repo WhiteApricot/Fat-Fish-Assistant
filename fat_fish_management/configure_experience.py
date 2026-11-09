@@ -23,7 +23,7 @@ PROJECT=Path(__file__).resolve().parents[1]
 CATALOG=json.loads((PROJECT/'manifests/starter-memes.json').read_text(encoding='utf-8'))
 PACK_ID=CATALOG['id']
 CATEGORIES={x['category']:x['label'] for x in CATALOG['files'] if x.get('category')}
-SEGMENTED={'enable':True,'only_llm_result':True,'interval_method':'random','interval':'0.6,1.3','log_base':2.6,'words_count_threshold':600,'split_mode':'regex','regex':r'```[\s\S]*?```|[^\r\n]+','content_cleanup_rule':''}
+SEGMENTED={'enable':True,'only_llm_result':True,'interval_method':'random','interval':'0,0','log_base':2.6,'words_count_threshold':600,'split_mode':'regex','regex':r'```[\s\S]*?```|[^\r\n]+','content_cleanup_rule':''}
 
 def native_pack_modules(root,release):
     os.environ['ASTRBOT_ROOT']=str(root);os.chdir(root)

@@ -67,6 +67,9 @@ class FatFishGuard(Star, MemoryCommands):
         event.stop_event()
     @filter.on_llm_request(priority=99999)
     async def apply_personal_preference(self,event,request):
+        if event.get_extra('_ffa_reply_superseded',False):
+            event.stop_event()
+            return
         if event.get_extra('_ffa_access_checked',False):
             from astrbot.core.fat_fish_gateway import gateway
             cfg,policy=gateway.load();group=str(event.get_group_id() or '')
@@ -159,7 +162,14 @@ class FatFishGuard(Star, MemoryCommands):
         from fat_fish.integrations.web_search import offer_search
         settings=self.context.get_config(umo=event.unified_msg_origin).get('provider_settings',{})
         scope='group:'+group if group else 'private:'+actor
-        offer_search(event,request,settings,enabled=cfg.get('webresearch',{}).get(scope,True))
+        def may_search():
+            latest,current=gateway.load()
+            return (actor not in current.blocked_for(group)
+                    and (not group or (group in current.groups and
+                         gateway.epoch(latest,group)==event.get_extra('_ffa_security_epoch')))
+                    and latest.get('webresearch',{}).get(scope,True))
+
+        offer_search(event,request,settings,enabled=cfg.get('webresearch',{}).get(scope,True),may_search=may_search)
         recent=gateway.recent_commands(event)
         if recent:
             request.system_prompt=(request.system_prompt or '')+(
@@ -180,6 +190,8 @@ class FatFishGuard(Star, MemoryCommands):
     async def mark_web_material(self,event,tool,_args):
         if tool.name in {'web_search_deepseek','deepseek_fetch_web_page'}:
             event.set_extra('_ffa_web_material',True)
+            from fat_fish.integrations.web_chat import start_web_progress
+            start_web_progress(event,(_args or {}).get('progress_message'))
             # A read-only lookup may be cancelled when the user adds context.
             # Do not replay a turn that has already begun a state-changing tool.
             event.set_extra('_ffa_tool_started',event.get_extra('_ffa_mutating_tool_started',False))
@@ -188,32 +200,41 @@ class FatFishGuard(Star, MemoryCommands):
 
     @filter.on_llm_response(priority=100000)
     async def clean_model_reply(self,event,response):
-        if response is None:return
+        from fat_fish.integrations.web_chat import finish_web_progress
+        event.set_extra('_ffa_agent_finished',True)
+        await finish_web_progress(event)
+        if response is None:
+            return
         event.set_extra('_llm_reasoning_content','')
-        from fat_fish.integrations.web_search import clean_reply,clean_message,NO_RESULTS
+        from fat_fish.integrations.web_search import clean_reply,clean_message
         from astrbot.api.event import MessageChain
         text=response.completion_text or ''
         clean=clean_reply(text)
-        if event.get_extra('_ffa_search_failed',False):
-            clean=NO_RESULTS
+        if response.result_chain is not None:clean_message(response.result_chain)
+        if text.strip() and not clean and not getattr(response.result_chain,'chain',None):
+            clean='刚才没能整理出有效回复，请再试一次。'
             response.result_chain=MessageChain().message(clean)
-        else:
-            if response.result_chain is not None:clean_message(response.result_chain)
-            if text.strip() and not clean and not getattr(response.result_chain,'chain',None):
-                clean='刚才没能整理出有效回复，请再试一次。'
-                response.result_chain=MessageChain().message(clean)
-        response.completion_text=clean
+        if response.result_chain is None:
+            response.completion_text=clean
 
     @filter.on_agent_begin(priority=-99999)
     async def apply_private_persona_to_agent(self,event,run_context):
-        if not event.is_private_chat() or not event.get_extra('_ffa_access_checked',False):return
-        from astrbot.core.fat_fish_gateway import gateway
-        from fat_fish.persona.private_persona import apply_to_turn
-        cfg,policy=gateway.load();actor=str(event.get_sender_id())
-        if actor in policy.blocked_for(''):raise asyncio.CancelledError()
-        notes=cfg.get('private_persona_notes',{})
-        from fat_fish.persona.persona_settings import effective_notes
-        note=effective_notes(cfg,actor)
-        if actor in notes or note:
-            state=apply_to_turn(run_context.messages,note)
-            if state:event.set_extra('_ffa_persona_turn_restore',state)
+        if event.get_extra('_ffa_access_checked',False):
+            event.set_extra('_ffa_agent_running',True)
+            event.set_extra('_ffa_agent_finished',False)
+        if event.get_extra('_ffa_reply_superseded',False):
+            from fat_fish.adapters.qq_reply_delay import stop_superseded_runner
+            stop_superseded_runner(event)
+            return
+        if not event.get_extra('_ffa_access_checked',False):return
+        if event.is_private_chat():
+            from astrbot.core.fat_fish_gateway import gateway
+            from fat_fish.persona.private_persona import apply_to_turn
+            cfg,policy=gateway.load();actor=str(event.get_sender_id())
+            if actor in policy.blocked_for(''):raise asyncio.CancelledError()
+            notes=cfg.get('private_persona_notes',{})
+            from fat_fish.persona.persona_settings import effective_notes
+            note=effective_notes(cfg,actor)
+            if actor in notes or note:
+                state=apply_to_turn(run_context.messages,note)
+                if state:event.set_extra('_ffa_persona_turn_restore',state)
