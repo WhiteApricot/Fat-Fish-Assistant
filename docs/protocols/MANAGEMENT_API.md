@@ -24,6 +24,8 @@
 | `resume-source --confirm-target-offline` | 确认目标已停止后归档源迁出暂停记录 |
 | `upgrade --release DIR` / `rollback` / `recover-upgrade` | 通过事务切换或恢复代码及插件，保留数据库 |
 
+SnowLuma 官方发行获取、启动、浏览器、剪贴板、连接等待和停止引导使用 snowluma 子命令。命令和状态语义见 [Windows 官方接入](../SNOWLUMA_WINDOWS.md)。
+
 ## 组件与健康证据
 
 管理模型分别记录已登记、程序文件存在、运行和就绪。组件状态含 `not_installed`、`installed`、`not_initialized`、`stopped`、`running`、`waiting_for_user`、`unhealthy`。安装和修复阶段由已有进度与事务记录报告。SnowLuma 的 OS 进程在此批次显示未知，反向连接可证明协议对端就绪。未登记时也可从 AstrBot 查看实际连接证据。

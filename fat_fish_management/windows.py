@@ -132,3 +132,65 @@ def ensure_no_build_writers(destination):
         raise RuntimeError('Cannot verify interrupted build writers; partial environment retained')
     if json.loads(proc.stdout.removeprefix('\ufeff'))['active_count']:
         raise RuntimeError('An interrupted build still has active Python workers; wait for it to exit before retry; nothing was moved')
+
+def running_process_creation(pid):
+    """Return the creation timestamp of a live Windows PID, without controlling it."""
+    if os.name != 'nt':
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel.GetProcessTimes.argtypes = (wintypes.HANDLE, *(ctypes.POINTER(wintypes.FILETIME),) * 4)
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        if ctypes.get_last_error() == 87:
+            return None
+        raise Fault('busy', '无法核实先前的 SnowLuma Launcher 进程状态。')
+    try:
+        code = wintypes.DWORD()
+        if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+            raise Fault('busy', '无法核实先前的 SnowLuma Launcher 进程状态。')
+        if code.value != 259:
+            return None
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel.GetProcessTimes(handle, *(ctypes.byref(value) for value in times)):
+            raise Fault('busy', '无法核实先前的 SnowLuma Launcher 启动时间。')
+        creation = times[0]
+        return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def launch_snowluma(directory, launcher, port):
+    if os.name != 'nt' or launcher != 'launcher.bat':
+        raise Fault('incompatible', '需要 Windows 官方 launcher.bat。')
+    executable = Path(os.environ['SystemRoot']) / 'System32' / 'cmd.exe'
+    environment = {k: v for k, v in os.environ.items()
+                   if not k.upper().startswith('SNOWLUMA_') and k.upper() not in {'NODE_OPTIONS', 'NODE_PATH'}}
+    environment.update(PATH=str(directory) + os.pathsep + os.environ.get('PATH', ''),
+                       PATHEXT='.EXE;.COM;.BAT;.CMD',
+                       SNOWLUMA_WEBUI_HOST='127.0.0.1', SNOWLUMA_WEBUI_PORT=str(port),
+                       SNOWLUMA_HOOK_AUTOLOAD='0')
+    return subprocess.Popen([str(executable), '/d', '/c', launcher], cwd=directory,
+                            env=environment, creationflags=subprocess.CREATE_NEW_CONSOLE)
+
+
+def open_snowluma_webui(url):
+    if os.name != 'nt':
+        raise Fault('incompatible', '此操作需要 Windows 浏览器。')
+    os.startfile(url)
+
+
+def copy_to_clipboard(value):
+    if os.name != 'nt':
+        raise Fault('incompatible', '此操作需要 Windows 剪贴板。')
+    executable = Path(os.environ['SystemRoot']) / 'System32' / 'clip.exe'
+    proc = subprocess.run([str(executable)], input=value.encode('ascii'), capture_output=True,
+                          timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+    if proc.returncode:
+        raise Fault('failed', '无法写入 Windows 剪贴板。')

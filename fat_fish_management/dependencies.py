@@ -74,21 +74,35 @@ def safe_path(root,name):
     if '\\' in name or ':' in name or PurePosixPath(name).is_absolute() or '..' in PurePosixPath(name).parts:raise ValueError('Unsafe archive path')
     path=(root/name).resolve();path.relative_to(root.resolve());return path
 
-def acquire(spec,cache,offline=False,progress=None):
+class OfficialReleaseRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, newurl):
+        destination=urllib.parse.urlsplit(newurl)
+        if destination.scheme!='https' or destination.hostname not in {
+            'github.com','release-assets.githubusercontent.com','objects.githubusercontent.com',
+        } or destination.username or destination.password or destination.port not in {None,443}:
+            raise ValueError('Untrusted official Release redirect')
+        return super().redirect_request(request,fp,code,message,headers,newurl)
+
+
+def acquire(spec,cache,offline=False,progress=None,*,official_release=False):
     cache=external(cache);cache.mkdir(parents=True,exist_ok=True)
     name=spec.get('filename',spec.get('file'))
     if not name or Path(name).name!=name:raise ValueError('Invalid cache filename')
     target=cache/name;expected=spec.get('archive_sha256',spec.get('sha256'))
     if not expected or len(expected)!=64:raise ValueError('Missing pinned SHA-256')
+    expected_size=spec.get('size')
+    if official_release and (not spec.get('url','').startswith('https://github.com/SnowLuma/SnowLuma/releases/download/')
+                             or type(expected_size) is not int or expected_size<1):
+        raise ValueError('Expected a pinned official SnowLuma Release asset')
     if target.exists():
-        if digest(target)!=expected:raise ValueError('Cached hash mismatch: '+name+'; quarantine it before retry')
+        if (expected_size is not None and target.stat().st_size!=expected_size) or digest(target)!=expected:raise ValueError('Cached hash mismatch: '+name+'; quarantine it before retry')
         if progress:progress('cache-hit',name)
         acquisition_receipt(cache,name,'verified-cache',expected)
         return target
     if offline:raise FileNotFoundError('Offline cache miss: '+name)
     url=spec.get('url')
     candidates=[]
-    if spec.get('source','').startswith('https://pypi.org/'):
+    if not official_release and spec.get('source','').startswith('https://pypi.org/'):
         # Resolve only the exact locked filename; never let an index choose versions.
         class Links(HTMLParser):
             def handle_starttag(self,tag,attrs):
@@ -104,22 +118,29 @@ def acquire(spec,cache,offline=False,progress=None):
                 if parsed.scheme=='https' and parsed.hostname in {'mirrors.tuna.tsinghua.edu.cn','pypi.tuna.tsinghua.edu.cn'} and urllib.parse.unquote(parsed.path.rsplit('/',1)[-1])==name:
                     candidates.append(candidate)
         except Exception:pass  # Official metadata remains available as fallback.
-    if url and url.startswith('https://huggingface.co/'):
+    if not official_release and url and url.startswith('https://huggingface.co/'):
         candidates.append(url.replace('https://huggingface.co/','https://hf-mirror.com/',1))
-    # Existing transfer route for public pinned downloads
-    # only. Never send API tokens or route runtime business requests here.
-    if url and url.startswith('https://github.com/') and not urllib.parse.urlparse(url).query:
-        candidates.append('https://ghfast.top/'+url)
-    if url and url.startswith('https://codeload.github.com/'):
-        parts=urllib.parse.urlparse(url).path.strip('/').split('/')
-        if len(parts)==4 and parts[2]=='zip':
-            candidates.append('https://ghfast.top/https://github.com/'+parts[0]+'/'+parts[1]+'/archive/'+parts[3]+'.zip')
-    candidates.extend(spec.get('mirrors',[]))
+    # Custom acceleration is opt-in for FFA dependencies. Official SnowLuma
+    # always uses its original URL, through the user's configured HTTPS proxy if any.
+    accelerator=os.environ.get('FFA_GITHUB_TRANSFER_BASE','').rstrip('/')
+    if not official_release and accelerator and url:
+        source=urllib.parse.urlsplit(url)
+        proxy=urllib.parse.urlsplit(accelerator)
+        if (source.hostname in {'github.com','codeload.github.com'} and not source.query
+                and proxy.scheme=='https' and proxy.hostname and not proxy.username
+                and not proxy.password and not proxy.query and not proxy.fragment):
+            candidates.append(accelerator+'/'+url)
+    if not official_release:
+        candidates.extend(spec.get('mirrors',[]))
     # Resolve official PyPI lazily, so a working mirror needs no overseas request.
     candidates.append(url)
     if progress:progress('download',name)
     errors=[]
-    for candidate in candidates:
+    opener=urllib.request.build_opener(OfficialReleaseRedirect()) if official_release else None
+    attempts=[(candidate,opener) for candidate in dict.fromkeys(candidates)]
+    if official_release and urllib.request.getproxies().get('https'):
+        attempts.append((url,urllib.request.build_opener(urllib.request.ProxyHandler({}),OfficialReleaseRedirect())))
+    for candidate,source_opener in attempts:
         partial=target.with_name(target.name+'.part-'+secrets.token_hex(5))
         try:
             if candidate is None:
@@ -130,7 +151,8 @@ def acquire(spec,cache,offline=False,progress=None):
                 if row is None:raise ValueError('Pinned artifact unavailable')
                 candidate=row['url']
             if urllib.parse.urlparse(candidate).scheme!='https':raise ValueError('HTTPS source required')
-            with urllib.request.urlopen(candidate,timeout=30) as r,partial.open('xb') as out:
+            request_open=source_opener.open if source_opener else urllib.request.urlopen
+            with request_open(candidate,timeout=15 if official_release else 30) as r,partial.open('xb') as out:
                 if urllib.parse.urlparse(r.url).scheme!='https':raise ValueError('Insecure redirect refused')
                 total=int(getattr(r,'headers',{}).get('Content-Length',0) or 0)
                 started=time.monotonic();received=0;last=0
@@ -143,15 +165,21 @@ def acquire(spec,cache,offline=False,progress=None):
                 while True:
                     chunk=r.read(65536)
                     if not chunk:break
-                    out.write(chunk);received+=len(chunk)
+                    received+=len(chunk)
+                    if expected_size is not None and received>expected_size:raise ValueError('Downloaded size exceeds release lock')
+                    if official_release and time.monotonic()-started>180:raise TimeoutError('Release transfer deadline exceeded')
+                    out.write(chunk)
                     if time.monotonic()-last>=.25:notify();last=time.monotonic()
                 notify(True)
-            if digest(partial)!=expected:raise ValueError('Downloaded hash mismatch: '+name)
+            if (expected_size is not None and received!=expected_size) or digest(partial)!=expected:raise ValueError('Downloaded hash mismatch: '+name)
             partial.replace(target)
             acquisition_receipt(cache,name,candidate,expected)
             break
         except Exception as exc:
-            errors.append(type(exc).__name__)
+            source=urllib.parse.urlsplit(candidate or spec.get('source','')).hostname
+            kind=f'HTTP {exc.code}' if isinstance(exc,urllib.error.HTTPError) else type(exc).__name__
+            errors.append(f'{source}: {kind}')
+        finally:
             partial.unlink(missing_ok=True)
     else:raise RuntimeError('All pinned sources failed: '+name+'; '+','.join(errors))
 

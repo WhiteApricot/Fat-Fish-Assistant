@@ -1,6 +1,6 @@
 # 快速开始：双击操作
 
-> S2 批次 1 使用现有 FFA 安装与启动入口。SnowLuma 的自动获取、官方界面引导和统一菜单属于后续批次。
+> FFA 使用现有部署入口。SnowLuma 官方包的获取、校验、Launcher 和连接指引见 [Windows 官方接入](SNOWLUMA_WINDOWS.md)。统一菜单属于后续批次。
 
 适用 Windows 10/11 x64。先审阅项目和第三方许可，准备自己的主人 QQ、机器人 QQ、DeepSeek API Key。按 [SnowLuma 官方 Windows 指南](https://snowluma.github.io/en/docs/guide/deploy/windows) 准备 QQ 客户端。无需输入 Python 或 PowerShell 命令。
 
@@ -20,7 +20,7 @@
 1. 获取 Windows x64 Full ZIP，使用 [固定发行清单](../manifests/snowluma/windows-x64.json) 的来源和 SHA256 校验。解压到 FFA 安装目录之外，双击 SnowLuma 自带的 `launcher.bat`。
 2. 按启动窗口的地址打开官方 WebUI。初次使用时按官方页面阅读协议，并使用启动日志给出的初始密码。确认监听范围只限本机。用机器人账号扫码并在官方界面完成设备确认和 QQ 接入。
 3. 在 SnowLuma 的 OneBot 设置里添加反向 WebSocket 客户端。默认地址填 `ws://127.0.0.1:6199/ws`，角色选 Universal，消息格式选 array，重连间隔设 5000 毫秒，关闭上报自身消息和状态命令。若维护者修改过 AstrBot 端口，使用该实例的端口。
-4. 用文本查看器打开 FFA 安装目录下的 `instance/private/onebot-token.txt`，将内容粘贴到该连接的 Token 字段，保存并启用。该值只用于 OneBot，操作后关闭文本查看器，避免在 QQ、截图和日志中分享。
+4. 使用 [Windows 官方接入](SNOWLUMA_WINDOWS.md) 中的复制命令，把 FFA 私密令牌粘贴到官方 WebUI 的 Token 字段，保存并启用，然后清理剪贴板。
 5. 在 FFA 管理命令中查看 `health`。当 `connection.onebot.connected` 为真时，向机器人发送一条私聊，确认模型和回复均可用。
 
 普通短回复默认按换行分成多条发送，代码块和长篇说明保持完整。新安装默认载入 Dejavu Moe 的 24 张鲸鱼娘 GIF，按语境、概率和冷却适度触发，每次回复最多一张；可以在表情包管理页继续添加或替换自己的素材。表情功能通过现有插件实现，不要求开通额外图床或语义模型。

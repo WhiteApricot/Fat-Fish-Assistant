@@ -225,7 +225,7 @@ try{
    else{
    $components='chat'
    Write-Host '进入插件选配环节。'
-   foreach($item in @(@{id='embedding';label='长期记忆（推荐）';default=$true},@{id='speech';label='语音识别（可选）';default=$true})){
+   foreach($item in @(@{id='embedding';label='本地长期记忆检索（可选）';default=$false},@{id='speech';label='语音识别（可选）';default=$false})){
     $hint=if($item.default){'[Y/N]，回车安装；输入 N 不安装'}else{'[y/N]，直接回车跳过'}
     $answer=ReadInput ('是否安装 '+$item.label+'？'+$hint)
     if($answer -match '^[Yy]$' -or (-not $answer -and $item.default)){$components+=','+$item.id}

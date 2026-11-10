@@ -26,7 +26,7 @@ from pathlib import Path
 
 from fat_fish_management.dependencies import PROJECT,acquire,build_release,clean_environment,digest,external,install_environment,load,profile_fingerprint,run_logged,unpack,verify_environment_versions,link_or_copy,RELEASE_LAYOUT,extend_core_environment
 
-from fat_fish_management import windows
+from fat_fish_management import snowluma, windows
 from fat_fish_management.components import lifecycle, snowluma_status, communication_health
 from fat_fish_management.errors import Fault
 from fat_fish_management.lifecycle_lock import file_lock
@@ -712,12 +712,75 @@ def parser():
     migration=sub.add_parser('migration-import');migration.add_argument('--package',required=True,type=Path);migration.add_argument('--confirm-source-offline',action='store_true');migration.add_argument('--cache',type=Path);migration.add_argument('--offline',action='store_true')
     resume=sub.add_parser('resume-source');resume.add_argument('--confirm-target-offline',action='store_true')
     register=sub.add_parser('register-external');register.add_argument('name',choices=list(COMPONENTS));register.add_argument('--path',required=True,type=Path);register.add_argument('--version',required=True)
+    transport=sub.add_parser('snowluma')
+    operations=transport.add_subparsers(dest='snowluma_action',required=True)
+    official=operations.add_parser('acquire')
+    official.add_argument('--destination',required=True,type=Path)
+    official.add_argument('--archive',type=Path)
+    official.add_argument('--cache',type=Path)
+    official.add_argument('--offline',action='store_true')
+    for action in ('launch','webui','guide','copy','status','verify','stop-guide'):
+        command=operations.add_parser(action)
+        command.add_argument('--webui-port',type=int)
+        if action=='copy':command.add_argument('field',choices=['url','token'])
+        if action=='verify':command.add_argument('--timeout',type=int,default=60)
     return p
+
+def manage_snowluma(root,record,args):
+    action=args.snowluma_action
+    info=record.get('components',{}).get('snowluma',{})
+    if action=='acquire':
+        if info.get('installed') and Path(info['path']).resolve()!=args.destination.resolve():
+            raise Fault('read_only','已有 SnowLuma 登记，不能静默替换其路径。')
+        path=snowluma.acquire_release(root,args.destination,args.cache or root/'cache',
+                                      args.archive,args.offline,progress,atomic)
+        version=load(snowluma.LOCK)['version']
+        record.setdefault('components',{})['snowluma']={
+            'installed':True,'ownership':'official-external','version':version,'path':str(path),
+        }
+        atomic(root/'installation.json',record)
+        return {'registered':True,'version':version,'path':str(path),'state':'waiting_for_user'}
+    port=args.webui_port if args.webui_port is not None else snowluma.launcher_record(root).get('port',snowluma.WEBUI_PORT)
+    target=instance(root,record) if record.get('instance') else None
+    if action=='launch':
+        if target and (target/'private/MIGRATED-OUT.json').exists():
+            raise Fault('busy','源实例处于迁出暂停状态，请保持停止。')
+        return snowluma.launch(root,info,port,atomic)
+    if action=='webui':
+        return snowluma.open_webui(port,timeout=15)
+    if action=='guide':
+        return snowluma.guidance(target,port)
+    if action=='copy':
+        url,token=snowluma.connection_fields(target)
+        windows.copy_to_clipboard(url if args.field=='url' else token)
+        return {'copied':args.field,'instruction':'粘贴到官方 WebUI 后清理剪贴板。'}
+    if action=='stop-guide':
+        return {'state':'waiting_for_user','webui_url':snowluma.webui_url(port),
+                'instruction':'切回官方 Launcher 窗口，按 Ctrl+C 并按窗口提示退出，再执行 snowluma status。'}
+    def probe():
+        try:
+            return read_protocol(root,record)
+        except (Fault,OSError,ValueError):
+            return {}
+    if action=='verify':
+        if target is None:
+            raise Fault('needs_input','请先初始化并启动 AstrBot。')
+        progress('waiting','正在等待机器人账号、QQ 在线及 OneBot 连接验证')
+        protocol=snowluma.wait_for_connection(probe,args.timeout)
+    else:
+        protocol=probe()
+    return {**snowluma.status(root,port,protocol),'component':snowluma_status(record,protocol),
+            'connection_verified':protocol.get('connected') is True}
 
 def dispatch(args):
     root=args.root.resolve()
     if args.command=='check':return inspect_environment(root,args.network)
     if args.command=='install':return install(root,args)
+    if args.command=='snowluma':
+        root=owned_root(root,create=args.snowluma_action=='acquire')
+        if args.snowluma_action in {'acquire','launch'}:
+            with installation_lock(root):return manage_snowluma(root,state(root),args)
+        return manage_snowluma(root,state(root),args)
     root=owned_root(root);record=state(root)
     if args.command=='resume-source':
         if not args.confirm_target_offline:raise Fault('needs_input','Confirm the target host is stopped before resuming the source')

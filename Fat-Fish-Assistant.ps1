@@ -1,6 +1,6 @@
 ﻿[CmdletBinding(PositionalBinding=$false)]
 param(
- [Parameter(Position=0)][ValidateSet('check','install','start','daily-start','stop','restart','status','components','health','diagnose','wizard','config','backup','restore','upgrade','rollback','component','recover-upgrade','resume-source','register-external','migration-export','migration-import')][string]$Action='install',
+ [Parameter(Position=0)][ValidateSet('check','install','start','daily-start','stop','restart','status','components','health','diagnose','wizard','config','backup','restore','upgrade','rollback','component','recover-upgrade','resume-source','register-external','snowluma','migration-export','migration-import')][string]$Action='install',
  [string]$Root=(Join-Path $env:LOCALAPPDATA 'Fat-Fish-Assistant'),
  [string]$Python,
  [switch]$Json,

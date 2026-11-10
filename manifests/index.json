@@ -5,6 +5,7 @@
     "components": "components.json",
     "source_dependencies": "sources.json",
     "dashboard_assets": "dashboard.json",
+    "core_packages": "core.json",
     "chat_packages": "chat.json",
     "speech_packages": "speech.json",
     "source_build_tools": "build.json",

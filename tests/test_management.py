@@ -286,5 +286,249 @@ class EvidenceTest(unittest.TestCase):
                         self.assertFalse(read_connection(root)['connected'])
 
 
+class SnowLumaReleaseTest(unittest.TestCase):
+    def setUp(self):
+        from hashlib import sha256
+        from zipfile import ZipFile
+        from fat_fish_management import snowluma
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.local = Path(temporary.name)
+        self.root = c.owned_root(self.local / 'ffa', create=True)
+        self.destination = self.local / 'official'
+        self.archive = self.local / 'official.zip'
+        self.program = {'release.json': json.dumps({'target': 'win32-x64', 'version': '2.4.2'}),
+                        'native/fixture.node': 'synthetic only',
+                        **{name: 'synthetic only' for name in snowluma.PROGRAM_FILES
+                           if name != 'release.json'}}
+        with ZipFile(self.archive, 'w') as package:
+            for path, value in self.program.items():
+                package.writestr(path, value)
+        self.lock = dict(version='2.4.2', launcher='launcher.bat', filename='official.zip',
+                         url='https://github.com/SnowLuma/SnowLuma/releases/download/v2.4.2/official.zip',
+                         size=self.archive.stat().st_size, sha256=sha256(self.archive.read_bytes()).hexdigest())
+        original_load = c.load
+
+        def load(name):
+            return self.lock if name == snowluma.LOCK else original_load(name)
+
+        for module in (c, snowluma, windows):
+            load_patch = patch.object(module, 'load', side_effect=load)
+            load_patch.start()
+            self.addCleanup(load_patch.stop)
+
+    def invoke(self, *args):
+        return c.dispatch(c.parser().parse_args(['--root', str(self.root), 'snowluma', *args]))
+
+    def install(self):
+        return self.invoke('acquire', '--destination', str(self.destination),
+                           '--archive', str(self.archive), '--offline')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows release layout')
+    def test_acquisition_is_independent_and_idempotent(self):
+        self.assertTrue(self.install()['registered'])
+        self.assertTrue(self.install()['registered'])
+        self.assertEqual(c.state(self.root)['components']['snowluma']['ownership'], 'official-external')
+        self.assertFalse((self.destination / 'config').exists())
+        for name, content in self.program.items():
+            self.assertEqual((self.destination / name).read_bytes(), content.encode())
+        with self.assertRaisesRegex(c.Fault, '不能静默替换'):
+            self.invoke('acquire', '--destination', str(self.local / 'other'))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows release layout')
+    def test_bad_zip_and_unknown_directory_are_preserved(self):
+        self.archive.write_bytes(b'bad archive')
+        with self.assertRaisesRegex(c.Fault, 'SHA256'):
+            self.install()
+        self.assertFalse(self.destination.exists())
+        self.destination.mkdir()
+        sentinel = self.destination / 'unrelated'
+        sentinel.write_text('preserve')
+        with self.assertRaises(c.Fault) as exc:
+            self.install()
+        self.assertEqual(exc.exception.kind, 'read_only')
+        self.assertEqual(sentinel.read_text(), 'preserve')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows release layout')
+    def test_launch_refuses_unverified_or_modified_program(self):
+        self.install()
+        with patch.object(windows, 'launch_snowluma') as launch:
+            (self.destination / 'native/fixture.node').write_text('modified')
+            with self.assertRaisesRegex(c.Fault, '已校验'):
+                self.invoke('launch')
+            launch.assert_not_called()
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows release layout')
+    def test_launch_uses_only_verified_launcher_and_blocks_duplicate(self):
+        self.install()
+        from fat_fish_management import snowluma
+        with patch.object(snowluma, 'webui_state', return_value='not_listening'), \
+                patch.object(windows, 'running_process_creation', return_value=919), \
+                patch.object(windows, 'launch_snowluma', return_value=SimpleNamespace(pid=912)) as launch:
+            response = self.invoke('launch', '--webui-port', '5999')
+            self.assertEqual(response['webui_url'], 'http://127.0.0.1:5999/')
+            launch.assert_called_once_with(self.destination, 'launcher.bat', 5999)
+            self.assertTrue(self.invoke('status')['tracked_launcher_running'])
+            self.assertEqual(self.invoke('status')['webui_url'], response['webui_url'])
+            with self.assertRaises(c.Fault) as exc:
+                self.invoke('launch')
+            self.assertEqual(exc.exception.kind, 'busy')
+            launch.assert_called_once()
+
+    def test_webui_opens_only_after_public_loopback_verification(self):
+        from fat_fish_management import snowluma
+        with patch.object(snowluma, 'webui_state', return_value='unexpected_http_service'), \
+                patch.object(windows, 'open_snowluma_webui') as browser:
+            with self.assertRaises(c.Fault):
+                self.invoke('webui')
+            browser.assert_not_called()
+        with patch.object(snowluma, 'webui_state', return_value='reachable'), \
+                patch.object(windows, 'open_snowluma_webui') as browser:
+            self.assertTrue(self.invoke('webui')['opened'])
+            browser.assert_called_once_with('http://127.0.0.1:5099/')
+
+    def test_guide_and_clipboard_keep_credential_out_of_response(self):
+        token = 'synthetic-clipboard-secret'
+        target = self.root / 'instance'
+        c.atomic(self.root / 'installation.json', {'schema_version': 1, 'instance': 'instance'})
+        c.atomic(target / 'private/bot-identity.json', {'bot_id': '100000001'})
+        (target / 'private/onebot-token.txt').write_text(token)
+        c.atomic(target / 'data/cmd_config.json', {'platform': [
+            {'id': 'feiyu-onebot', 'type': 'aiocqhttp', 'enable': True, 'ws_reverse_token': token,
+             'ws_reverse_host': '127.0.0.1', 'ws_reverse_port': 6199},
+        ]})
+        guide = self.invoke('guide')
+        self.assertEqual(guide['reverse_websocket_url'], 'ws://127.0.0.1:6199/ws')
+        self.assertNotIn(token, json.dumps(guide))
+        with patch.object(windows, 'copy_to_clipboard') as clip:
+            self.assertNotIn(token, json.dumps(self.invoke('copy', 'token')))
+            clip.assert_called_once_with(token)
+        self.assertEqual(self.invoke('stop-guide')['state'], 'waiting_for_user')
+
+    def test_official_download_ignores_alternate_mirrors_and_reuses_verified_cache(self):
+        import io
+        from fat_fish_management.dependencies import acquire
+
+        class Response(io.BytesIO):
+            url = self.lock['url']
+            headers = {}
+
+        cache = self.local / 'cache'
+        opener = SimpleNamespace(open=unittest.mock.Mock(return_value=Response(self.archive.read_bytes())))
+        lock = dict(self.lock, mirrors=['https://unapproved.invalid/wrong.zip'])
+        with patch('urllib.request.build_opener', return_value=opener), \
+                patch('urllib.request.getproxies', return_value={}), \
+                patch.dict(os.environ, {'FFA_GITHUB_TRANSFER_BASE': 'https://unapproved.invalid'}):
+            self.assertEqual(acquire(lock, cache, official_release=True).read_bytes(), self.archive.read_bytes())
+            opener.open.assert_called_once_with(lock['url'], timeout=15)
+            self.assertEqual(acquire(lock, cache, True, official_release=True), cache / lock['filename'])
+            opener.open.assert_called_once()
+
+    def test_official_download_falls_back_to_direct_and_rejects_hash_error(self):
+        import io
+        import urllib.error
+        from fat_fish_management.dependencies import acquire
+
+        class Response(io.BytesIO):
+            url = self.lock['url']
+            headers = {}
+
+        first = SimpleNamespace(open=unittest.mock.Mock(side_effect=TimeoutError()))
+        direct = SimpleNamespace(open=unittest.mock.Mock(return_value=Response(b'x' * self.lock['size'])))
+        cache = self.local / 'cache'
+        with patch('urllib.request.build_opener', side_effect=[first, direct]), \
+                patch('urllib.request.getproxies', return_value={'https': 'http://127.0.0.1:9'}):
+            with self.assertRaisesRegex(RuntimeError, 'TimeoutError.*ValueError'):
+                acquire(self.lock, cache, official_release=True)
+        self.assertEqual(list(cache.iterdir()), [])
+        first.open.assert_called_once_with(self.lock['url'], timeout=15)
+        direct.open.assert_called_once_with(self.lock['url'], timeout=15)
+
+    def test_official_redirect_rejects_external_host_or_plain_http(self):
+        import urllib.request
+        from fat_fish_management.dependencies import OfficialReleaseRedirect
+
+        handler = OfficialReleaseRedirect()
+        request = urllib.request.Request(self.lock['url'])
+        for url in ('https://unapproved.invalid/file.zip',
+                    'http://release-assets.githubusercontent.com/file.zip'):
+            with self.subTest(url=url), self.assertRaisesRegex(ValueError, 'Untrusted'):
+                handler.redirect_request(request, None, 302, '', {}, url)
+
+
+    def test_verify_waits_for_positive_protocol_and_reports_timeout(self):
+        from fat_fish_management import snowluma
+        ready = {'connected': True, 'reason': 'ready'}
+        with patch.object(snowluma.time, 'sleep') as sleep:
+            probe = unittest.mock.Mock(side_effect=[{}, ready])
+            self.assertEqual(snowluma.wait_for_connection(probe, 2), ready)
+            sleep.assert_called_once()
+        evidence = {'connected': False, 'reason': 'reverse_websocket_not_connected'}
+        with patch.object(snowluma.time, 'monotonic', side_effect=[0, 2]):
+            self.assertEqual(snowluma.wait_for_connection(lambda: evidence, 1), evidence)
+
+    def test_public_homepage_probe_uses_loopback_and_does_not_follow_redirect(self):
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from threading import Thread
+        from fat_fish_management import snowluma
+
+        class Handler(BaseHTTPRequestHandler):
+            redirect = False
+
+            def do_GET(self):
+                if self.redirect:
+                    self.send_response(302)
+                    self.send_header('Location', 'https://unapproved.invalid/')
+                    self.end_headers()
+                else:
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b'<title>SnowLuma</title>')
+
+            def log_message(self, *args):
+                pass
+
+        with HTTPServer(('127.0.0.1', 0), Handler) as server:
+            worker = Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                self.assertEqual(snowluma.webui_state(server.server_port), 'reachable')
+                Handler.redirect = True
+                self.assertEqual(snowluma.webui_state(server.server_port), 'unexpected_http_service')
+            finally:
+                server.shutdown()
+                worker.join()
+
+    def test_port_probe_distinguishes_filtered_free_port_from_occupied(self):
+        import socket
+        from fat_fish_management import snowluma
+
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            port = listener.getsockname()[1]
+            listener.listen()
+            with patch('http.client.HTTPConnection.request', side_effect=TimeoutError()):
+                self.assertEqual(snowluma.webui_state(port), 'unverified')
+        with patch('http.client.HTTPConnection.request', side_effect=TimeoutError()):
+            self.assertEqual(snowluma.webui_state(port), 'not_listening')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows adapter')
+    def test_windows_launch_is_foreground_official_and_does_not_inherit_license_flags(self):
+        with patch.dict(os.environ, {'SNOWLUMA_ACCEPT_EULA': '1', 'SNOWLUMA_DEV_MODE': '1',
+                                    'NODE_OPTIONS': '--require example'}), \
+                patch('subprocess.Popen') as launch:
+            windows.launch_snowluma(self.destination, 'launcher.bat', 5999)
+            args, kwargs = launch.call_args
+            self.assertEqual(args[0][1:], ['/d', '/c', 'launcher.bat'])
+            self.assertEqual(kwargs['cwd'], self.destination)
+            self.assertEqual(kwargs['creationflags'], subprocess.CREATE_NEW_CONSOLE)
+            self.assertEqual(kwargs['env']['SNOWLUMA_WEBUI_HOST'], '127.0.0.1')
+            self.assertEqual(kwargs['env']['SNOWLUMA_HOOK_AUTOLOAD'], '0')
+            for name in ('SNOWLUMA_ACCEPT_EULA', 'SNOWLUMA_DEV_MODE', 'NODE_OPTIONS'):
+                self.assertNotIn(name, kwargs['env'])
+        self.assertIsInstance(windows.running_process_creation(os.getpid()), int)
+
+
 if __name__ == '__main__':
     unittest.main()
