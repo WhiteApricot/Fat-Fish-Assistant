@@ -73,14 +73,14 @@ class ForwardReader:
                     ident=str(data.get('id',''))
                     if not ident or ident in seen:
                         incomplete=True
-                        entries.append({'说明':'该层转发没有独立可查询的标识，且 NapCat 未提供内层节点'})
+                        entries.append({'说明':'该层转发没有独立可查询的标识，且 OneBot implementations 未提供内层节点'})
                         continue
                     seen.add(ident)
                     try:
                         result=await asyncio.wait_for(event.bot.call_action('get_forward_msg',id=ident),4)
                     except Exception:
                         incomplete=True
-                        entries.append({'说明':'NapCat 无法按标识获取此层转发，内层记录可能未由平台公开'})
+                        entries.append({'说明':'OneBot implementations 无法按标识获取此层转发，内层记录可能未由平台公开'})
                         continue
                     rows=result.get('messages',result.get('message',[])) if isinstance(result,dict) else []
                     if not isinstance(rows,list):incomplete=True;continue

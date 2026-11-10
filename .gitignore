@@ -24,7 +24,8 @@ models/
 *.exe
 *.dll
 
-/tests/
+/tests/*
+!/tests/test_management.py
 .pytest_cache/
 .coverage
 *.sqlite

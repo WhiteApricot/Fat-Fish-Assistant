@@ -21,7 +21,7 @@ $manager=Join-Path $project 'Fat-Fish-Assistant.ps1'
 & $manager stop -Root $Root -Python $python -NonInteractive
 if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}
 $components='chat'
-foreach($name in @('napcat','embedding','speech')){if($record.components.$name.installed){$components+=','+$name}}
+foreach($name in @('embedding','speech')){if($record.components.$name.installed){$components+=','+$name}}
 $plugins=(@($record.components.plugins.version.PSObject.Properties.Name) -join ',')
 $options=@('--dependency-profile','chat','--repair','--components',$components,'--plugins',$plugins,'--accept-external-licenses')
 if($Offline){$options+='--offline'}

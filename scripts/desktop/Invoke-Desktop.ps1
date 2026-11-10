@@ -103,10 +103,7 @@ function RegisterRoot {
 function RequiresConfiguration($Record,[string]$InstallationRoot){
  if(-not $Record.instance){return $true}
  $runtime=Join-Path $InstallationRoot $Record.instance
- foreach($file in @('private/onebot-token.txt','private/deepseek-key.txt')){if(-not(Test-Path -LiteralPath (Join-Path $runtime $file))){return $true}}
- if($Record.components.napcat.installed){
-  if($Record.components.napcat.runtime -ne 'node' -or -not(Test-Path -LiteralPath (Join-Path $runtime 'private/bot-identity.json'))){return $true}
- }
+ foreach($file in @('private/onebot-token.txt','private/deepseek-key.txt','private/bot-identity.json')){if(-not(Test-Path -LiteralPath (Join-Path $runtime $file))){return $true}}
  return $false
 }
 function AcceptLicenses {
@@ -114,40 +111,13 @@ function AcceptLicenses {
  if(-not (EnterKey '回车接受以上所有条款；按其他任意键表示不接受')){throw '未接受外部许可'}
 }
 
-function SetupQQ {
+function SetBotIdentity {
  $record=Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $script:root 'installation.json')|ConvertFrom-Json
- if(-not $record.components.napcat.installed){
-  if($Action -ne 'Install'){return}
-  Api @('prepare-napcat','--accept-external-licenses')|Out-Null
-  $record=Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $script:root 'installation.json')|ConvertFrom-Json
- }
- if($record.components.napcat.runtime -ne 'node'){
-  Write-Host '正在准备专用 QQ 登录组件。首次使用需要你手动扫码。'
-  AcceptLicenses
-  Api @('prepare-napcat','--accept-external-licenses')|Out-Null
-  $record=Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $script:root 'installation.json')|ConvertFrom-Json
- }
- $napPath=Join-Path $script:root $record.components.napcat.path
- if(-not(Test-Path -LiteralPath (Join-Path $napPath 'config/webui.json'))){
-  $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,6099)
-  try{$listener.Start()}catch{$listener.Stop();$listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0);$listener.Start()}
-  $webuiPort=$listener.LocalEndpoint.Port;$listener.Stop()
-  SecretApi @('config','apply','--file','-') @{napcat_webui_port=$webuiPort}|Out-Null
- }
  $runtime=Join-Path $script:root $record.instance
- if(-not(Test-Path -LiteralPath (Join-Path $runtime 'private\bot-identity.json'))){
-  $bot=ReadInput '请输入肥鱼助手将登录的机器人 QQ 号码（不是主人号码）'
-  Api @('config','initialize-onebot','--bot-id',$bot)|Out-Null
- }else{
-  $identity=Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $runtime 'private\bot-identity.json')|ConvertFrom-Json
-  Api @('config','initialize-onebot','--bot-id',$identity.bot_id)|Out-Null
- }
-}
-function OpenQQLogin($Config){
- if($Config.host -ne '127.0.0.1' -or -not $Config.token){throw 'QQ 登录组件配置不完整，请重新运行安装向导。'}
- $address='http://127.0.0.1:'+$Config.port+'/webui/web_login?token='+[Uri]::EscapeDataString([string]$Config.token)
- if(-not $NoBrowser){try{Start-Process $address}catch{throw '无法打开 QQ 登录页面，请检查默认浏览器后重试。'}}
- $address=$null
+ if(Test-Path -LiteralPath (Join-Path $runtime 'private/bot-identity.json')){return}
+ $bot=ReadInput '请输入 SnowLuma 登录所用的机器人 QQ 号码（仅数字）'
+ if($bot -notmatch '^[0-9]+$'){throw '机器人 QQ 格式不正确'}
+ Api @('config','initialize-onebot','--bot-id',$bot)|Out-Null
 }
 function OpenAstrBotSettings {
  if($NoBrowser){return}
@@ -194,57 +164,6 @@ function AssertInstalledSourceCurrent {
  }
 }
 }
-function TestQQLoginReady($Status) {
- return ($null -ne $Status -and $Status.isLogin -eq $true -and $Status.coreReady -eq $true -and $Status.isOffline -ne $true)
-}
-function WatchQQLogin($Record) {
- if(-not $Record.components.napcat.installed){return}
- $configPath=Join-Path (Join-Path $script:root $Record.components.napcat.path) 'config\webui.json'
- $offlinePolls=0
- $prompted=$false
- Write-Host '正在监听 QQ 登录状态。按 Ctrl+C 停止所有受管服务。'
- while($true){
-  CheckCancel
-  Start-Sleep -Seconds 5
-  try{$status=Api @('component','napcat','login-status')}
-  catch [OperationCanceledException]{throw}
-  catch{$status=$null}
-  if(TestQQLoginReady $status){
-   $offlinePolls=0
-   $prompted=$false
-   continue
-  }
-  $offlinePolls++
-  if($prompted -or $offlinePolls -lt 6){continue}
-  try{
-   $recovery=Api @('component','napcat','recover-login')
-   if($recovery.restarted){Start-Sleep -Seconds 15}
-   $status=Api @('component','napcat','login-status')
-   if(TestQQLoginReady $status){$offlinePolls=0;continue}
-  }catch [OperationCanceledException]{throw}catch{}
-  Write-Host 'NapCat 未就绪且未能自动恢复，20 秒后将打开扫码登录页。' -ForegroundColor Yellow
-  for($wait=0;$wait -lt 20;$wait++){CheckCancel;Start-Sleep -Seconds 1}
-  try{
-   $status=Api @('component','napcat','login-status')
-   if(TestQQLoginReady $status){$offlinePolls=0;continue}
-  }catch [OperationCanceledException]{throw}catch{}
-  if($NoBrowser){
-   Write-Host '检测到 NapCat 掉线，请打开本机 NapCat WebUI 重新扫码。' -ForegroundColor Yellow
-   $prompted=$true
-   continue
-  }
-  try{
-   $config=Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath|ConvertFrom-Json
-   OpenQQLogin $config
-   $prompted=$true
-   Write-Host '检测到 NapCat 掉线。已重新打开浏览器并自动填入 WebUI token，请扫码。' -ForegroundColor Yellow
-  }catch [OperationCanceledException]{throw}
-  catch{
-   $offlinePolls=0
-   Write-Host '未能打开 NapCat 登录页，稍后会重试。也可手动打开本机 NapCat WebUI。' -ForegroundColor Yellow
-  }
- }
-}
 function Launch {
  AssertInstalledSourceCurrent
  Write-Host '正在启动肥鱼助手，请稍候……'
@@ -253,8 +172,7 @@ function Launch {
   Write-Host 'AstrBot 已启动。Dashboard 需要重新认证，QQ 连接检查将继续。' -ForegroundColor Yellow
  }
  foreach($warning in $result.warnings){
-  if($warning.component -eq 'napcat-login'){continue}
-  $label=switch($warning.component){'embedding'{'长期记忆'}'speech'{'语音识别'}'napcat'{'QQ 连接'}default{'附加功能'}}
+  $label=switch($warning.component){'embedding'{'长期记忆'}'speech'{'语音识别'}default{'附加功能'}}
   Write-Host ($label+'暂时无法启动，其他可用功能会继续启动。详细日志：'+(LogReference)) -ForegroundColor Yellow
  }
  $view=Api @('config','show')
@@ -265,67 +183,14 @@ function Launch {
  Write-Host ('表情包：在设置页进入「插件 → 表情包管理器」导入，再保存使用规则；插件配置文件：'+(Join-Path $settingsRuntime 'data/config/meme_manager_config.json'))
  Write-Host ('其他机器人设置文件：'+(Join-Path $settingsRuntime 'data/cmd_config.json')+'；直接编辑配置文件前请先停止肥鱼助手。')
  Write-Host ('设置页登录密码文件：'+(Join-Path $script:root $view.dashboard_password_file))
- $qqLoginPrompted=$false
- if($record.components.napcat.installed -and -not $result.connection.qq_login){
-  $qqLoginPrompted=$true
-  $service=Join-Path $script:root $record.components.napcat.path
-  $cfgpath=Join-Path $service 'config\webui.json'
-  if(-not(Test-Path -LiteralPath $cfgpath)){throw 'NapCat 尚未配置。请重新运行安装向导完成独立 QQ 程序环境和 WebUI 配置。Chat 已启动。'}
-  $cfg=Get-Content -Raw -Encoding UTF8 -LiteralPath $cfgpath|ConvertFrom-Json
-  if($cfg.host -ne '127.0.0.1'){throw 'NapCat 页面没有绑定本机，拒绝打开'}
-  OpenQQLogin $cfg
-  if($NoBrowser){Write-Host 'NapCat 尚未登录，请打开本机 NapCat WebUI 并扫码。' -ForegroundColor Yellow}
-  else{Write-Host 'NapCat 尚未登录。浏览器已打开并自动填入 WebUI token，请扫码并完成设备确认。' -ForegroundColor Yellow}
-  Write-Host '正在等待你完成登录，最多等待 10 分钟。'
-  $ready=$false;$recoveredLogin=$false;$loginDeadline=[DateTime]::UtcNow.AddMinutes(10)
-  while([DateTime]::UtcNow -lt $loginDeadline){
-   try{$status=Api @('component','napcat','login-status')}catch{Start-Sleep -Seconds 5;continue}
-   if($status.isLogin -and $status.coreReady -and -not $status.isOffline){$ready=$true;break}
-   if($status.loginPhase -eq 'reconnecting' -and -not $recoveredLogin){
-    Write-Host 'QQ 登录服务暂时没有响应，正在重新连接……'
-    $recovery=Api @('component','napcat','recover-login')
-    if($recovery.restarted){$recoveredLogin=$true;OpenQQLogin $cfg;Write-Host 'QQ 登录页面已重新打开，请在新页面扫码。'}
-   }
-   Start-Sleep -Seconds 5
-  }
-  if(-not $ready){throw 'QQ 登录尚未完成。Chat 保持运行，下次双击启动可继续检查。'}
- }
- if($record.components.napcat.installed){
-  Write-Host 'QQ 已登录，正在连接肥鱼助手……'
-  $connected=$false
-  $connectionDeadline=[DateTime]::UtcNow.AddMinutes(2)
-  $awaitingRelogin=$false
-  $nextLoginCheck=[DateTime]::UtcNow
-  while([DateTime]::UtcNow -lt $connectionDeadline){
-   $health=Api @('component','astrbot','connection-health')
-   if((-not $qqLoginPrompted -or $awaitingRelogin) -and [DateTime]::UtcNow -ge $nextLoginCheck){
-    $nextLoginCheck=[DateTime]::UtcNow.AddSeconds(10)
-    try{$loginStatus=Api @('component','napcat','login-status')}catch{$loginStatus=$null}
-    if($loginStatus -and $loginStatus.isLogin -and $loginStatus.coreReady -and -not $loginStatus.isOffline){$awaitingRelogin=$false}
-    if(-not $qqLoginPrompted -and $loginStatus -and ($loginStatus.isOffline -or -not $loginStatus.isLogin)){
-     $awaitingRelogin=$true
-     $qqLoginPrompted=$true
-     $service=Join-Path $script:root $record.components.napcat.path
-     $cfg=Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $service 'config\webui.json')|ConvertFrom-Json
-     OpenQQLogin $cfg
-     if($NoBrowser){Write-Host '检测到 NapCat 掉线，请打开本机 NapCat WebUI 重新扫码。' -ForegroundColor Yellow}
-     else{Write-Host '检测到 NapCat 掉线。已重新打开浏览器并自动填入 WebUI token，请扫码。' -ForegroundColor Yellow}
-     $connectionDeadline=[DateTime]::UtcNow.AddMinutes(10)
-     Start-Sleep -Seconds 2
-     continue
-    }
-   }
-   if(-not $awaitingRelogin -and $health.onebot_connection.connected){$connected=$true;break}
-   Start-Sleep -Seconds 2
-  }
-  if(-not $connected){throw ('QQ 已登录，但 OneBot 协议连接未确认。请重新运行安装向导核对机器人身份和连接配置；详细日志：'+(LogReference)+'；本次不能算 QQ 启动成功。')}
-  Write-Host 'QQ 已成功连接肥鱼助手。'
- }
  try{OpenAstrBotSettings}
  catch [OperationCanceledException]{throw}
- catch{Write-Host 'AstrBot 设置页暂未打开。QQ 登录监控会继续运行。' -ForegroundColor Yellow}
- Write-Host '肥鱼助手已就绪。现在可以在 QQ 中发送消息了。'
- WatchQQLogin $record
+ catch{Write-Host 'AstrBot 设置页暂未打开。' -ForegroundColor Yellow}
+ if($result.connection.onebot.connected){
+  Write-Host '已通过 OneBot 验证绑定的 QQ 身份和在线状态。请在 QQ 中发送一条消息验证回复。'
+ }else{
+  Write-Host 'AstrBot 已启动，等待 QQ 通信。请用 SnowLuma 官方 Launcher 启动，在官方 WebUI 登录并配置反向 WebSocket，完成后重新查看健康状态。' -ForegroundColor Yellow
+ }
 }
 try{
  if(-not $root){if(Test-Path -LiteralPath $registry){$root=(Get-Content -Raw -Encoding UTF8 -LiteralPath $registry).Trim()}else{$root=Join-Path $env:LOCALAPPDATA 'Fat-Fish-Assistant'}}
@@ -358,7 +223,7 @@ try{
   else{
    if($resumeConfiguration){Api @('stop')|Out-Null}
    else{
-   $components='chat,napcat'
+   $components='chat'
    Write-Host '进入插件选配环节。'
    foreach($item in @(@{id='embedding';label='长期记忆（推荐）';default=$true},@{id='speech';label='语音识别（可选）';default=$true})){
     $hint=if($item.default){'[Y/N]，回车安装；输入 N 不安装'}else{'[y/N]，直接回车跳过'}
@@ -383,7 +248,7 @@ try{
     $key=ReadSecret '请输入 API Key（隐藏输入，不写普通日志）'
     try{SecretApi @('config','apply','--file','-') @{deepseek_api_key=$key}|Out-Null}finally{$key=$null}
    }
-   SetupQQ
+   SetBotIdentity
    if(-not(Test-Path -LiteralPath (Join-Path $runtime 'private/experience-v3.json'))){
     Write-Host '正在准备分条回复和鲸鱼娘表情……'
     Api @('config','initialize-experience')|Out-Null
@@ -395,7 +260,7 @@ try{
   Write-Host '迁移向导：1 迁出当前肥鱼助手；2 从迁移包导入（目标不能已有实例）。'
   $choice=ReadInput '请选择 1 或 2'
   if($choice -eq '1'){
-   if((ReadInput '迁出会正常停止全部服务，并暂停源实例以避免两个主机同时消费同一 QQ。继续请输入 YES') -cne 'YES'){throw '已取消迁出'}
+   if((ReadInput '请先通过官方渠道停止 SnowLuma。迁出会停止 FFA 受管服务并暂停源实例。继续请输入 YES') -cne 'YES'){throw '已取消迁出'}
    $dialog=New-Object Windows.Forms.SaveFileDialog
    $dialog.Filter='肥鱼助手加密迁移包 (*.ffa.zip)|*.ffa.zip';$dialog.FileName='Fat-Fish-Assistant-Migration-'+(Get-Date -Format 'yyyy-MM-dd')+'.ffa.zip'
    try{if($dialog.ShowDialog() -ne 'OK'){throw '已取消保存'};$destination=$dialog.FileName}finally{$dialog.Dispose()}
@@ -420,7 +285,7 @@ try{
     $result=SecretApi @('migration-import','--package',$package,'--confirm-source-offline') @{password=$password}
    }finally{$password=$null}
    Write-Host ('已恢复 '+$result.files+' 个数据文件。正在准备登录……')
-   SetupQQ
+   SetBotIdentity
    RegisterRoot
   }else{throw '选项无效'}
  }
@@ -433,7 +298,7 @@ try{
  }
  if(-not(Test-Path -LiteralPath (Join-Path $root '.ffa-managed.json'))){throw '未找到已注册安装，请先双击安装脚本。'}
  Launch
- Write-Host '按 Ctrl+C 停止全部服务。'
+ Write-Host '按 Ctrl+C 停止 FFA 受管服务。SnowLuma 请在官方界面单独停止。'
  while($true){CheckCancel;Start-Sleep -Milliseconds 100}
 }catch [OperationCanceledException]{
  Write-Host '正在停止全部服务……'

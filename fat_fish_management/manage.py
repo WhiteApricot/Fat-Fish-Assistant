@@ -19,6 +19,7 @@ from pathlib import Path
 import psutil
 from fat_fish_management.instance import verify_release,verify_plugins,copy_plugin_resources
 from fat_fish_management.lifecycle_lock import exclusive
+from fat_fish_management.onebot_config import listener
 
 def recover_stale(instance):
     """Caller holds the lifecycle lock; never clear an unverified dirty state."""
@@ -102,6 +103,7 @@ def _start_locked(instance,python):
     if process(instance):raise ValueError('Already running')
     if any((instance/'private'/x).exists() for x in ['DIRTY','RUNNING']):raise ValueError('Resolve dirty or stale lifecycle marker before launch')
     cfg=json.loads((instance/'data/cmd_config.json').read_text(encoding='utf-8-sig'))
+    listener(cfg)
     if cfg.get('dashboard',{}).get('host')!='127.0.0.1':raise ValueError('Dashboard must bind loopback')
     for platform in cfg.get('platform',[]):
         for key in ['ws_reverse_host','callback_server_host']:

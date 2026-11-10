@@ -30,12 +30,8 @@ PLUGIN_MUTABLE_CONFIGS={'meme_manager/image_host/config.json'}
 def protect_boundary(path):
     (path/'.fat-fish-assistant-private').write_text('Private instance or snapshot; never publish')
     if os.name=='nt':
-        shell=Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
-        environment=dict(os.environ)
-        environment['PSMODULEPATH']=str(shell.parent/'Modules')
-        result=subprocess.run([str(shell),'-NoProfile','-ExecutionPolicy','Bypass','-File',str(PROJECT/'scripts/process/Protect-Private.ps1'),'-Path',str(path)],
-                       env=environment,capture_output=True,text=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-        if result.returncode:raise RuntimeError('Private boundary protection failed: '+result.stderr.strip())
+        from fat_fish_management.windows import protect_private
+        protect_private(path)
     else:path.chmod(0o700)
 
 def digest(path):

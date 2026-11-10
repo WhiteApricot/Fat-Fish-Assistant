@@ -26,9 +26,9 @@ Fat-Fish-Assistant/
 | 管理请求、安装与构建 | ffa.py 进入 controller.py；dependencies.py 获取固定依赖、验证补丁、组装和封存发布 |
 | 实例启停、升级与回滚 | manage.py 负责运行状态和切换事务，run_chat.py 执行原生生命周期；instance.py 负责数据和发布完整性、初始化及冷备份 |
 | 跨机迁移与配置 | migration.py 编排源停写及目标恢复，migration_package.py 处理包格式；configure_* 负责原生配置 |
-| Windows 操作 | scripts/desktop 负责操作界面，scripts/services 调用受管模型与 NapCat，scripts/process 检查进程身份和私密权限 |
+| Windows 操作 | scripts/desktop 负责操作界面，管理包的 windows.py 适配受管模型并只读检查 SnowLuma 官方发行布局，scripts/process 检查进程身份和私密权限 |
 
-S1运行实例由SnowLuma管理QQ接入，OneBot提供传输与平台动作，AstrBot管理事件、模型、调度和插件。上表中的NapCat管理脚本仍是待S2替换的P2安装资产，不能作为SnowLuma实例的启动入口；接入范围见[S1说明](../S1_WINDOWS_SNOWLUMA.md)。发布的 src/ 装载核心包，plugins/ 每个自有插件仅组装一次。实例初始化将发布的插件材料部署到 data/plugins，由 AstrBot 原生发现。
+SnowLuma 提供 QQ 通信，AstrBot 是唯一聊天主体，Core 在 AstrBot 插件进程内管理身份、权限、人格、记忆和工具。平台专属进程与发行布局集中在适配模块，Linux 计划接入官方 Docker 并沿用状态和数据契约。官方组件仅从官方 GitHub 获取，通过官方支持的 Launcher、WebUI 或公开接口操作；禁止重打包、修改原生文件、写入内部配置/数据库或绕开官方渠道。 [依赖与授权范围](../DEPENDENCIES.md)发布的 src/ 装载核心包，plugins/ 每个自有插件仅组装一次。实例初始化将发布的插件材料部署到 data/plugins，由 AstrBot 原生发现。
 
 ### 兼容标识与退出条件
 

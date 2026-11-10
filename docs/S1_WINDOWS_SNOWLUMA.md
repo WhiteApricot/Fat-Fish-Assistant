@@ -1,6 +1,6 @@
 # S1 · Windows SnowLuma 原型验证
 
-2026-11-09：Windows 原型按用户确认的范围完成实机验收。本次交付是 SnowLuma-only 路线的 S1 源码与文档，S2 完整 Windows 安装管理迁移及 Linux 部署尚未开展。
+2026-11-09：Windows 原型按用户确认的范围完成实机验收。本次交付是 SnowLuma-only 路线的 S1 源码与文档，本文记录 S1 验收范围，当前操作流程见 [快速开始](QUICK_START.md)。
 
 ## 架构与分支
 
@@ -8,9 +8,6 @@
 
 AstrBot 是唯一聊天主体；SnowLuma 只提供 QQ 事件与动作。人格、权限、记忆与任务治理仍由 Core 统一管理。DSH 是 DeepSeek Harness；未来 Work、DSH 和外部 Agent 不直接绕过 AstrBot 操作 QQ。
 
-- `migration/snowluma-only` 从 P2 main `ea3d8070232f636232200e5335c1d06de72c03b6` 开始，不包含 NapCat P3 提交的自动移植。
-- main 保持 P2 基线；`backup/p3-napcat` 保留 `a0166f84cd55da48ccf9051fec67437eee3cefc1`。
-- S1 不全面删除旧安装资产；保留的 P2 脚本不构成 NapCat 备用运行路线，也不支持双协议接入。
 
 ## 固定测试版本
 
@@ -22,7 +19,7 @@ AstrBot 是唯一聊天主体；SnowLuma 只提供 QQ 事件与动作。人格�
 |Python / aiocqhttp|独立 Python 3.12.3 / aiocqhttp 1.4.4|
 |QQ 客户端|本轮环境登记为 9.9.26-44725；根 QQ.exe 启动器文件版本不能代替实际客户端版本|
 
-SnowLuma 由用户从官方渠道自行下载、解压、接受协议并启动。FFA 不附带其二进制，不自动下载部署，不改写其程序或 Hook。后续自动安装、再分发和配置自动化应按官方许可另行确认。
+SnowLuma 由用户从官方渠道自行下载、解压、接受协议并启动。FFA 不附带其二进制，不自动下载部署，不改写其程序或 Hook。后续仅按 [授权与依赖边界](DEPENDENCIES.md) 获取并管理官方发行包。
 
 ## 独立接入配置
 
@@ -34,7 +31,7 @@ SnowLuma 由用户从官方渠道自行下载、解压、接受协议并启动�
 - 两端使用同一随机 OneBot Token。它与 WebUI 登录密码不同，均不进入源码、示例或提交。
 - 关闭 `statusCommand.enabled` 和该 WS 客户端 `reportSelfMessage`；不同时启用占用 6199 的 SnowLuma WS 服务端。
 
-这些是 POC 参数，不是新安装器。根目录现有安装、启动、迁移入口仍含 P2 通信管理，不能当作 SnowLuma 自动部署入口。运行副本应使用现有受管 `fat_fish_management/run_chat.py --instance <独立实例>` 正常启动；不要提前从开发源码目录导入 Core，开发树不包含发行副本组装的第三方决策组件。
+这些参数用于原型验收。运行副本应使用现有受管 `fat_fish_management/run_chat.py --instance <独立实例>` 正常启动；不要提前从开发源码目录导入 Core，开发树不包含发行副本组装的第三方决策组件。
 
 ## 已交付行为
 
@@ -66,4 +63,4 @@ SnowLuma 由用户从官方渠道自行下载、解压、接受协议并启动�
 - 本轮不新增 AstrBot 核心补丁，也不修改 SnowLuma 或 Meme Manager 源码。但 P2 已有 11 个 AstrBot 补丁目标，现有收集桥绑定 Continuous Message 2.9.3 的内部接口，表情适配读取 Meme Manager 的绑定图库接口。
 - 依赖升级仍需固定新版本、验证补丁哈希和接口、在 Local 回归后再发布；不保证更新可以直接替换，也不为减少耦合绕过权限检查。
 
-下一阶段仍按 Windows 完整迁移 → Linux SnowLuma 部署与管理适配 → WSL 实机 → 腾讯云大陆服务器验收推进；本次同步不自动开始 S2。
+下一阶段仍按 Windows 完整迁移 → Linux SnowLuma 部署与管理适配 → WSL 实机 → 腾讯云大陆服务器验收推进。

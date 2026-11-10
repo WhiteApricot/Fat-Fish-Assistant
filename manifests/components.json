@@ -24,14 +24,6 @@
         "selfreply-decision"
       ]
     },
-    "napcat": {
-      "depends": [],
-      "asset": "napcat-node-v4.18.41",
-      "manual": [
-        "Accept QQ, Node and NapCat licenses",
-        "QQ QR login and device authorization"
-      ]
-    },
     "embedding": {
       "depends": [],
       "assets": [
@@ -52,6 +44,19 @@
     "work": {
       "reserved": true,
       "installed": false
+    },
+    "snowluma": {
+      "depends": [],
+      "ownership": "official-external",
+      "lock": "snowluma/windows-x64.json"
+    },
+    "core": {
+      "depends": [
+        "astrbot",
+        "plugins"
+      ],
+      "ownership": "managed",
+      "host": "astrbot"
     }
   }
 }

@@ -106,7 +106,7 @@ def acquire(spec,cache,offline=False,progress=None):
         except Exception:pass  # Official metadata remains available as fallback.
     if url and url.startswith('https://huggingface.co/'):
         candidates.append(url.replace('https://huggingface.co/','https://hf-mirror.com/',1))
-    # Upstream NapCat installer documents ghfast.top; public pinned downloads
+    # Existing transfer route for public pinned downloads
     # only. Never send API tokens or route runtime business requests here.
     if url and url.startswith('https://github.com/') and not urllib.parse.urlparse(url).query:
         candidates.append('https://ghfast.top/'+url)
@@ -376,11 +376,8 @@ def install_environment(base_python,destination,cache,profile='chat',offline=Fal
 def ensure_build_quiet(destination):
     """An interrupted install must not archive a directory still used by an orphan builder."""
     if os.name!='nt':raise RuntimeError('Interrupted environment recovery needs a supported writer probe')
-    powershell=Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
-    proc=subprocess.run([str(powershell),'-NoProfile','-ExecutionPolicy','Bypass','-File',str(PROJECT/'scripts/build/Assert-Build-Writers.ps1'),'-Destination',str(destination),'-ControllerPid',str(os.getpid())],capture_output=True,text=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-    if proc.returncode:raise RuntimeError('Cannot verify interrupted build writers; partial environment retained')
-    if json.loads(proc.stdout.removeprefix('\ufeff'))['active_count']:
-        raise RuntimeError('An interrupted build still has active Python workers; wait for it to exit before retry; nothing was moved')
+    from fat_fish_management.windows import ensure_no_build_writers
+    ensure_no_build_writers(destination)
 
 
 def extend_core_environment(python,cache,offline=False,progress=None):

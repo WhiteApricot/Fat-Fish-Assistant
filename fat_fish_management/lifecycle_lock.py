@@ -2,21 +2,25 @@
 from contextlib import contextmanager
 import os
 
+
 @contextmanager
-def exclusive(instance, name='.instance-lock'):
-    path=instance/'private'/name
+def file_lock(path, busy):
     with path.open('a+b') as stream:
-        stream.seek(0);stream.write(b'0');stream.flush();stream.seek(0)
+        # Keep the marker bounded across repeated and competing acquisitions.
+        # Windows can lock a byte range beyond EOF, so no data needs to be written.
+        stream.seek(0)
         try:
-            if os.name=='nt':
+            if os.name == 'nt':
                 import msvcrt
-                msvcrt.locking(stream.fileno(),msvcrt.LK_NBLCK,1)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
-                fcntl.flock(stream.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except OSError as exc:raise RuntimeError('Instance is owned by another writer or maintenance operation') from exc
-        try:yield
-        finally:
-            stream.seek(0)
-            if os.name=='nt':msvcrt.locking(stream.fileno(),msvcrt.LK_UNLCK,1)
-            else:fcntl.flock(stream.fileno(),fcntl.LOCK_UN)
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise busy(exc) from exc
+        yield
+
+
+def exclusive(instance, name='.instance-lock'):
+    return file_lock(instance / 'private' / name,
+                     lambda exc: RuntimeError('Instance is owned by another writer or maintenance operation'))

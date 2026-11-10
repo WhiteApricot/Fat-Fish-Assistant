@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "version": "2.4.2",
+  "platform": "windows-x64",
+  "source_commit": "f2ea3354f8bbe8672cbb4ae6a2b4e1fbeff44faf",
+  "release": "https://github.com/SnowLuma/SnowLuma/releases/tag/v2.4.2",
+  "url": "https://github.com/SnowLuma/SnowLuma/releases/download/v2.4.2/SnowLuma-v2.4.2-win-x64.zip",
+  "filename": "SnowLuma-v2.4.2-win-x64.zip",
+  "size": 43361462,
+  "sha256": "0912926c5e73260f35b000278a8658493fc9452f36782c32fa86f0e825bad81a",
+  "launcher": "launcher.bat",
+  "redistribute": false
+}

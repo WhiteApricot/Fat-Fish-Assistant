@@ -1,11 +1,11 @@
 # 肥鱼助手 · Fat-Fish-Assistant
 
-肥鱼助手当前交付 Windows 10/11 x64 上的 QQ 聊天能力，并规划演进为拥有独立 Work、统一治理与可扩展 Agent 生态的个人 AI 工作平台。当前 migration/snowluma-only 分支已完成 Windows SnowLuma S1 原型验收，通过 SnowLuma 的 OneBot 反向连接接入 AstrBot，并提供会话人格、个人与群记忆、提醒、群聊回复策略和受权限控制的管理指令。
+肥鱼助手当前交付 Windows 10/11 x64 上的 QQ 聊天能力，并规划演进为拥有独立 Work、统一治理与可扩展 Agent 生态的个人 AI 工作平台。Windows SnowLuma S1 原型已通过实机验收，通过 SnowLuma 的 OneBot 反向连接接入 AstrBot，并提供会话人格、个人与群记忆、提醒、群聊回复策略和受权限控制的管理指令。
 
 `QQ ↔ SnowLuma ↔ OneBot ↔ AstrBot ↔ 肥鱼助手网关与插件 ↔ 模型及本地数据`
 
 - 当前原型接入、已验收功能和已知限制见 [S1 Windows SnowLuma](docs/S1_WINDOWS_SNOWLUMA.md)。
-- 根目录安装、启动和迁移入口仍含 P2 实现，尚未迁移为 SnowLuma 管理入口；[旧快速开始](docs/QUICK_START.md)不适用于 S1 新实例。
+- S2 批次 1 已统一组件登记与健康检查。现有入口管理 FFA 自有服务，SnowLuma 通过官方 Launcher 和 WebUI 独立操作。 [快速开始](docs/QUICK_START.md)
 - 想了解能做什么，先读 [用户功能总览](docs/FEATURES.md)。
 - 查看 [用户文档](docs/README.md)、[开发者文档](docs/protocols/README.md) 或 [工程路线图](docs/protocols/ROADMAP.md)。目标架构见 [Work 与统一治理](docs/protocols/WORK_ARCHITECTURE.md)。
 

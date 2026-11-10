@@ -42,7 +42,7 @@
     "license_source": "https://github.com/aliveriver/astrbot_plugin_continuous_message/blob/4a2a52ba90544d1527a72602762ae5ce3ae27dca/LICENSE",
     "strip_prefix": "astrbot_plugin_continuous_message-4a2a52ba90544d1527a72602762ae5ce3ae27dca/",
     "patches": "patches/astrbot_plugin_continuous_message/changes.json",
-    "patch_sha256": "41ad668ad70748b66fa7e6d5aa7c91415724f762216c6f88cf5b3f1638ed28fe"
+    "patch_sha256": "58c96c43504a68b4a7da54a8c3b6db8aea11730fb88964244e6f97f1ef5d4957"
   },
   {
     "name": "meme_manager",

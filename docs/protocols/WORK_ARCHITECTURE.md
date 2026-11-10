@@ -6,7 +6,7 @@
 
 | 组件 | 责任与权威状态 |
 | --- | --- |
-| AstrBot / NapCat | AstrBot 是唯一 QQ 聊天主体，解析消息、识别用户和会话、呈现人格与发送回复。NapCat 提供 OneBot 通信。聊天继续使用实例配置的模型服务，DeepSeek 聊天模型与 DSH 分别配置。 |
+| AstrBot / SnowLuma | AstrBot 是唯一 QQ 聊天主体，解析消息、识别用户和会话、呈现人格与发送回复。SnowLuma 提供 OneBot 通信。聊天继续使用实例配置的模型服务，DeepSeek 聊天模型与 DSH 分别配置。 |
 | Fat-Fish Core | 统一人格、记忆访问、授权和消息治理。现有聊天边界继续由 AstrBot 网关与插件落实，跨组件能力随 P6 接入。 |
 | Work | 拥有任务 ID、计划、调度、状态、事件、审计及结果。确定性请求直接走 Device Service。需要推理、动态规划或跨工具协调时才选择 DSH。 |
 | Device Service | 独立、无需模型的设备能力。管理进程、文件与传输、桌面及窗口截图、窗口操作、进程和日志观测、系统通知及音频事件。AstrBot 经 Work 通道申请操作，DSH 经受控工具适配器复用同一服务。 |
@@ -40,6 +40,6 @@ P6 评估由 Work 管理的 DSH 子进程与 SDK 适配，映射任务 ID 到尝
 ## 现状差异与决策记录
 
 - **架构决策**：Work 拥有任务权威状态，设备能力由 Device Service 统一供给，DSH 作为可选引擎，AstrBot 保有唯一 QQ 出口。P5 的旧生产 Linux 聊天目标及单消费者、灾备、容量要求归 P3。旧 P6 桌面集成管理作为独立里程碑由新 P6 取代。凭据、脱敏与人工 QQ 登录保留在 P3/P5，管理协议复用与桌面能力评估归 P4/P7。
-- **Linux 风险**：当前交付入口为 CMD/PowerShell，进程和私密数据保护有 Windows 实现，构建和 NapCat 依赖由 manifests 固定。P3 应盘点路径、锁、服务账号和 Linux 二进制，沿用已验证的停写、迁移与健康检查语义。[现行迁移规范](../MIGRATION.md)
+- **Linux 风险**：当前交付入口为 CMD/PowerShell，进程和私密数据保护有 Windows 实现，Windows 构建与 SnowLuma 官方发行来源分别由 manifests 固定。P3 应盘点路径、锁、服务账号和 Linux 二进制，沿用已验证的停写、迁移与健康检查语义。[现行迁移规范](../MIGRATION.md)
 - **治理差距**：当前人格合并、群及记忆权限、消息去重与提醒调度位于 `src/fat_fish` 和 AstrBot 插件。它们可供复用，跨进程治理及 Work 任务协议仍属规划。现有本机管理及原生进程脚本在 P4 评估，现有聊天提醒继续由 AstrBot 调度。[消息处理](../BOT_LOGIC.md) · [管理协议](MANAGEMENT_API.md)
 - **运行时决策**：先验证 Work 所需 SDK 能力。P8 若需不同宿主服务，允许独立 Extension Runtime，以不同账号或进程边界、home、凭据与权限运行，经 Core 接入。是否合并留待兼容及隔离证据。

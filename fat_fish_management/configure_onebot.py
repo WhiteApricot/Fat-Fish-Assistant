@@ -1,31 +1,45 @@
-"""Initialize an owned, stopped NapCat reverse-WS client; never logs in or sends."""
-import argparse,json,secrets
+"""Bind a stopped FFA instance to its expected OneBot account."""
+if __package__ in (None, ''):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import argparse
+import json
 from pathlib import Path
 
-def configure(root,bot_id):
-    root=Path(root).resolve()
-    if not bot_id.isascii() or not bot_id.isdecimal():raise ValueError('Invalid Bot identity')
-    def read(path):return json.loads(path.read_text(encoding='utf-8-sig'))
-    marker=read(root/'.ffa-managed.json');record=read(root/'installation.json')
-    if marker.get('project')!='Fat-Fish-Assistant':raise ValueError('Unmanaged root')
-    info=record.get('components',{}).get('napcat',{})
-    if not info.get('installed') or info.get('ownership')!='managed':raise ValueError('NapCat must be owned')
-    service=(root/info['path']).resolve();service.relative_to(root)
-    if (service/'.feiyu-process.json').exists():raise ValueError('Stop owned NapCat before configuration')
-    instance=(root/record['instance']).resolve();instance.relative_to(root)
-    identity=instance/'private/bot-identity.json'
-    if identity.exists() and read(identity).get('bot_id')!=bot_id:raise ValueError('Existing Bot identity differs; no automatic replacement')
-    cfg=read(instance/'data/cmd_config.json');platform=next(x for x in cfg['platform'] if x.get('id')=='feiyu-onebot')
-    if platform['ws_reverse_host']!='127.0.0.1':raise ValueError('OneBot must use loopback')
-    token=(instance/'private/onebot-token.txt').read_text().strip()
-    if not token or platform['ws_reverse_token']!=token:raise ValueError('OneBot credential mismatch')
-    value={'network':{'httpServers':[],'httpSseServers':[],'httpClients':[],'websocketServers':[],'websocketClients':[{'name':'Fat-Fish-Assistant','enable':True,'messagePostFormat':'array','token':token,'url':f"ws://127.0.0.1:{platform['ws_reverse_port']}/ws",'reportSelfMessage':False,'reconnectInterval':3000,'heartInterval':30000}],'plugins':[]},'musicSignUrl':'','enableLocalFile2Url':False,'parseMultMsg':False,'imageDownloadProxy':''}
-    destination=service/'config'/('onebot11_'+bot_id+'.json');destination.parent.mkdir(parents=True,exist_ok=True)
-    if destination.exists() and read(destination)!=value:raise ValueError('Existing OneBot config differs; use native configuration UI')
-    if not destination.exists():
-        temp=destination.with_suffix('.pending-'+secrets.token_hex(4));temp.write_text(json.dumps(value),encoding='utf-8');temp.replace(destination)
-    if not identity.exists():identity.write_text(json.dumps({'bot_id':bot_id}),encoding='utf-8')
-    return {'configured':True,'loopback_only':True,'credentials_printed':False,'login_automated':False,'manual_step':'Open the owned NapCat WebUI and scan its QQ login code.'}
+from fat_fish_management.controller import atomic
+from fat_fish_management.lifecycle_lock import exclusive
+from fat_fish_management.onebot_config import listener
 
-if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,required=True);p.add_argument('--bot-id',required=True);a=p.parse_args();print(json.dumps(configure(a.root,a.bot_id)))
+
+def configure(instance, bot_id):
+    if not isinstance(bot_id, str) or not bot_id.isascii() or not bot_id.isdecimal() or int(bot_id) == 0:
+        raise ValueError('Invalid bot identity')
+    with exclusive(instance, '.start-lock'), exclusive(instance):
+        if any((instance / 'private' / name).exists() for name in ('RUNNING', 'DIRTY', 'upgrade-journal.json')):
+            raise ValueError('Stop FFA cleanly before binding its OneBot identity')
+        cfg = json.loads((instance / 'data/cmd_config.json').read_text(encoding='utf-8-sig'))
+        platform = listener(cfg)
+        if platform is None:
+            raise ValueError('Initialize the managed AstrBot OneBot listener first')
+        port = platform['ws_reverse_port']
+        token = (instance / 'private/onebot-token.txt').read_text(encoding='utf-8').strip()
+        if not token or platform.get('ws_reverse_token') != token:
+            raise ValueError('OneBot credential mismatch')
+        identity = instance / 'private/bot-identity.json'
+        if identity.exists():
+            if json.loads(identity.read_text(encoding='utf-8')).get('bot_id') != bot_id:
+                raise ValueError('Existing bot identity differs; no automatic replacement')
+        else:
+            atomic(identity, {'bot_id': bot_id})
+    return {'configured': True, 'reverse_ws_url': f'ws://127.0.0.1:{port}/ws',
+            'credentials_printed': False, 'manual_step': 'Configure the reverse client in the official SnowLuma WebUI.'}
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--instance', required=True, type=Path)
+    parser.add_argument('--bot-id', required=True)
+    args = parser.parse_args()
+    print(json.dumps(configure(args.instance, args.bot_id)))

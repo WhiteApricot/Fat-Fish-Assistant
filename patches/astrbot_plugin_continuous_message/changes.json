@@ -248,7 +248,7 @@
   {
     "path": "quote_thread.py",
     "before": null,
-    "after": "b0ac492d027133492bad831276422fc476c754161374e1393e2f41b3f3fdf383",
+    "after": "a254c8e0925cb8103e35e3f99900d60400e08bfb4bbe5ef33902aad34b47b6a8",
     "edits": [
       {
         "start": 0,
@@ -300,7 +300,7 @@
           "                        break\n",
           "                    # Outgoing messages must identify the current peer.\n",
           "                    if sender == str(event.get_self_id()) and str(raw.get('target_id', raw.get('user_id', ''))) != str(event.get_sender_id()):\n",
-          "                        # NapCat get_msg may report user_id=self for an outgoing\n",
+          "                        # OneBot get_msg may report user_id=self for an outgoing\n",
           "                        # private message, so it does not prove the peer. Verify\n",
           "                        # membership using platform history for the exact peer.\n",
           "                        try:\n",

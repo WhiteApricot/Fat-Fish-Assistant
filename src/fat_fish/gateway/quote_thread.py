@@ -45,7 +45,7 @@ async def resolve_quote_thread(event, reply, formatter=None):
                         break
                     # Outgoing messages must identify the current peer.
                     if sender == str(event.get_self_id()) and str(raw.get('target_id', raw.get('user_id', ''))) != str(event.get_sender_id()):
-                        # NapCat get_msg may report user_id=self for an outgoing
+                        # OneBot implementations get_msg may report user_id=self for an outgoing
                         # private message, so it does not prove the peer. Verify
                         # membership using platform history for the exact peer.
                         try:

@@ -1,20 +1,27 @@
 # 快速开始：双击操作
 
-> 本文中的安装与通信管理步骤为P2遗留实现，尚不适用于SnowLuma S1实例。当前范围及接入方式见 [S1说明](S1_WINDOWS_SNOWLUMA.md)。
+> S2 批次 1 使用现有 FFA 安装与启动入口。SnowLuma 的自动获取、官方界面引导和统一菜单属于后续批次。
 
-适用 Windows 10/11 x64。先审阅项目和第三方许可，准备自己的主人 QQ、机器人 QQ、DeepSeek API Key ；无需预装 QQ 客户端。无需输入 Python 或 PowerShell 命令。
+适用 Windows 10/11 x64。先审阅项目和第三方许可，准备自己的主人 QQ、机器人 QQ、DeepSeek API Key。按 [SnowLuma 官方 Windows 指南](https://snowluma.github.io/en/docs/guide/deploy/windows) 准备 QQ 客户端。无需输入 Python 或 PowerShell 命令。
 
 ## 首次安装
 
 双击根目录 **Install-Fat-Fish-Assistant.cmd**，按提示操作：
 
 1. 确认默认安装位置；需要更改时输入 C，使用文件夹选择器。目录必须是新的空目录或已受管理的安装目录，不能选正式源码目录。
-2. 阅读并接受所选组件的外部许可。选择 QQ 连接（NapCat）、长期记忆检索（Embedding）及可选语音识别（Speech）。
+2. 阅读并接受所选组件的外部许可。选择是否安装长期记忆检索（Embedding）和语音识别（Speech）。
 3. 输入主人 QQ。主人与机器人账号可以不同，不会从维护者机器复制身份或群白名单。
 4. 等待固定解释器、独立环境、固定上游源码/补丁、插件和模型安装。进度与日志会持续显示，下载或初次构建可能较慢，请保留窗口。
 5. 在隐藏输入提示中填写 **DeepSeek API Key**。输入不回显，不出现在命令行参数或普通管理日志。
-6. 若安装了 QQ 连接，自动获取 NapCat 官方固定版本 Node/QQ 包，无需选择 QQ.exe；填写机器人 QQ。连接配置及随机令牌由程序准备，不需要复制命令或自行编辑数据库。
-7. 程序会打开管理页和 QQ 登录页。QQ 登录页的 token 自动填写，按提示手动扫码及完成设备确认即可，不需要到 JSON 文件里找凭据。
+6. 按提示填写机器人 QQ。向导生成 AstrBot 监听配置与私密 OneBot 令牌，然后启动 FFA 服务。完成下面的官方接入后再发消息验收。
+
+## 连接 SnowLuma
+
+1. 获取 Windows x64 Full ZIP，使用 [固定发行清单](../manifests/snowluma/windows-x64.json) 的来源和 SHA256 校验。解压到 FFA 安装目录之外，双击 SnowLuma 自带的 `launcher.bat`。
+2. 按启动窗口的地址打开官方 WebUI。初次使用时按官方页面阅读协议，并使用启动日志给出的初始密码。确认监听范围只限本机。用机器人账号扫码并在官方界面完成设备确认和 QQ 接入。
+3. 在 SnowLuma 的 OneBot 设置里添加反向 WebSocket 客户端。默认地址填 `ws://127.0.0.1:6199/ws`，角色选 Universal，消息格式选 array，重连间隔设 5000 毫秒，关闭上报自身消息和状态命令。若维护者修改过 AstrBot 端口，使用该实例的端口。
+4. 用文本查看器打开 FFA 安装目录下的 `instance/private/onebot-token.txt`，将内容粘贴到该连接的 Token 字段，保存并启用。该值只用于 OneBot，操作后关闭文本查看器，避免在 QQ、截图和日志中分享。
+5. 在 FFA 管理命令中查看 `health`。当 `connection.onebot.connected` 为真时，向机器人发送一条私聊，确认模型和回复均可用。
 
 普通短回复默认按换行分成多条发送，代码块和长篇说明保持完整。新安装默认载入 Dejavu Moe 的 24 张鲸鱼娘 GIF，按语境、概率和冷却适度触发，每次回复最多一张；可以在表情包管理页继续添加或替换自己的素材。表情功能通过现有插件实现，不要求开通额外图床或语义模型。
 
@@ -28,7 +35,7 @@ AstrBot Dashboard 用户名固定为 astrbot，启动日志中的初始密码自
 
 只需双击 **Start-Fat-Fish-Assistant.cmd**。安装位置从当前用户的本地登记读取；已有服务直接复用，未安装的可选组件跳过。可选服务失败会单独报告，核心 Chat 会继续尝试启动；涉及脏记忆数据时，若恢复所需 Embedding 不可用，则保留保护并拒绝 Chat 启动。
 
-需要重新扫码时，脚本打开本机 NapCat 页面并等待。不要同时在两台主机启动同一个机器人身份。失败窗口会保留；按屏幕显示到安装根 logs 和 instance/logs 查看诊断，不要直接上传私人日志。
+需要重新扫码时，从 SnowLuma 启动窗口进入官方 WebUI。关闭 FFA 窗口或用 Ctrl+C 停止 FFA 后，按 SnowLuma 官方方式单独停止通信服务。不要同时在两台主机启动同一个机器人身份。失败窗口会保留；按屏幕显示到安装根 logs 和 instance/logs 查看诊断，不要直接上传私人日志。
 
 ## 重复安装与修复
 
@@ -38,4 +45,4 @@ AstrBot Dashboard 用户名固定为 astrbot，启动日志中的初始密码自
 
 ## 迁移到新主机
 
-使用 **Migrate-Fat-Fish-Assistant.cmd**，正常流程只需选择迁出/导入、包、密码及新位置。操作范围和源实例暂停要求见 [迁移指南](MIGRATION.md)。
+**Migrate-Fat-Fish-Assistant.cmd** 处理 FFA 自有数据。SnowLuma 由用户在源端通过官方方式停止，并在目标端通过官方流程重新接入。操作范围和源实例暂停要求见 [迁移指南](MIGRATION.md)。

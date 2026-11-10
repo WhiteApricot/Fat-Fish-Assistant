@@ -11,6 +11,7 @@ if __package__ in (None, ''):
 import argparse,json,secrets,shutil
 from pathlib import Path
 from fat_fish_management.lifecycle_lock import exclusive
+from fat_fish_management.onebot_config import listener
 
 def configure(root,port=6199,model='deepseek-chat'):
     root=Path(root).resolve()
@@ -31,6 +32,7 @@ def configure(root,port=6199,model='deepseek-chat'):
         if old_platform is not None and old_platform!=platform:raise ValueError('Existing OneBot settings differ; no overwrite')
         if old is None:providers.append(provider)
         if old_platform is None:platforms.append(platform)
+        listener(cfg)
         from fat_fish_management.configure_experience import SEGMENTED
         # AstrBot splits the answer. The QQ send gate owns the intervals.
         segmented=cfg.setdefault('platform_settings',{}).setdefault('segmented_reply',dict(SEGMENTED))
@@ -44,7 +46,7 @@ def configure(root,port=6199,model='deepseek-chat'):
         (history/'cmd_config.json').write_bytes(before)
         if not token_path.exists():token_path.write_text(token,encoding='utf-8')
         pending=path.with_suffix('.pending');pending.write_text(json.dumps(cfg,ensure_ascii=False),encoding='utf-8');pending.replace(path)
-    return {'configured':True,'secret_values_printed':False,'group_permissions_changed':False,'onebot_loopback_port':port,'api_key_required':'private/deepseek-key.txt','manual_step':'Configure NapCat reverse WebSocket to this port using private/onebot-token.txt; login manually.'}
+    return {'configured':True,'secret_values_printed':False,'group_permissions_changed':False,'onebot_loopback_port':port,'api_key_required':'private/deepseek-key.txt','manual_step':'Configure the reverse WebSocket in the official SnowLuma WebUI using the private OneBot credential.'}
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--instance',type=Path,required=True);p.add_argument('--onebot-port',type=int,default=6199);p.add_argument('--model',default='deepseek-chat');args=p.parse_args()

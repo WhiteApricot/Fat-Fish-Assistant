@@ -19,7 +19,7 @@ from fat_fish_management.instance import digest,protect_boundary
 from fat_fish_management.lifecycle_lock import exclusive
 from fat_fish_management.migration_package import pack,unpack
 
-LOCKS=['sources.json','dashboard.json','chat.json','speech.json','assets.json','python-runtime.json','model-runtime-lock.json','napcat-runtime-lock.json','napcat-node-lock.json']
+LOCKS=['components.json','sources.json','dashboard.json','chat.json','speech.json','assets.json','python-runtime.json','model-runtime-lock.json']
 
 def check_configuration_boundary(instance):
     """Do not silently claim to migrate resources held outside managed user storage."""
@@ -87,7 +87,7 @@ def validate_snapshot(snapshot):
     actual={p.relative_to(snapshot/'payload').as_posix().casefold() for p in (snapshot/'payload').rglob('*') if p.is_file()}
     if actual!=seen:raise ValueError('Snapshot file inventory mismatch')
     plan=c.read(snapshot/'installation-plan.json')
-    if plan.get('schema')!=1:raise ValueError('Unsupported installation plan')
+    if plan.get('schema')!=2:raise ValueError('Unsupported installation plan')
     for name in LOCKS:
         accepted={digest(c.PROJECT/'manifests'/name)}
         if name=='sources.json':
@@ -99,7 +99,7 @@ def validate_snapshot(snapshot):
         if name not in {'core.json'} or value!=digest(c.PROJECT/'manifests'/name):raise ValueError('Dependency profile lock mismatch')
     if plan.get('dependency_profile','chat') not in {'core','chat'}:raise ValueError('Unknown migration dependency profile')
     if plan.get('dependency_profile')=='core' and 'core.json' not in plan.get('profile_locks',{}):raise ValueError('Missing core dependency lock')
-    if set(plan['components'])-{'python','astrbot','plugins','embedding','speech','napcat'}:raise ValueError('Unsupported components in migration')
+    if set(plan['components'])-{'python','astrbot','plugins','embedding','speech'}:raise ValueError('Unsupported components in migration')
     return manifest,plan
 
 def export(root,record,destination,password):
@@ -117,11 +117,11 @@ def export(root,record,destination,password):
             if not receipt.exists() or c.read(receipt).get('lock_sha256')!=c.profile_fingerprint(c.environment_profile(root,record,profile)):
                 raise ValueError('Installed environment lock differs from the current dependency manifest: '+profile)
         # Stop all managed services through the existing controller first.
-        c.operate(root,record,'stop')
+        c.operate(root,record,'stop',include_external=False)
         c.invoke(root,c.chat_python(root,record),'manage.py','recover-lifecycle','--instance',target)
         with exclusive(target,'.start-lock'):
             check_configuration_boundary(target)
-            for name in ['astrbot','napcat','embedding','speech']:
+            for name in ['astrbot','embedding','speech']:
                 if record.get('components',{}).get(name,{}).get('installed') and c.component_status(root,record,name)['running']:
                     raise ValueError('Writer did not stop: '+name)
             with tempfile.TemporaryDirectory(prefix='migration-export-',dir=root) as tmp:
@@ -130,17 +130,17 @@ def export(root,record,destination,password):
                 release=Path(c.read(target/'instance.json')['release'])
                 metadata=c.read(release/'release.json')
                 plugins=[x['name'] for x in metadata['vendor'] if x['name'] in {'astrbot_plugin_livingmemory','astrbot_plugin_continuous_message','meme_manager'}]
-                components=[name for name in ['python','astrbot','plugins','napcat','embedding','speech'] if record['components'].get(name,{}).get('installed')]
+                components=[name for name in ['python','astrbot','plugins','embedding','speech'] if record['components'].get(name,{}).get('installed')]
                 dependencies={'python':c.load('python-runtime.json'),'sources':metadata['vendor'],'chat':c.load(record.get('dependency_profile','chat')+'.json'),'dashboard':c.load('dashboard.json'),'assets':c.load('assets.json')}
                 if record.get('speech_python'):dependencies['speech']=c.load('speech.json')
                 states={name:{key:record['components'][name].get(key) for key in ['installed','version','ownership']} for name in components}
-                c.atomic(snapshot/'installation-plan.json',{'schema':1,'components':components,'component_state':states,'dependencies':dependencies,'plugins':plugins,'locks':{name:digest(c.PROJECT/'manifests'/name) for name in LOCKS},'source_suspended':True,'dependency_profile':record.get('dependency_profile','chat'),'profile_locks':{name:digest(c.PROJECT/'manifests'/name) for name in ['core.json']}})
+                c.atomic(snapshot/'installation-plan.json',{'schema':2,'components':components,'component_state':states,'dependencies':dependencies,'plugins':plugins,'locks':{name:digest(c.PROJECT/'manifests'/name) for name in LOCKS},'source_suspended':True,'dependency_profile':record.get('dependency_profile','chat'),'profile_locks':{name:digest(c.PROJECT/'manifests'/name) for name in ['core.json']}})
                 manifest,_=validate_snapshot(snapshot)
                 manifest['relocation']={'root':str(root),'instance':str(target)}
                 c.atomic(snapshot/'manifest.json',manifest)
                 c.atomic(target/'private/MIGRATED-OUT.json',{'time':time.time(),'reason':'Migration export in progress; source suspended for safe host transfer'})
                 pack(snapshot,destination,password)
-                result={'path':str(destination),'bytes':destination.stat().st_size,'sha256':digest(destination),'files':len(manifest['files']),'encrypted':True,'source_stopped':True}
+                result={'path':str(destination),'bytes':destination.stat().st_size,'sha256':digest(destination),'files':len(manifest['files']),'encrypted':True,'source_stopped':True,'snowluma_managed_separately':True}
                 c.atomic(target/'private/MIGRATED-OUT.json',{'time':time.time(),'sha256':result['sha256'],'reason':'Source suspended; activate only one host at a time'})
                 return result
 
@@ -168,8 +168,6 @@ def import_package(root,package,password,confirm_source_offline=False,cache=None
             record['instance']='instance'
             for name in ['embedding','speech']:
                 if record['components'].get(name,{}).get('installed'):record['components'][name]['path']='instance'
-            # Do not carry a machine-specific QQ path or any QQ login state.
-            record.pop('qq_executable',None)
             c.atomic(root/'installation.json',record)
         # Existing installer rehydrates engines/models using locked hashes; it never
         # replaces restored keys, permissions, chats or provider settings.

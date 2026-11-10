@@ -24,8 +24,10 @@ class FatFishHealth(Star):
                 identity=self.root/'private/bot-identity.json'
                 bot_id=json.loads(identity.read_text())['bot_id'] if identity.exists() else None
                 status=await probe(self.context,bot_id)
+                guard=self.context.get_registered_star('fat_fish_guard')
+                status['core_loaded']=bool(guard and guard.activated and guard.star_cls is not None)
                 deployment=json.loads((self.root/'instance.json').read_text()).get('deployment_id')
-                record={'schema':1,'pid':os.getpid(),'time':time.time(),'deployment_id':deployment,**status}
+                record={'schema':2,'pid':os.getpid(),'time':time.time(),'deployment_id':deployment,**status}
                 pending=self.path.with_suffix('.pending');pending.write_text(json.dumps(record));pending.replace(self.path)
                 failed=False
             except asyncio.CancelledError:raise

@@ -26,14 +26,14 @@ from pathlib import Path
 
 from fat_fish_management.dependencies import PROJECT,acquire,build_release,clean_environment,digest,external,install_environment,load,profile_fingerprint,run_logged,unpack,verify_environment_versions,link_or_copy,RELEASE_LAYOUT,extend_core_environment
 
-SERVICE_SCRIPTS = {'Install-Runtime.ps1': 'scripts/build/Install-Runtime.ps1', 'Invoke-NapCat.ps1': 'scripts/services/Invoke-NapCat.ps1', 'Invoke-LocalModels.ps1': 'scripts/services/Invoke-LocalModels.ps1', 'Check-Environment.ps1': 'scripts/diagnostics/Check-Environment.ps1'}
+from fat_fish_management import windows
+from fat_fish_management.components import lifecycle, snowluma_status, communication_health
+from fat_fish_management.errors import Fault
+from fat_fish_management.lifecycle_lock import file_lock
 
 SCHEMA=1
 COMPONENTS=load('components.json')['components']
 EXIT={'ok':0,'invalid':20,'needs_input':21,'missing':22,'integrity':23,'busy':24,'incompatible':25,'read_only':26,'failed':30}
-
-class Fault(Exception):
-    def __init__(self,kind,message,hint=''):super().__init__(message);self.kind=kind;self.hint=hint
 
 class Parser(argparse.ArgumentParser):
     def error(self,message):raise Fault('invalid',message,'Run the command with --help for accepted options.')
@@ -57,6 +57,7 @@ def source_descriptor_compatible(before,current):
             return False
         return dict(before,target='src/fat_fish/participation/upstream_selfreply')==current
     allowed={PRE_NORMALIZATION_PATCHES.get(name)}
+    if name=='astrbot_plugin_continuous_message':allowed.add('41ad668ad70748b66fa7e6d5aa7c91415724f762216c6f88cf5b3f1638ed28fe')
     if name=='astrbot':allowed.update((*P2F_R1_PATCH_TRANSITION,COMPONENT_LAYOUT_PATCH,
                                       'd867da82a7d9401fa97c8fea4bffa3e70dcf641616deb1995d6d77c61d6a342f'))
     return (before.get('patch_sha256') is not None and before['patch_sha256'] in allowed and 'patch_sha256' in current
@@ -110,6 +111,8 @@ def owned_root(root,create=False):
 def state(root):
     value=read(root/'installation.json') if (root/'installation.json').exists() else {'schema_version':SCHEMA,'project':'Fat-Fish-Assistant','components':{}}
     if value.get('schema_version')!=SCHEMA:raise Fault('incompatible','Unknown management state version')
+    if set(value.get('components',{}))-set(COMPONENTS)-{'embedding-engine','embedding-model','speech-model'}:
+        raise Fault('incompatible','Unsupported installation components','Use a separate managed root. Existing installation data has been preserved.')
     return value
 
 def resolve(root,value):
@@ -180,41 +183,16 @@ def invoke(root,python,script,*args,json_output=False,input_data=None):
         raise Fault('failed',f'{script} failed (exit {proc.returncode})',f'Inspect the private log: {logfile}')
     return json.loads(proc.stdout) if json_output else {'completed':True}
 
-def shell(root,script,*args,json_output=False):
-    executable=Path(os.environ.get('SystemRoot','C:/Windows'))/'System32/WindowsPowerShell/v1.0/powershell.exe'
-    if os.name!='nt':raise Fault('incompatible','Windows service management requires Windows')
-    env=clean_environment();env['PSMODULEPATH']=str(executable.parent/'Modules')
-    # .NET Start-Process can leave a captured pipe inherited by the detached
-    # service after PowerShell exits. Wait for the launcher, never for pipe EOF.
-    log=root/'logs'/(script+'-'+uuid.uuid4().hex+'.log');log.parent.mkdir(exist_ok=True)
-    with log.open('wb') as stream:
-        proc=subprocess.run([str(executable),'-NoProfile','-ExecutionPolicy','Bypass','-File',str(PROJECT/SERVICE_SCRIPTS[script]),*map(str,args)],stdout=stream,stderr=subprocess.STDOUT,env=env,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-    output=log.read_text(encoding='utf-8-sig',errors='replace')
-    if proc.returncode:raise Fault('failed',script+' failed',f'Inspect the private log: {log}')
-    if json_output:
-        text=output.strip()
-        if text in {'True','False'}:return text=='True'
-        return json.loads(text)
-    return {'completed':True}
-
 def inspect_environment(root,network=False):
     checks=[]
     def add(name,ok,detail,hint='',severity='error'):checks.append({'name':name,'ok':bool(ok),'severity':severity,'detail':detail,'hint':hint})
-    add('windows_x64',os.name=='nt' and platform.machine().lower() in {'amd64','x86_64'},platform.platform(),'Use Windows x64; this release does not claim Linux validation.')
-    if os.name=='nt':add('windows_version',sys.getwindowsversion().major>=10,str(sys.getwindowsversion()),'Use Windows 10/11 x64; older Windows versions are not supported.')
+    checks.extend(windows.environment_checks())
     add('python',sys.version_info[:3]==(3,12,3),platform.python_version(),'Use the pinned bootstrap interpreter or explicitly provide Python 3.12.3 x64.')
     parent=root
     while not parent.exists():parent=parent.parent
     free=shutil.disk_usage(parent).free
     add('disk_space',free>=2*1024**3,{'free_bytes':free,'minimum_core_bytes':2*1024**3},'Allow additional disk space for optional models and retained failed stages.')
     add('permissions',os.access(parent,os.W_OK),{'parent_writable':os.access(parent,os.W_OK)},'Choose a directory owned by your user; no administrator privileges are required for core files.')
-    if os.name=='nt':
-        import ctypes
-        missing=[]
-        for name in ['VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll']:
-            try:ctypes.WinDLL(str(Path(os.environ['SystemRoot'])/'System32'/name))
-            except OSError:missing.append(name)
-        add('microsoft_runtime',not missing,{'missing':missing},'Review the pinned official Microsoft x64 runtime in manifests/assets.json; install manually if needed.')
     ports={}
     for port in [6185,6199,6202,6203,6099]:
         try:
@@ -233,23 +211,13 @@ def inspect_environment(root,network=False):
 
 @contextlib.contextmanager
 def installation_lock(root):
-    # Kernel lock, released even if the installer is interrupted.
-    path=root/'.installation-lock';stream=path.open('a+b');stream.seek(0);stream.write(b'0');stream.flush();stream.seek(0)
-    try:
-        if os.name=='nt':
-            import msvcrt
-            try:msvcrt.locking(stream.fileno(),msvcrt.LK_NBLCK,1)
-            except OSError:raise Fault('busy','Another installation or configuration operation is running')
-        else:
-            import fcntl
-            try:fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            except OSError:raise Fault('busy','Another operation is running')
+    with file_lock(root/'.installation-lock',
+                   lambda exc: Fault('busy','Another installation or configuration operation is running')):
         yield
-    finally:stream.close()
 
 def selection(text):
     values=set(text.split(','))
-    if 'chat' in values:values.remove('chat');values.update(['python','astrbot','plugins'])
+    if 'chat' in values:values.remove('chat');values.add('core')
     if not values or values-set(COMPONENTS):raise Fault('invalid','Unknown component selection')
     if any(COMPONENTS[x].get('reserved') for x in values):raise Fault('incompatible','Dagu and Work are reserved descriptors, not installed functionality')
     while True:
@@ -260,20 +228,12 @@ def selection(text):
 def install_asset(root,name,spec,target,cache,offline=False,notify=progress):
     """Only a verified, completed stage can become an installed asset."""
     marker=root/'asset-receipts'/(name+'.json')
-    def mutable(relative):
-        parts=Path(relative).parts
-        if name=='napcat-node':
-            # Upstream Node mode stores account/runtime data here, never code.
-            return relative in {'beacon_report.log','guild1.db','guild1.db-shm','guild1.db-wal'} or parts[0].lower() in {'logs','cache','temp'} or (parts[0]=='napcat' and mutable_napcat(parts[1:]))
-        return name=='napcat' and (parts[0].lower() in {'config','logs','cache','temp'} or relative in {'.feiyu-process.json','.feiyu-process.lock','guild1.db','guild1.db-shm','guild1.db-wal'})
-    def mutable_napcat(parts):
-        return bool(parts) and (parts[0].lower() in {'config','logs','cache','temp'} or '/'.join(parts) in {'.feiyu-process.json','.feiyu-process.lock','guild1.db','guild1.db-shm','guild1.db-wal'})
     def contents(path):
         if path.is_file():return {'.':digest(path)}
-        return {p.relative_to(path).as_posix():digest(p) for p in sorted(path.rglob('*')) if p.is_file() and not mutable(p.relative_to(path).as_posix())}
+        return {p.relative_to(path).as_posix():digest(p) for p in sorted(path.rglob('*')) if p.is_file()}
     if marker.exists():
         receipt=read(marker)
-        expected={key:value for key,value in receipt.get('files',{}).items() if not mutable(key)}
+        expected=receipt.get('files',{})
         if receipt.get('sha256')!=spec['sha256'] or not target.exists() or expected!=contents(target):
             raise Fault('integrity','Installed asset receipt or content mismatch: '+name)
         return
@@ -295,31 +255,6 @@ def install_asset(root,name,spec,target,cache,offline=False,notify=progress):
     stage.rename(target)
     atomic(marker,receipt)
 
-def activate_napcat_node(root,record,destination):
-    """Switch only an owned, stopped service; retain config and the old payload."""
-    previous=record.get('components',{}).get('napcat',{})
-    service=destination/'napcat'
-    for name in ['node.exe','index.js','wrapper.node','package.json','config.json']:
-        if not (destination/name).is_file():raise Fault('integrity','Incomplete independent QQ runtime: '+name)
-    if previous.get('installed'):
-        if previous.get('ownership')!='managed':raise Fault('read_only','Refusing to replace an external NapCat')
-        if component_status(root,record,'napcat').get('running'):raise Fault('busy','Stop owned NapCat before changing runtime')
-        old=resolve(root,previous['path'])
-        if old!=service and (old/'config').exists():
-            for source in (old/'config').rglob('*'):
-                if not source.is_file():continue
-                if source.is_symlink():raise Fault('integrity','NapCat config symlink refused')
-                target=service/'config'/source.relative_to(old/'config')
-                if target.exists() and target.read_bytes()!=source.read_bytes():raise Fault('integrity','QQ runtime config conflict; original config retained')
-                target.parent.mkdir(parents=True,exist_ok=True)
-                if not target.exists():shutil.copy2(source,target)
-            webui=service/'config/webui.json'
-            if webui.exists():
-                value=read(webui);value['autoLoginAccount']='';atomic(webui,value)
-    record['components']['napcat']={'installed':True,'version':'napcat-node-v4.18.41','path':rel(root,service),'ownership':'managed','depends':[],'runtime':'node'}
-    record.pop('qq_executable',None)
-
-
 def environment_profile(root,record,role):
     python=resolve(root,record[role+'_python'])
     receipt=read(python.parents[1]/'ffa-environment.json')
@@ -330,6 +265,9 @@ def environment_profile(root,record,role):
     return profile
 
 def install(root,args):
+    chosen=selection(args.components)
+    if chosen=={'snowluma'}:
+        raise Fault('needs_input','Install SnowLuma independently from the pinned official release','See manifests/snowluma/windows-x64.json and docs/QUICK_START.md.')
     root=owned_root(root,True)
     with installation_lock(root):
         from fat_fish_management.instance import protect_boundary
@@ -351,7 +289,7 @@ def install(root,args):
                     marker=resolve(root,record[profile+'_python']).parents[1]/'ffa-environment.json'
                     if not marker.exists() or read(marker).get('lock_sha256')!=profile_fingerprint(environment_profile(root,record,profile)):
                         raise Fault('incompatible','Repair will not switch a data instance to changed dependency versions; use a tested upgrade adapter')
-        chosen=selection(args.components);record.setdefault('components',{})
+        record.setdefault('components',{})
         journal=root/'install-journal.json'
         if journal.exists():atomic(root/'install-history'/(uuid.uuid4().hex+'.json'),read(journal))
         atomic(journal,{'schema_version':SCHEMA,'requested':sorted(chosen),'state':'running','started_at':time.time()})
@@ -363,7 +301,7 @@ def install(root,args):
             progress('runtime','缺少 Microsoft 运行库；将下载已固定哈希的官方安装程序，仅此必要步骤可能请求系统确认')
             spec=next(x for x in load('assets.json') if x['id']=='msvc-runtime-x64-14.51.36247')
             installer=acquire(spec,cache,args.offline,progress)
-            shell(root,'Install-Runtime.ps1','-Installer',installer)
+            windows.install_runtime(root,installer)
             check=inspect_environment(root)
         if not check['ready']:raise Fault('needs_input','Environment preflight failed','Run check and resolve the error checks. Optional port warnings do not stop installation.')
         base=Path(args.python).resolve() if args.python else resolve(root,record['components']['python']['path']) if record.get('components',{}).get('python',{}).get('path') else Path(sys.executable)
@@ -420,7 +358,6 @@ def install(root,args):
         progress('4/5','optional external assets')
         specs={x['id']:x for x in load('assets.json')}
         wanted=[]
-        if 'napcat' in chosen:wanted.append(('napcat-node',specs['napcat-node-v4.18.41'],root/'services/napcat-node-v4.18.41'))
         if 'embedding' in chosen:
             wanted.extend([('embedding-engine',specs['llama-b11946-win-cpu'],root/'assets/llama-b11946'),('embedding-model',specs['embedding-bge-small-zh-v1.5'],root/'assets/bge-small-zh-v1.5-f16.gguf')])
         if 'speech' in chosen:wanted.append(('speech-model',specs['sensevoice-int8-20250909'],root/'assets/sensevoice-int8-20250909'))
@@ -428,8 +365,6 @@ def install(root,args):
             if not args.accept_external_licenses:raise Fault('needs_input','Optional asset requires review: '+spec['id'],'Review manifests/assets.json and use --accept-external-licenses only after accepting applicable external conditions.')
             install_asset(root,name,spec,target,cache,args.offline)
             record['components'][name]={'installed':True,'version':spec['id'],'path':rel(root,target),'ownership':'managed','depends':[]};save()
-            if name=='napcat-node':
-                activate_napcat_node(root,record,target);save()
         for component in ['embedding','speech']:
             if component in chosen:
                 record['components'][component]={'installed':True,'version':COMPONENTS[component].get('asset',COMPONENTS[component].get('assets')),'path':'assets','ownership':'managed','depends':COMPONENTS[component]['depends']}
@@ -467,7 +402,7 @@ def install(root,args):
             from fat_fish_management.dependencies import prune_download_cache
             receipt=read(chat_python(root,record).parents[1]/'ffa-environment.json') if record.get('chat_python') else {}
             prune_download_cache(cache,receipt.get('locally_built',[]))
-        return {'components':sorted(chosen),'instance_initialized':bool(record.get('instance')),'next_steps':guidance(root,record),'repeated_install_preserves_instance':True}
+        return {'components':sorted(chosen-{'snowluma'}),'snowluma':snowluma_status(record),'instance_initialized':bool(record.get('instance')),'next_steps':guidance(root,record),'repeated_install_preserves_instance':True}
 
 def prepare_instance_assets(root,record,runtime):
     for source,target in [('embedding-engine','engines/llama'),('embedding-model','models/embedding/bge-small-zh-v1.5-f16.gguf'),('speech-model','models/sensevoice')]:
@@ -488,15 +423,22 @@ def guidance(root,record):
     target=instance(root,record);cfg=read(target/'data/cmd_config.json');port=cfg['dashboard']['port']
     return [f'肥鱼助手 / Fat-Fish-Assistant: start opens only the local service at http://127.0.0.1:{port}.',
             'Dashboard credentials are saved with Windows DPAPI; use the desktop launcher to securely update the saved password after changing it.',
-            'The pinned official Node/QQ runtime is prepared automatically; NapCat QR login and device authorization remain manual. Never copy another user\'s login session, owner identity, key or approved groups.',
+            'Use the official SnowLuma Launcher and WebUI for startup, QR login and reverse WebSocket settings. See docs/QUICK_START.md.',
             'No group is approved by default. Dagu, Work and the P6 GUI are not implemented in this stage.']
 
 def component_status(root,record,name):
-    definition=COMPONENTS.get(name,{})
+    if name=='snowluma':
+        return snowluma_status(record, read_protocol(root,record))
+    definition=COMPONENTS[name]
     info=dict(record.get('components',{}).get(name,{}))
+    if name=='core' and record.get('release'):
+        info={'installed':True,'ownership':'managed','path':rel(root,resolve(root,record['release'])/'src/fat_fish')}
     result={'id':name,'installed':bool(info.get('installed')),'running':None,'version':info.get('version'),'path':info.get('path'),'ownership':info.get('ownership'),'depends':definition.get('depends',[]),'reserved':definition.get('reserved',False)}
     result['manifest_refs']=['manifests/components.json','manifests/sources.json' if name in {'astrbot','plugins'} else 'manifests/python-runtime.json' if name=='python' else 'manifests/assets.json']
-    if not result['installed']:return result
+    path=resolve(root,result['path']) if result['path'] else None
+    result['program_present']=path.exists() if path is not None else False
+    if not result['installed'] or (name!='python' and info.get('ownership')=='external-readonly'):
+        return lifecycle(result)
     if name=='python':
         result['environments']=[{'profile':profile,'path':record[profile+'_python'],'completion_receipt':(resolve(root,record[profile+'_python']).parents[1]/'ffa-environment.json').exists()} for profile in ['chat','speech'] if record.get(profile+'_python')]
     if name=='astrbot' and record.get('instance'):
@@ -505,31 +447,45 @@ def component_status(root,record,name):
         result['path']=rel(root,active/'astrbot');result['version']=next(x['commit'] for x in metadata['vendor'] if x['name']=='astrbot')
         result.update(invoke(root,chat_python(root,record),'manage.py','status','--instance',instance(root,record),json_output=True))
         result['maintenance_pending']=(instance(root,record)/'private/upgrade-journal.json').exists()
-    elif name=='napcat':
-        result.update(shell(root,'Invoke-NapCat.ps1','-Action','Status','-Root',resolve(root,info['path']),json_output=True))
+        result['program_present']=resolve(root,result['path']).is_dir()
+    elif name=='core' and record.get('instance'):
+        chat=component_status(root,record,'astrbot')
+        result.update(running=chat['running'],dirty=chat.get('dirty',False),
+                      maintenance_pending=chat.get('maintenance_pending',False),
+                      ready=read_protocol(root,record).get('core_loaded'))
+        if result['running'] and result['ready'] is False:result['health_failed']=True
     elif name in {'embedding','speech'}:
         if not record.get('instance'):
-            result.update({'running':False,'ready':False,'needs_input':'Initialize an instance before configuring local provider credentials.'});return result
+            result.update({'running':False,'ready':False,'needs_input':'Initialize an instance before configuring local provider credentials.'});return lifecycle(result,initialized=False)
         marker=instance(root,record)/'private'/(name.title()+'.pid')
         if marker.exists() or (marker.parent/(name.title()+'.process.json')).exists():
-            result['running']=bool(shell(root,'Invoke-LocalModels.ps1','-Action','Status','-Runtime',instance(root,record),'-Component',name.title(),json_output=True))
+            result['running']=bool(windows.model_service(root,'status',instance(root,record),name))
         else:result['running']=False
     if name=='plugins':
         if record.get('instance'):
             active=Path(read(instance(root,record)/'instance.json')['release'])
             result['path']=rel(root,instance(root,record)/'data/plugins')
             result['version']={x['name']:x['commit'] for x in read(active/'release.json')['vendor'] if x['name']!='astrbot'}
+        result['program_present']=resolve(root,result['path']).is_dir()
         result['capabilities']=['status','version','integrity','upgrade-with-release','rollback-with-release']
-    return result
+    return lifecycle(result,initialized=bool(record.get('instance')) or name=='python')
 
-def operate(root,record,action,selected=None):
+def operate(root,record,action,selected=None,*,include_external=True):
     if action in {'start','restart'} and record.get('instance') and (instance(root,record)/'private/MIGRATED-OUT.json').exists():
         raise Fault('busy','Source is suspended after migration; target must be stopped before explicit source reactivation')
-    selected=selected or [x for x in ['napcat','embedding','speech','astrbot'] if record.get('components',{}).get(x,{}).get('installed')]
+    default_selection=selected is None
+    if default_selection:
+        selected=[x for x in ['embedding','speech','astrbot'] if record.get('components',{}).get(x,{}).get('installed')]
+    if selected==['snowluma'] or (default_selection and include_external and not selected):
+        return {'operations':[official_operation(record,action)],'complete':False}
     if not selected:raise Fault('needs_input','No service components are installed')
     if action=='restart':
-        operate(root,record,'stop',selected)
-        return operate(root,record,'start',selected)
+        stopped=operate(root,record,'stop',selected)
+        started=operate(root,record,'start',selected)
+        if default_selection and include_external:
+            started['operations'].append(official_operation(record,'restart'))
+            started['complete']=False
+        return {'stopped':stopped['operations'],**started}
     if action=='stop':selected=list(reversed(selected))
     results=[]
     for name in selected:
@@ -537,9 +493,7 @@ def operate(root,record,action,selected=None):
         if info.get('ownership')=='external-readonly':raise Fault('read_only','External component cannot be modified: '+name)
         if not info.get('installed'):raise Fault('missing','Component is not installed: '+name)
         current=component_status(root,record,name)
-        # NapCat Stop also clears a stale managed launch record.
-        cleanup_napcat=action=='stop' and name=='napcat' and current.get('managed',False)
-        if current['running'] is (action=='start') and not cleanup_napcat:
+        if current['running'] is (action=='start'):
             results.append({'id':name,'already_in_requested_state':True});continue
         if name=='astrbot':
             target=instance(root,record)
@@ -549,26 +503,29 @@ def operate(root,record,action,selected=None):
                 invoke(root,chat_python(root,record),'manage.py','recover-lifecycle','--instance',target)
                 invoke(root,chat_python(root,record),'configure_experience.py','--instance',target,'--release',resolve(root,record['release']),json_output=True)
             result=invoke(root,chat_python(root,record),'manage.py',action,'--instance',target)
-        elif name=='napcat':
-            argv=['-Action',action.title(),'-Root',resolve(root,info['path'])]
-            if action=='start':
-                if info.get('runtime')!='node':
-                    if not record.get('qq_executable'):raise Fault('needs_input','Prepare the independent QQ runtime with prepare-napcat')
-                    argv+=['-QQExecutable',record['qq_executable']]
-            result=shell(root,'Invoke-NapCat.ps1',*argv)
         elif name in {'embedding','speech'}:
-            argv=['-Action',action.title(),'-Runtime',instance(root,record),'-Component',name.title()]
+            port=None
             cfg=read(instance(root,record)/'data/cmd_config.json')
             provider=next((p for p in cfg.get('provider',[]) if p.get('id')==('feiyu-local-embedding' if name=='embedding' else 'feiyu-local-stt')),None)
             if action=='start' and provider:
                 endpoint=urllib.parse.urlsplit(provider.get('embedding_api_base' if name=='embedding' else 'api_base',''))
                 if endpoint.scheme!='http' or endpoint.hostname not in {'127.0.0.1','localhost'}:raise Fault('invalid','Local model endpoint must use loopback')
-                argv+=['-Port',endpoint.port or 80]
-            if name=='speech' and action=='start':argv+=['-SpeechPython',resolve(root,record['speech_python'])]
-            result=shell(root,'Invoke-LocalModels.ps1',*argv)
+                port=endpoint.port or 80
+            python=resolve(root,record['speech_python']) if name=='speech' and action=='start' else None
+            result=windows.model_service(root,action,instance(root,record),name,port=port,python=python)
         else:raise Fault('incompatible','This component has no service lifecycle: '+name)
         results.append({'id':name,**result})
-    return {'operations':results}
+    if default_selection and include_external:
+        results.append(official_operation(record,action))
+    return {'operations':results,'complete':not (default_selection and include_external)}
+
+def official_operation(record,action):
+    status=snowluma_status(record)
+    return {'id':'snowluma','requested_action':action,'state':'waiting_for_user',
+            'program_present':status['program_present'],
+            'instruction':{'start':'Start the official Launcher and complete login in the official WebUI.',
+                           'stop':'Stop SnowLuma through its official controls.',
+                           'restart':'Stop and reopen SnowLuma through its official controls.'}[action]}
 
 def verify_runtime_environment(root,record,profile):
     if not record.get(profile+'_python'):raise Fault('missing','Runtime environment is not installed: '+profile)
@@ -581,24 +538,6 @@ def verify_runtime_environment(root,record,profile):
     verify_environment_versions(python,load(actual+'.json'),log)
     run_logged([python,'-I','-m','pip','--isolated','check'],log)
 
-def recover_napcat_login(root,record):
-    info=record.get('components',{}).get('napcat',{})
-    if info.get('runtime')!='node' or info.get('ownership')!='managed':raise Fault('read_only','Only the owned independent QQ runtime supports login recovery')
-    def probe():return invoke(root,chat_python(root,record),'napcat_health.py','--root',resolve(root,info['path']),'--allow-pending',json_output=True)
-    def stuck(value):return value.get('loginPhase')=='reconnecting' and not value.get('isLogin') and not value.get('qrLoginAccepted')
-    first=probe()
-    if not stuck(first):return {'restarted':False,'status':first}
-    time.sleep(2)
-    second=probe()
-    if not stuck(second):return {'restarted':False,'status':second}
-    operations=operate(root,record,'restart',['napcat'])
-    for attempt in range(30):
-        try:return {'restarted':True,'status':probe(),**operations}
-        except Fault:
-            if attempt==29:raise
-            time.sleep(1)
-
-
 def daily_start(root,record):
     """UX orchestration over the existing lifecycle APIs; optional failures are explicit."""
     warnings=[];operations=[]
@@ -610,7 +549,7 @@ def daily_start(root,record):
             record['release']=rel(root,Path(read(runtime/'instance.json')['release']))
             atomic(root/'installation.json',record)
     verify_runtime_environment(root,record,'chat')
-    for name in ['napcat','embedding','speech','astrbot']:
+    for name in ['embedding','speech','astrbot']:
         if not record.get('components',{}).get(name,{}).get('installed'):continue
         try:
             if name=='speech':verify_runtime_environment(root,record,'speech')
@@ -638,19 +577,67 @@ def daily_start(root,record):
             warnings.append({'component':name,'message':str(exc),'hint':getattr(exc,'hint','Inspect installation and instance logs')})
     # A listening port alone does not establish dashboard identity or QQ login.
     dashboard=invoke(root,chat_python(root,record),'authenticated_health.py','--instance',instance(root,record),'--allow-login-required',json_output=True)
-    connection={'napcat_installed':bool(record.get('components',{}).get('napcat',{}).get('installed')),'qq_login':False,'onebot':dashboard.get('onebot_connection',{'connected':False,'reason':'unavailable'})}
-    if connection['napcat_installed']:
+    connection=communication_health(dashboard['onebot_connection'])
+    if not connection['onebot']['connected']:
+        operations.append(official_operation(record,'start'))
+    return {'operations':operations,'dashboard':dashboard,'connection':connection,'warnings':warnings,
+            'core_ready':connection['core_loaded'],
+            'complete':connection['onebot']['connected'] and connection['core_loaded'] is True}
+
+def health_check(root,record,*,diagnose=False):
+    result={'components':component_inventory(root,record)}
+    chat=next(item for item in result['components'] if item['id']=='astrbot')
+    protocol={}
+    if record.get('instance'):
         try:
-            connection.update(invoke(root,chat_python(root,record),'napcat_health.py','--root',resolve(root,record['components']['napcat']['path']),json_output=True))
-            connection['qq_login']=True
-        except Exception as exc:warnings.append({'component':'napcat-login','message':str(exc),'hint':getattr(exc,'hint','Complete manual login in the owned local WebUI')})
-    return {'operations':operations,'dashboard':dashboard,'connection':connection,'warnings':warnings,'core_ready':True}
+            result['configuration']=config_view(root,record)
+        except (Fault,OSError,ValueError,KeyError):
+            result['configuration']={'state':'unhealthy','reason':'configuration_inspection_failed'}
+        if chat['running']:
+            try:
+                result['dashboard']=invoke(root,chat_python(root,record),'authenticated_health.py',
+                                           '--instance',instance(root,record),'--allow-login-required',json_output=True)
+                protocol=result['dashboard']['onebot_connection']
+            except (Fault,OSError,ValueError):
+                result['dashboard']={'authenticated_dashboard':'unavailable'}
+                try:
+                    protocol=read_protocol(root,record)
+                except (Fault,OSError,ValueError):
+                    pass
+        for component in ('embedding','speech'):
+            if not any(item['id']==component and item['running'] for item in result['components']):
+                continue
+            try:
+                result[component]=invoke(root,chat_python(root,record),'service_health.py',
+                                         '--component',component,'--instance',instance(root,record),json_output=True)
+            except (Fault,OSError,ValueError):
+                result[component]={'protocol_probe':'unavailable'}
+    result['connection']=communication_health(protocol)
+    if diagnose:
+        result['environment']=inspect_environment(root)
+    return result
+
+def read_protocol(root,record):
+    if not record.get('instance'):
+        return {}
+    return invoke(root,chat_python(root,record),'connection_health.py',
+                  '--instance',instance(root,record),json_output=True)
+
+def component_inventory(root,record):
+    items=[]
+    for name in COMPONENTS:
+        try:
+            items.append(component_status(root,record,name))
+        except (Fault,OSError,ValueError,KeyError):
+            items.append({'id':name,'state':'unhealthy','running':None,'program_present':None,
+                          'reason':'component_inspection_failed'})
+    return items
 
 def config_view(root,record):
     target=instance(root,record);cfg=read(target/'data/cmd_config.json');identity=read(target/'private/instance-identity.json');access=read(target/'private/p2c-access.json')
     return {'project':'Fat-Fish-Assistant','dashboard':{'host':cfg['dashboard']['host'],'port':cfg['dashboard']['port']},'identity_valid':identity['owner']==access['owner'],
             'approved_group_count':len(access.get('approved_groups',[])),'providers':[{'id':x.get('id'),'type':x.get('type')} for x in cfg.get('provider',[])],
-            'dashboard_password_file':rel(root,target/'private/dashboard-credential.dpapi'),'secrets_redacted':True,'qq_executable_configured':bool(record.get('qq_executable')),
+            'dashboard_password_file':rel(root,target/'private/dashboard-credential.dpapi'),'secrets_redacted':True,
             'experience':{'segmented_reply_enabled':bool(cfg.get('platform_settings',{}).get('segmented_reply',{}).get('enable')),
                 'meme_plugin_installed':(target/'data/plugins/meme_manager').is_dir(),
                 'meme_images':sum(1 for p in (target/'data/plugin_data/meme_manager/packs').rglob('*') if p.is_file() and p.suffix.lower() in {'.png','.jpg','.jpeg','.gif','.webp'})}}
@@ -680,42 +667,28 @@ def configure(root,record,args):
             return invoke(root,chat_python(root,record),'configure_chat.py','--instance',instance(root,record),'--onebot-port',args.onebot_port,'--model',args.model,json_output=True)
     if args.config_action=='initialize-onebot':
         if not args.bot_id:raise Fault('needs_input','Provide your own Bot identity with --bot-id; no default account is imported')
-        if component_status(root,record,'napcat')['running']:raise Fault('busy','Stop owned NapCat before connection initialization')
         with installation_lock(root):
-            return invoke(root,chat_python(root,record),'configure_onebot.py','--root',root,'--bot-id',args.bot_id,json_output=True)
+            return invoke(root,chat_python(root,record),'configure_onebot.py','--instance',instance(root,record),'--bot-id',args.bot_id,json_output=True)
     if args.config_action=='show':return view
     if args.config_action=='validate':
         if not view['identity_valid'] or view['dashboard']['host']!='127.0.0.1':raise Fault('integrity','Identity or loopback configuration mismatch')
         return {'configuration_valid':True,'secrets_redacted':True}
     data=read_stdin() if args.file=='-' else read(args.file)
-    if set(data)-{'dashboard_port','deepseek_api_key','qq_executable','napcat_webui_port'}:raise Fault('invalid','Only dashboard_port, deepseek_api_key, qq_executable and napcat_webui_port are writable here; owner/groups are not generic settings')
+    if not isinstance(data,dict) or set(data)-{'dashboard_port','deepseek_api_key'}:
+        raise Fault('invalid','Only dashboard_port and deepseek_api_key are writable here')
     target=instance(root,record)
     with installation_lock(root):
         from fat_fish_management.lifecycle_lock import exclusive
         with exclusive(target):
             if any((target/'private'/x).exists() for x in ['RUNNING','DIRTY','upgrade-journal.json']):raise Fault('busy','Stop cleanly before changing configuration')
             if 'dashboard_port' in data and (type(data['dashboard_port']) is not int or not 1024<=data['dashboard_port']<=65535):raise Fault('invalid','Dashboard port must be an integer from 1024 to 65535')
-            if 'qq_executable' in data and (not Path(data['qq_executable']).is_file() or Path(data['qq_executable']).name.lower()!='qq.exe'):raise Fault('invalid','Provide an existing QQ.exe path')
             if 'deepseek_api_key' in data and (not isinstance(data['deepseek_api_key'],str) or not data['deepseek_api_key'].strip()):raise Fault('invalid','API key must be a nonempty string')
-            if 'napcat_webui_port' in data:
-                if type(data['napcat_webui_port']) is not int or not 1024<=data['napcat_webui_port']<=65535:raise Fault('invalid','Invalid NapCat WebUI port')
-                info=record.get('components',{}).get('napcat',{})
-                if not info.get('installed') or info.get('ownership')!='managed':raise Fault('read_only','Only an owned NapCat installation can be configured')
-                if component_status(root,record,'napcat')['running']:raise Fault('busy','Stop the owned NapCat before configuration')
-                nap_root=resolve(root,info['path']);nap_root.resolve().relative_to(root.resolve())
-                nap_path=nap_root/'config/webui.json'
-                nap_cfg=read(nap_path) if nap_path.exists() else {'token':secrets.token_hex(32),'loginRate':10,'autoLoginAccount':''}
-                nap_cfg.update(host='127.0.0.1',port=data['napcat_webui_port'],disableWebUI=False,accessControlMode='whitelist',ipWhitelist=['127.0.0.1','::1'],enableXForwardedFor=False)
             history=target/'private/config-history'/uuid.uuid4().hex;history.mkdir(parents=True)
             shutil.copy2(target/'data/cmd_config.json',history/'cmd_config.json')
             if (target/'private/deepseek-key.txt').exists():shutil.copy2(target/'private/deepseek-key.txt',history/'deepseek-key.txt')
             cfg=read(target/'data/cmd_config.json')
             if 'dashboard_port' in data:cfg['dashboard']['port']=data['dashboard_port'];atomic(target/'data/cmd_config.json',cfg)
             if 'deepseek_api_key' in data:(target/'private/deepseek-key.txt').write_text(data['deepseek_api_key'].strip(),encoding='utf-8')
-            if 'qq_executable' in data:record['qq_executable']=str(Path(data['qq_executable']).resolve());atomic(root/'installation.json',record)
-            if 'napcat_webui_port' in data:
-                if nap_path.exists():shutil.copy2(nap_path,history/'napcat-webui.json')
-                atomic(nap_path,nap_cfg)
     return {'changed_fields':sorted(data),'secrets_redacted':True,'restart_required':True}
 
 def parser():
@@ -728,9 +701,8 @@ def parser():
     setup.add_argument('--dependency-profile',choices=['core','chat'])
     setup.add_argument('--retain-cache',action='store_true')
     setup.add_argument('--repair',action='store_true',help='Explicit same-dependency repair through the existing transactional upgrade mechanism')
-    nap=sub.add_parser('prepare-napcat');nap.add_argument('--accept-external-licenses',action='store_true');nap.add_argument('--cache',type=Path);nap.add_argument('--offline',action='store_true')
     for name in ['status','components','start','daily-start','stop','restart','health','diagnose','wizard','rollback']:sub.add_parser(name)
-    component=sub.add_parser('component');component.add_argument('name',choices=list(COMPONENTS));component.add_argument('action',choices=['status','version','dependencies','start','stop','restart','health','integrity','login-status','recover-login','connection-health'])
+    component=sub.add_parser('component');component.add_argument('name',choices=list(COMPONENTS));component.add_argument('action',choices=['status','version','dependencies','start','stop','restart','health','integrity','connection-health'])
     conf=sub.add_parser('config');conf.add_argument('config_action',choices=['show','validate','apply','initialize-chat','initialize-onebot','initialize-experience','initialize-local-models']);conf.add_argument('--file',default='-');conf.add_argument('--onebot-port',type=int,default=6199);conf.add_argument('--model',choices=['deepseek-chat','deepseek-reasoner'],default='deepseek-chat');conf.add_argument('--bot-id')
     backup=sub.add_parser('backup');backup.add_argument('--destination',required=True,type=Path)
     restore=sub.add_parser('restore');restore.add_argument('--snapshot',required=True,type=Path);restore.add_argument('--destination',type=Path)
@@ -747,20 +719,6 @@ def dispatch(args):
     if args.command=='check':return inspect_environment(root,args.network)
     if args.command=='install':return install(root,args)
     root=owned_root(root);record=state(root)
-    if args.command=='prepare-napcat':
-        if not args.accept_external_licenses:raise Fault('needs_input','Accept the QQ, Node and NapCat licenses before preparing the independent runtime')
-        with installation_lock(root):
-            target=instance(root,record)
-            from fat_fish_management.lifecycle_lock import exclusive
-            with exclusive(target,'.start-lock'),exclusive(target):
-                if any((target/'private'/x).exists() for x in ['RUNNING','DIRTY','upgrade-journal.json']):raise Fault('busy','Stop cleanly before preparing the QQ runtime')
-                if component_status(root,record,'napcat').get('running'):raise Fault('busy','Stop owned NapCat before changing its runtime')
-                spec=next(x for x in load('assets.json') if x['id']=='napcat-node-v4.18.41')
-                destination=root/'services/napcat-node-v4.18.41'
-                install_asset(root,'napcat-node',spec,destination,args.cache or root/'cache',args.offline)
-                activate_napcat_node(root,record,destination)
-                atomic(root/'installation.json',record)
-        return {'prepared':True,'runtime':'official-node','system_qq_modified':False,'login_migrated':False,'manual_login_required':True}
     if args.command=='resume-source':
         if not args.confirm_target_offline:raise Fault('needs_input','Confirm the target host is stopped before resuming the source')
         from fat_fish_management.lifecycle_lock import exclusive
@@ -780,44 +738,49 @@ def dispatch(args):
             if args.cache:argv+=['--cache',args.cache]
             if args.offline:argv+=['--offline']
         return invoke(root,chat_python(root,record),'migration_cli.py',*argv,json_output=True,input_data=json.dumps({'password':password}))
-    if args.command in {'status','components'}:return {'components':[component_status(root,record,x) for x in COMPONENTS],'schema_version':SCHEMA}
+    if args.command in {'status','components'}:return {'components':component_inventory(root,record),'schema_version':SCHEMA}
     if args.command=='register-external':
         if not args.path.exists():raise Fault('missing','External path does not exist')
         with installation_lock(root):
+            record=state(root)
+            if COMPONENTS[args.name].get('reserved') or args.name=='core':raise Fault('incompatible','Component does not support external registration')
             if args.name in record.get('components',{}):raise Fault('read_only','Existing component record will not be replaced')
-            record.setdefault('components',{})[args.name]={'installed':True,'ownership':'external-readonly','version':args.version,'path':str(args.path.resolve())};atomic(root/'installation.json',record)
+            path=args.path.resolve()
+            if args.name=='snowluma':
+                if path==root or path.is_relative_to(root) or root.is_relative_to(path):
+                    raise Fault('read_only','SnowLuma must use a separate official installation directory')
+                if not windows.snowluma_launcher(path,args.version):
+                    raise Fault('incompatible','Select the pinned official Windows x64 SnowLuma directory')
+            record.setdefault('components',{})[args.name]={
+                'installed':True,'ownership':COMPONENTS[args.name].get('ownership','external-readonly')
+                if args.name=='snowluma' else 'external-readonly',
+                'version':args.version,'path':str(path)}
+            atomic(root/'installation.json',record)
         return {'registered_read_only':True,'id':args.name}
     if args.command=='daily-start':
-        with installation_lock(root):return daily_start(root,record)
+        with installation_lock(root):return daily_start(root,state(root))
     if args.command in {'start','stop','restart'}:
-        with installation_lock(root):return operate(root,record,args.command)
+        with installation_lock(root):return operate(root,state(root),args.command)
     if args.command=='component':
-        if args.action in {'login-status','recover-login'}:
-            if args.name!='napcat':raise Fault('invalid','Login state is only available for NapCat')
-            if args.action=='recover-login':
-                with installation_lock(root):return recover_napcat_login(root,record)
-            info=record.get('components',{}).get('napcat',{})
-            if not info.get('installed') or info.get('ownership')!='managed':raise Fault('read_only','Only the owned NapCat login state can be queried')
-            return invoke(root,chat_python(root,record),'napcat_health.py','--root',resolve(root,info['path']),'--allow-pending',json_output=True)
         if args.action=='connection-health':
             if args.name!='astrbot':raise Fault('invalid','Connection evidence is only available for AstrBot')
-            from fat_fish_management.connection_health import read_connection
-            return {'onebot_connection':read_connection(instance(root,record))}
+            return {'onebot_connection':read_protocol(root,record)}
         if args.action in {'status','version','dependencies'}:return component_status(root,record,args.name)
         if args.action in {'start','stop','restart'}:
-            with installation_lock(root):return operate(root,record,args.action,[args.name])
+            with installation_lock(root):return operate(root,state(root),args.action,[args.name])
+        if args.name=='snowluma':
+            return component_status(root,record,args.name)
+        if args.name=='core':
+            return (component_status(root,record,'core') if args.action=='health' else
+                    invoke(root,chat_python(root,record),'doctor.py','--instance',instance(root,record),json_output=True))
         if args.name in {'dagu','work'}:raise Fault('incompatible','Reserved component has no implementation')
         if not record.get('components',{}).get(args.name,{}).get('installed'):raise Fault('missing','Component is not installed: '+args.name)
         if args.action=='health' and args.name=='astrbot':
             return invoke(root,chat_python(root,record),'authenticated_health.py','--instance',instance(root,record),json_output=True)
         if args.action=='health' and args.name in {'embedding','speech'}:
             return invoke(root,chat_python(root,record),'service_health.py','--component',args.name,'--instance',instance(root,record),json_output=True)
-        if args.action=='health' and args.name=='napcat':
-            return invoke(root,chat_python(root,record),'napcat_health.py','--root',resolve(root,record['components']['napcat']['path']),json_output=True)
         if args.name in {'astrbot','plugins'}:
             return invoke(root,chat_python(root,record),'doctor.py','--instance',instance(root,record),json_output=True)
-        if args.name=='napcat':
-            return shell(root,'Invoke-NapCat.ps1','-Action','Diagnose','-Root',resolve(root,record['components']['napcat']['path']))
         if args.name in {'embedding','speech'}:
             runtime=instance(root,record)
             for row in load('model-runtime-lock.json'):
@@ -828,29 +791,15 @@ def dispatch(args):
         if args.name=='python':
             profiles=[x for x in ['chat','speech'] if record.get(x+'_python')]
             if 'chat' in profiles:
-                argv=['-ChatPython',resolve(root,record['chat_python'])]
-                if 'speech' in profiles:argv+=['-SpeechPython',resolve(root,record['speech_python'])]
-                return shell(root,'Check-Environment.ps1',*argv)
+                speech=resolve(root,record['speech_python']) if 'speech' in profiles else None
+                return windows.verify_environment(root,chat_python(root,record),speech)
             base=resolve(root,record['components']['python']['path'])
             run_logged([base,'-I','-c','import sys,ssl,sqlite3; assert sys.version_info[:3]==(3,12,3)'],root/'logs/python-probe.log')
             return {'python_stdlib_probe':'pass','scope':'Base interpreter only; no Chat environment installed'}
         raise Fault('incompatible','Unsupported probe for this component')
     if args.command=='config':return configure(root,record,args)
     if args.command=='wizard':return {'manual_steps':guidance(root,record),'secret_input':'Use config apply --file - with JSON on stdin; secrets are never command-line arguments or echoed in results.'}
-    if args.command in {'health','diagnose'}:
-        result={'components':[component_status(root,record,x) for x in COMPONENTS]}
-        if args.command=='diagnose':result['environment']=inspect_environment(root)
-        if record.get('instance'):
-            result['configuration']=config_view(root,record)
-            if component_status(root,record,'astrbot')['running']:result['dashboard']=invoke(root,chat_python(root,record),'authenticated_health.py','--instance',instance(root,record),json_output=True)
-            else:raise Fault('needs_input','AstrBot is stopped; configuration checks do not imply service health','Use start, then health.')
-        else:raise Fault('needs_input','No instance is initialized; health is not passed')
-        for component in ['embedding','speech']:
-            if record.get('components',{}).get(component,{}).get('installed'):
-                result[component]=invoke(root,chat_python(root,record),'service_health.py','--component',component,'--instance',instance(root,record),json_output=True)
-        if record.get('components',{}).get('napcat',{}).get('installed'):
-            result['napcat']=invoke(root,chat_python(root,record),'napcat_health.py','--root',resolve(root,record['components']['napcat']['path']),json_output=True)
-        return result
+    if args.command in {'health','diagnose'}:return health_check(root,record,diagnose=args.command=='diagnose')
     if args.command=='backup':return invoke(root,chat_python(root,record),'instance.py','backup','--instance',instance(root,record),'--destination',args.destination.resolve())
     if args.command=='restore':
         destination=args.destination.resolve() if args.destination else root/'instance'

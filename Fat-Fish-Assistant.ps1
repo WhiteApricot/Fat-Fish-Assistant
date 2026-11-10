@@ -1,6 +1,6 @@
 ﻿[CmdletBinding(PositionalBinding=$false)]
 param(
- [Parameter(Position=0)][ValidateSet('check','install','prepare-napcat','start','daily-start','stop','restart','status','components','health','diagnose','wizard','config','backup','restore','upgrade','rollback','component','recover-upgrade','resume-source','register-external','migration-export','migration-import')][string]$Action='install',
+ [Parameter(Position=0)][ValidateSet('check','install','start','daily-start','stop','restart','status','components','health','diagnose','wizard','config','backup','restore','upgrade','rollback','component','recover-upgrade','resume-source','register-external','migration-export','migration-import')][string]$Action='install',
  [string]$Root=(Join-Path $env:LOCALAPPDATA 'Fat-Fish-Assistant'),
  [string]$Python,
  [switch]$Json,
@@ -79,7 +79,8 @@ try{
  else{
   $result=$resultText|ConvertFrom-Json
   if($result.ok){
-   '肥鱼助手 / Fat-Fish-Assistant: '+$Action+' completed.'
+   if($result.data.complete -eq $false){'FFA 操作已返回。请按结果中的指引完成 SnowLuma 官方操作并验证健康状态。'}
+   else{'肥鱼助手 / Fat-Fish-Assistant: '+$Action+' completed.'}
    if($Action -eq 'install'){foreach($step in $result.data.next_steps){$step}}
    elseif($Action -eq 'wizard'){foreach($step in $result.data.manual_steps){$step}}
    else{$result.data|ConvertTo-Json -Depth 12}
