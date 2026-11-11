@@ -1,6 +1,6 @@
 # 消息处理
 
-AstrBot 是唯一 QQ 聊天主体。SnowLuma 提供 OneBot 通信，身份、权限、人格、记忆和工具由 Fat-Fish Core 管理。DSH（DeepSeek Harness）和 Work 通过统一接口接入 Core。
+以下为当前 Windows QQ 链路。AstrBot 是统一聊天前端，SnowLuma 临时提供 Windows QQ 的 OneBot 通信。现有权限、人格和记忆由网关及插件处理，跨平台治理和 Work/DSH 接入见[目标架构](protocols/WORK_ARCHITECTURE.md)。
 
 1. SnowLuma 将 QQ 事件经本机 OneBot 反向连接交给 AstrBot。网关从事件读取真实发送者、会话和群号，执行去重、白名单及黑名单检查。
 2. 明确的斜杠命令由指令入口解析。开启自然语言指令时，可对符合触发条件的文本调用意图识别，再按同样的权限与确认规则执行。自然语言分类不明确或不可用时保留原消息进入聊天，不执行含糊操作；实际管理权限和确认规则不变。
@@ -12,4 +12,4 @@ AstrBot 是唯一 QQ 聊天主体。SnowLuma 提供 OneBot 通信，身份、权
 
 维护入口分别是 [消息网关](../src/fat_fish/gateway)、[Guard 插件](../plugins/fat_fish_guard) 和 [记忆指令](../src/fat_fish/memory/commands.py)。
 
-S1的回复窗口、媒体收集、表情续发及受限附件行为见[S1说明](S1_WINDOWS_SNOWLUMA.md)。仅协议连接ready不代表业务入口可加载；独立实例使用正常受管入口并验证完整发行副本。
+S1的回复窗口、媒体收集、表情续发及受限附件行为见[S1说明](history/S1_WINDOWS_SNOWLUMA.md)。仅协议连接ready不代表业务入口可加载；独立实例使用正常受管入口并验证完整发行副本。

@@ -1,6 +1,8 @@
 # Windows SnowLuma 官方接入
 
-适用 Windows x64。FFA 使用 2.4.2 Full 官方 ZIP，单独放置。Full 已包含 Node，桌面 QQ 由腾讯官方渠道提供。 [发行锁](../manifests/snowluma/windows-x64.json) · [官方 Windows 指南](https://snowluma.github.io/en/docs/guide/deploy/windows)
+本文仅指导本地原始软件包或现有安装目录的使用。基线历史自动获取入口仍在代码中，P3-D 将移除自动获取，详见[路线图](protocols/ROADMAP.md)。
+
+SnowLuma 是当前 Windows x64 的临时 QQ 兼容方案。FFA 使用 2.4.2 Full 官方 ZIP，单独放置。Full 已包含 Node，桌面 QQ 由腾讯官方渠道提供。 [发行锁](../manifests/snowluma/windows-x64.json) · [官方 Windows 指南](https://snowluma.github.io/en/docs/guide/deploy/windows)
 
 ## 获取程序与打开窗口
 
@@ -8,8 +10,7 @@
 
 | 操作 | 用途 |
 | --- | --- |
-| `acquire --destination "<独立 SnowLuma 目录>"` | 从官方 GitHub 获取固定 ZIP，验证大小和 SHA256，再解压并登记 |
-| `acquire --destination "<独立 SnowLuma 目录>" --archive "<原始官方 ZIP>" --offline` | 官方网络不可用时，用同一发行锁核验本地官方 ZIP |
+| `acquire --destination "<独立 SnowLuma 目录>" --archive "<原始官方 ZIP>" --offline` | 使用用户提供的本地原始官方 ZIP，校验后解压并登记 |
 | `launch` | 打开已校验目录里的官方 Launcher，WebUI 仅监听本机。重复打开会检查已有窗口和端口 |
 | `webui` | 等待官方 WebUI 首页可访问，然后打开浏览器 |
 | `guide` | 显示本实例的 OneBot 地址、填写项和操作顺序 |
@@ -33,7 +34,6 @@ WebUI 可打开只说明本机管理页有响应。OneBot 在线和身份匹配�
 
 | 提示 | 处理方式 |
 | --- | --- |
-| 官方下载失败 | 检查代理与官网可达性。可用同版本官方原始 ZIP 执行离线校验 |
 | 校验失败 | 核对 ZIP 名称、大小和 SHA256，换用来自官方渠道且匹配的原始资产 |
 | Launcher 尚在运行 | 查看旧官方窗口的协议或错误提示。停止后退出窗口，再尝试启动 |
 | WebUI 未就绪或端口冲突 | 检查官方启动窗口，等待协议确认完成，必要时改用空闲回环端口 |

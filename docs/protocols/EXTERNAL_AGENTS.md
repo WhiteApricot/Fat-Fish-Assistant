@@ -1,6 +1,6 @@
 # 外部 Agent 调度与 Computer Use
 
-P7 目标是通过获准的路径利用既有 GPT/Codex 与 Claude 订阅。QQ → AstrBot → Work → DSH → Provider → 外部应用。Work 持有 Task ID、执行尝试和结果，DSH 协调操作与证据收集，外部 Agent 执行工程任务，AstrBot 统一向 QQ 汇报。
+P7 目标是通过获准的路径利用既有 GPT/Codex 与 Claude 订阅。授权通信会话 → AstrBot → Work → DSH → Provider → 外部应用。Work 持有 Task ID、执行尝试和结果，DSH 协调操作与证据收集，外部 Agent 执行工程任务，AstrBot 向有权接收的目标平台及会话汇报。
 
 ## 接入门槛
 

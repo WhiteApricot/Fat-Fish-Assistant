@@ -1,16 +1,17 @@
-# 肥鱼助手 · Fat-Fish-Assistant
+# Fat-Fish-Assistant（肥鱼助手）
 
-肥鱼助手当前交付 Windows 10/11 x64 上的 QQ 聊天能力，并规划演进为拥有独立 Work、统一治理与可扩展 Agent 生态的个人 AI 工作平台。Windows SnowLuma S1 原型已通过实机验收，通过 SnowLuma 的 OneBot 反向连接接入 AstrBot，并提供会话人格、个人与群记忆、提醒、群聊回复策略和受权限控制的管理指令。
+肥鱼助手是独立于通信平台的 AI 助手。AstrBot 承担统一聊天前端。FFA 的目标架构通过 Communication Provider、Social Agent Provider 和 Work / Tool Provider 扩展能力，共享身份、权限、人格、记忆及行为记录。飞书是当前选定的主要通信平台，接入待 P3-C 验证。
 
-`QQ ↔ SnowLuma ↔ OneBot ↔ AstrBot ↔ 肥鱼助手网关与插件 ↔ 模型及本地数据`
+## 当前交付
 
-- 当前原型接入、已验收功能和已知限制见 [S1 Windows SnowLuma](docs/S1_WINDOWS_SNOWLUMA.md)。
-- S2 批次 1 已统一组件登记与健康检查。现有入口管理 FFA 自有服务，SnowLuma 通过官方 Launcher 和 WebUI 独立操作。 [快速开始](docs/QUICK_START.md)
-- 想了解能做什么，先读 [用户功能总览](docs/FEATURES.md)。
-- 查看 [用户文档](docs/README.md)、[开发者文档](docs/protocols/README.md) 或 [工程路线图](docs/protocols/ROADMAP.md)。目标架构见 [Work 与统一治理](docs/protocols/WORK_ARCHITECTURE.md)。
+SnowLuma 基线在 Windows 10/11 x64 通过 OneBot 接入 QQ，提供会话人格、个人与群记忆、提醒、群聊回复策略和受权限控制的管理指令。SnowLuma 是临时 Windows QQ 兼容组件。当前 Windows 向导和聊天链路仍使用 QQ 身份。QQ 登录需用户本人在官方界面完成。
 
-初装需要获得所选组件并准备自己的账号与模型凭据。QQ 登录需要本人扫码。Linux 部署、QQ 电话和电脑控制仍未交付。外部组件固定版本及其许可见 [依赖](docs/DEPENDENCIES.md) 和 [第三方声明](THIRD_PARTY_NOTICES.md)。项目许可见 [LICENSE](LICENSE)。
+- [快速开始](docs/QUICK_START.md)、[用户功能总览](docs/FEATURES.md)和[用户文档](docs/README.md)
+- [外部依赖](docs/DEPENDENCIES.md)、[第三方声明](THIRD_PARTY_NOTICES.md)和[项目许可](LICENSE)
 
-正式源代码由 [GitHub 项目仓库](https://github.com/WhiteApricot/Fat-Fish-Assistant) 管理。测试及工程记录使用独立本地工作区，安装状态和运行数据由各自安装根管理。
+## 开发规划
 
-开发维护入口见 [系统设计](docs/protocols/CONTRIBUTING.md#系统设计)。业务组件在 src/fat_fish，AstrBot 入口在 plugins，管理包在 fat_fish_management。
+P3 依次完成平台解耦、统一记忆与最小插件治理、多平台联合验证、安装器和 Linux 部署。飞书、跨平台记忆、B 站实验插件、Linux 部署及 Work/DSH 均属后续计划。
+
+- [工程路线图](docs/protocols/ROADMAP.md)、[目标架构](docs/protocols/WORK_ARCHITECTURE.md)和[开发者文档](docs/protocols/README.md)
+- [工作区与提交规范](AGENTS.md)和[现行系统设计](docs/protocols/CONTRIBUTING.md#系统设计)

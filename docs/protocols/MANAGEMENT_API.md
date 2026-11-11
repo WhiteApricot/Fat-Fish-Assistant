@@ -1,5 +1,7 @@
 # 管理接口 v1
 
+以下为 SnowLuma Windows 基线接口。多平台组件管理和本地 SnowLuma 路径限定将在 [P3-D](ROADMAP.md#p3--多平台聊天与记忆)实现。
+
 维护入口为 `python -I ffa.py --root <安装根> <命令>`。stdout 返回一个 JSON 对象，stderr 输出进度。PowerShell 包装器支持 `-Json`。响应包含 `schema_version`、`project`、`request_id`、`ok`、`code`、`data`、`errors`。`ok` 表示请求成功处理。检测还要读取 `data.ready` 和逐项状态，带人工步骤的生命周期结果返回 `data.complete=false`。
 
 | 命令 | 行为 |
@@ -24,7 +26,7 @@
 | `resume-source --confirm-target-offline` | 确认目标已停止后归档源迁出暂停记录 |
 | `upgrade --release DIR` / `rollback` / `recover-upgrade` | 通过事务切换或恢复代码及插件，保留数据库 |
 
-SnowLuma 官方发行获取、启动、浏览器、剪贴板、连接等待和停止引导使用 snowluma 子命令。命令和状态语义见 [Windows 官方接入](../SNOWLUMA_WINDOWS.md)。
+本地官方发行包校验、启动、浏览器、剪贴板、连接等待和停止引导使用 `snowluma` 子命令。命令和状态语义见 [Windows 官方接入](../SNOWLUMA_WINDOWS.md)。
 
 ## 组件与健康证据
 

@@ -1,5 +1,7 @@
 # 贡献指南
 
+工作目录和分支约定见 [AGENTS.md](../../AGENTS.md)。
+
 按[系统设计](#系统设计)组织自有组件，使用 [技术协议](README.md) 核对入口、配置和数据约定。新增依赖需固定版本、来源、哈希和许可；修改补丁需核对输入与输出哈希。
 
 在仓库外的 Fat-Fish-Assistant.local 使用隔离实例和实际组装的发布执行回归。保留脱敏结果，正式提交只包括交付源码和文档。变更涉及权限、迁移、停止或启动时，验证正常入口及失败恢复。
@@ -28,7 +30,9 @@ Fat-Fish-Assistant/
 | 跨机迁移与配置 | migration.py 编排源停写及目标恢复，migration_package.py 处理包格式；configure_* 负责原生配置 |
 | Windows 操作 | scripts/desktop 负责操作界面，管理包的 windows.py 适配受管模型并只读检查 SnowLuma 官方发行布局，scripts/process 检查进程身份和私密权限 |
 
-SnowLuma 提供 QQ 通信，AstrBot 是唯一聊天主体，Core 在 AstrBot 插件进程内管理身份、权限、人格、记忆和工具。平台专属进程与发行布局集中在适配模块，Linux 计划接入官方 Docker 并沿用状态和数据契约。官方组件仅从官方 GitHub 获取，通过官方支持的 Launcher、WebUI 或公开接口操作；禁止重打包、修改原生文件、写入内部配置/数据库或绕开官方渠道。 [依赖与授权范围](../DEPENDENCIES.md)发布的 src/ 装载核心包，plugins/ 每个自有插件仅组装一次。实例初始化将发布的插件材料部署到 data/plugins，由 AstrBot 原生发现。
+当前 Windows 基线经 SnowLuma 临时接入 QQ。AstrBot 承担统一聊天前端，平台逻辑逐步收敛至适配器。飞书、多平台与 Linux 部署按[路线图](ROADMAP.md)推进。SnowLuma 使用官方支持的 Launcher、WebUI 或公开接口，保留原生组件和数据边界。参见[外部依赖](../DEPENDENCIES.md)。
+
+发布的 src/ 装载核心包，plugins/ 每个自有插件仅组装一次。实例初始化将发布的插件材料部署到 data/plugins，由 AstrBot 原生发现。
 
 ### 兼容标识与退出条件
 
@@ -41,7 +45,7 @@ SnowLuma 提供 QQ 通信，AstrBot 是唯一聊天主体，Core 在 AstrBot 插
 
 ## 交付工作流
 
-在仓库外的 Local 副本开发和运行合成测试。完成验证后按跟踪文件差异同步正式目录，检查 Git 暂存区及现有用户改动，再提交并推送。正式源码压缩包使用 `git archive --format=zip HEAD`，在 Local 保存测试、报告和运行环境。
+正式目录维护交付源码、配置和文档，在 Local 运行沙箱、合成测试和构建验证。完成验证后按跟踪文件差异同步正式目录，检查 Git 暂存区及现有用户改动，再提交并推送。正式源码压缩包使用 `git archive --format=zip HEAD`，在 Local 保存测试、报告和运行环境。
 
 维护者可以运行 `python -B fat_fish_management/audit_release.py --repo .` 检查当前文件、暂存区和历史的凭据格式及意外载荷。它不会代替人工核对。
 

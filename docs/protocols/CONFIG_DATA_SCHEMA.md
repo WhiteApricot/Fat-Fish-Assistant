@@ -1,5 +1,7 @@
 # 配置与数据约定
 
+下列为现行持久化约定。P3 跨平台记忆的兼容和迁移设计见 [Memory Service](MEMORY_SERVICE.md)。
+
 | 相对位置 | 用途 |
 | --- | --- |
 | 安装根 .ffa-managed.json、installation.json | 受管理标记及组件登记 |

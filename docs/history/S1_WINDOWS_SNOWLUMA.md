@@ -1,6 +1,6 @@
 # S1 · Windows SnowLuma 原型验证
 
-2026-11-09：Windows 原型按用户确认的范围完成实机验收。本次交付是 SnowLuma-only 路线的 S1 源码与文档，本文记录 S1 验收范围，当前操作流程见 [快速开始](QUICK_START.md)。
+2026-11-09：Windows 原型按用户确认的范围完成实机验收。本次交付是 SnowLuma-only 路线的 S1 源码与文档，本文保留当时的 S1 验收范围。现行操作见[快速开始](../QUICK_START.md)。
 
 ## 架构与分支
 
@@ -19,7 +19,7 @@ AstrBot 是唯一聊天主体；SnowLuma 只提供 QQ 事件与动作。人格�
 |Python / aiocqhttp|独立 Python 3.12.3 / aiocqhttp 1.4.4|
 |QQ 客户端|本轮环境登记为 9.9.26-44725；根 QQ.exe 启动器文件版本不能代替实际客户端版本|
 
-SnowLuma 由用户从官方渠道自行下载、解压、接受协议并启动。FFA 不附带其二进制，不自动下载部署，不改写其程序或 Hook。后续仅按 [授权与依赖边界](DEPENDENCIES.md) 获取并管理官方发行包。
+SnowLuma 由用户从官方渠道自行下载、解压、接受协议并启动。FFA 不附带其二进制，不自动下载部署，不改写其程序或 Hook。后续仅按 [授权与依赖边界](../DEPENDENCIES.md) 获取并管理官方发行包。
 
 ## 独立接入配置
 
@@ -63,4 +63,4 @@ SnowLuma 由用户从官方渠道自行下载、解压、接受协议并启动�
 - 本轮不新增 AstrBot 核心补丁，也不修改 SnowLuma 或 Meme Manager 源码。但 P2 已有 11 个 AstrBot 补丁目标，现有收集桥绑定 Continuous Message 2.9.3 的内部接口，表情适配读取 Meme Manager 的绑定图库接口。
 - 依赖升级仍需固定新版本、验证补丁哈希和接口、在 Local 回归后再发布；不保证更新可以直接替换，也不为减少耦合绕过权限检查。
 
-下一阶段仍按 Windows 完整迁移 → Linux SnowLuma 部署与管理适配 → WSL 实机 → 腾讯云大陆服务器验收推进。
+当时提出的 Linux SnowLuma 部署路线已由[现行 P3 路线图](../protocols/ROADMAP.md)取代。

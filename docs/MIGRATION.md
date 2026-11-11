@@ -1,5 +1,7 @@
 # 迁移操作与数据清单
 
+当前指南适用于 Windows 基线的 FFA 自有数据及现行 QQ 接入。跨平台身份和 LivingMemory 兼容设计见 [Memory Service](protocols/MEMORY_SERVICE.md)。
+
 > S2 批次 1 已将迁移计划限定为 FFA 自有数据。现有 Windows 冷迁移流程保留，完整迁移重构与跨平台验收属于后续批次。
 
 普通用户只用 **Migrate-Fat-Fish-Assistant.cmd**；目录快照 backup/restore 保留给维护者，不要求用户执行命令或复制数据库。
