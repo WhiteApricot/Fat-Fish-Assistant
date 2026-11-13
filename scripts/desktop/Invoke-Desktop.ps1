@@ -230,12 +230,8 @@ try{
     $answer=ReadInput ('是否安装 '+$item.label+'？'+$hint)
     if($answer -match '^[Yy]$' -or (-not $answer -and $item.default)){$components+=','+$item.id}
    }
-   $owner=$null
-   if($existing){$record=Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $root 'installation.json')|ConvertFrom-Json;if($record.instance){$owner=(Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $root ($record.instance+'/private/instance-identity.json'))|ConvertFrom-Json).owner}}
-   if(-not $owner){$owner=ReadInput '请输入主人 QQ 号码（仅数字）'}
-   if($owner -notmatch '^[0-9]+$'){throw '主人 QQ 格式不正确'}
    Write-Host '正在下载安装，首次使用可能需要较长时间，请保留窗口。'
-   $options=@('install','--owner',$owner,'--components',$components,'--accept-external-licenses')
+   $options=@('install','--components',$components,'--accept-external-licenses')
    if($existing){Api @('stop')|Out-Null;$options+='--repair'}
    Api $options|Out-Null
    RegisterRoot

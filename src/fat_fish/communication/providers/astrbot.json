@@ -1,0 +1,12 @@
+{
+  "provider_id": "astrbot",
+  "name": "AstrBot",
+  "version": "1",
+  "entrypoint": "fat_fish.adapters.astrbot_communication:create_provider",
+  "supported_platforms": ["qq", "lark"],
+  "capabilities": ["text", "push", "direct_message", "group_message"],
+  "configuration_schema": {},
+  "required_dependencies": [],
+  "verification_capabilities": ["private-message"],
+  "lifecycle_capabilities": ["start", "stop", "health"]
+}

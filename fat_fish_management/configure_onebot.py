@@ -33,6 +33,19 @@ def configure(instance, bot_id):
                 raise ValueError('Existing bot identity differs; no automatic replacement')
         else:
             atomic(identity, {'bot_id': bot_id})
+        communication = instance / 'private/ffa-communication.json'
+        if communication.is_file():
+            providers = json.loads(communication.read_text(encoding='utf-8-sig'))
+            if providers.get('schema') != 2 or not isinstance(providers.get('providers'), list):
+                raise ValueError('Invalid FFA communication configuration')
+            row = {'provider': 'astrbot', 'platform': 'qq', 'instance': platform['id'], 'bot': bot_id}
+            matches = [entry for entry in providers['providers']
+                       if entry.get('platform') == 'qq' and entry.get('instance') == platform['id']]
+            if len(matches) > 1 or (matches and any(matches[0].get(key) != value for key, value in row.items())):
+                raise ValueError('Conflicting OneBot provider instance')
+            if not matches:
+                providers['providers'].append(row)
+                atomic(communication, providers)
     return {'configured': True, 'reverse_ws_url': f'ws://127.0.0.1:{port}/ws',
             'credentials_printed': False, 'manual_step': 'Configure the reverse client in the official SnowLuma WebUI.'}
 

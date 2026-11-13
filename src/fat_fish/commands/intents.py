@@ -90,17 +90,19 @@ class IntentUnavailable(Exception):
     pass
 
 
-async def classify(context,event,text,group,mentions,*,recent,pending,reminders,persona_numbers=None):
+async def classify(context,event,text,group,mentions,*,recent,pending,reminders,persona_numbers=None,registry=None):
     # Anaphoric chat retries do not specify a management action or target.
     if re.fullmatch(r'[\s，,。.!！?？]*(?:请)?(?:(?:再|重新)(?:给我)?(?:来|发|发送)(?:我)?(?:一(?:个|张)|一下)?|没(?:有)?(?:看|收)到(?:呀|啊|呢)?[，,。\s]*(?:请)?(?:重新|再)(?:给我)?发(?:送)?(?:一下|一张|一个)?)(?:嘛|呀|吧|啊|呗|呢|啦|~|～|[\s，,。.!！?？])*',text):
         return None
+    routes_by_command = ROUTES if registry is None else registry.routes()
+    guidance = GUIDANCE if registry is None else registry.guidance(GUIDANCE)
     try:
         async with asyncio.timeout(15):
             provider=await context.get_using_provider_async(event.unified_msg_origin)
             response=await provider.text_chat(
                 prompt=json.dumps({'message':text,'group':group,'mentions':mentions,'recent':recent,
                                    'pending':pending,'reminders':reminders,'persona_numbers':persona_numbers or {}},ensure_ascii=False),
-                contexts=[],func_tool=None,request_max_retries=1,system_prompt=GUIDANCE+('\n'+PRIVATE_GROUP_GUIDANCE if not group else ''),
+                contexts=[],func_tool=None,request_max_retries=1,system_prompt=guidance+('\n'+PRIVATE_GROUP_GUIDANCE if not group else ''),
                 response_format={'type':'json_object'},
             )
         output=(response.completion_text or '').strip()
@@ -137,7 +139,7 @@ async def classify(context,event,text,group,mentions,*,recent,pending,reminders,
         elif args[0]=='set' and len(args)>=3 and not args[1].isdigit():
             args=[args[0],mentions[0],*args[2:]]
     if any(not arg.strip() for arg in args):return 'clarify',[]
-    routes=ROUTES.get(command,{})
+    routes=routes_by_command.get(command,{})
     if len(args) not in routes.get(args[0] if args else '',routes.get('*',set())):
         return 'clarify',[]
     if group and command=='role' and len(args)>=3 and args[-1] in {'本群','当前群'}:
@@ -147,7 +149,7 @@ async def classify(context,event,text,group,mentions,*,recent,pending,reminders,
             return 'clarify',[]
     if command=='globalpersona' and args[:1]!=['help'] and not any(word in text for word in ('全局','所有会话','全部会话','所有群和私聊')):
         return 'clarify',[]
-    if command=='undo' and args and args[0] not in ROUTES:
+    if command=='undo' and args and args[0] not in routes_by_command:
         return 'clarify',[]
     if (command=='globaladmin' or (command=='role' and args[:1]==['global'])) and (
         args[-1]!='list' and not any(word in text for word in ('全局管理员','全局管理权限','全局权限'))

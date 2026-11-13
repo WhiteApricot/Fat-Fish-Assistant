@@ -40,7 +40,7 @@ class ForwardReader:
         if not md or not md.activated:return False
         install_collector_bridge(md.star_cls, md.version)
         return True
-    async def read(self,event,blocked=(),barrier=0):
+    async def read(self,event,blocked=(),barrier=0,*,resolve_forward=None):
         entries=[];images=[];seen=set();size=0;incomplete=False;count=0;voice_count=0
         raw=getattr(getattr(event,'message_obj',None),'raw_message',{})
         raw_parts=raw.get('message',[]) if isinstance(raw,Mapping) else []
@@ -76,8 +76,12 @@ class ForwardReader:
                         entries.append({'说明':'该层转发没有独立可查询的标识，且 OneBot implementations 未提供内层节点'})
                         continue
                     seen.add(ident)
+                    if resolve_forward is None:
+                        incomplete=True
+                        entries.append({'说明':'此平台未提供可访问的转发节点'})
+                        continue
                     try:
-                        result=await asyncio.wait_for(event.bot.call_action('get_forward_msg',id=ident),4)
+                        result=await asyncio.wait_for(resolve_forward(event,ident),4)
                     except Exception:
                         incomplete=True
                         entries.append({'说明':'OneBot implementations 无法按标识获取此层转发，内层记录可能未由平台公开'})
@@ -200,7 +204,7 @@ def install_collector_bridge(collector, version):
     finalize=collector._finalize_merged
     def eligible(event):
         if not predicate(event):
-            if not event.get_extra('_ffa_access_checked',False) or event.get_extra('_ffa_reply_is_command',False):
+            if event.get_extra('_ffa_platform_admission') is None or event.get_extra('_ffa_reply_is_command',False):
                 return False
             origin=event.unified_msg_origin
             event.set_extra('_ffa_original_umo',origin)

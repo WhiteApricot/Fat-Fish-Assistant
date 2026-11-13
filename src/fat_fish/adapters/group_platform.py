@@ -16,24 +16,6 @@ class GroupPlatform:
         if len(people)>2000:people.pop(next(iter(people)))
         return {'owner':'群主','admin':'群管理员','member':'群成员','unknown':'群身份未确认'}[role]
 
-    def bind_actor(self,policy,group,sender,raw):
-        info=raw.get('sender')
-        if (raw.get('post_type') == 'message' and raw.get('message_type') == 'group'
-                and str(raw.get('group_id')) == group and str(raw.get('user_id')) == sender
-                and isinstance(info,dict) and str(info.get('user_id')) == sender
-                and info.get('role') in {'owner','admin'}):
-            policy.qq_group_admins[group]={sender}
-
-    async def bind_roster(self,policy,group,bot,sender):
-        people=await self.roster(group,bot,max_age=0)
-        if people is None:
-            return False
-        # The current authenticated message takes precedence for its author.
-        policy.qq_group_admins.setdefault(group,set()).update(
-            ident for ident,info in people.items() if ident!=sender and info['role'] in {'owner','admin'}
-        )
-        return True
-
     async def roster(self,group,bot,max_age=300):
         now=time.monotonic();entry=self.cache.get(group)
         if max_age==0 or entry is None or now-entry[0]>max_age:

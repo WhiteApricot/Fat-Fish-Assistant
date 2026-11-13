@@ -102,7 +102,7 @@
   {
     "path": "main.py",
     "before": "3f8413fb99524bdfeb8da7b6f23e9fd0ee4859c03725b700a56b700c51d9c359",
-    "after": "b1258ccfff9ce13ecae5f03304ab7d663c0d39ab57a4dc165499c19ed1585350",
+    "after": "e3e7738dcffa025708f6c092f61687fa497720a17fe0f0a8a41a769de1b4dcf7",
     "edits": [
       {
         "start": 0,
@@ -179,7 +179,7 @@
           "        access_mode = self.access_control.get_mode(event)\n"
         ],
         "new": [
-          "        access_mode = 'debounce' if event.get_extra('_ffa_access_checked', False) else self.access_control.get_mode(event)\n"
+          "        access_mode = 'debounce' if event.get_extra('_ffa_platform_admission') is not None else self.access_control.get_mode(event)\n"
         ]
       },
       {

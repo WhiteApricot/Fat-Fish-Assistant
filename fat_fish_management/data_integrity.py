@@ -84,6 +84,9 @@ async def native_memory(root,release):
 def validate(root,release):
     checked=sqlite_checks(root)
     root=root.resolve();release=release.resolve()
+    identity = root / 'private/instance-identity.json'
+    if identity.is_file() and json.loads(identity.read_text(encoding='utf-8')).get('mode') == 'verified':
+        return {'sqlite': checked, 'native_memory': 'unused'}
     with tempfile.TemporaryDirectory(prefix='integrity-import-',dir=root/'private') as temporary:
         # Native module imports initialize AstrBot defaults. Confine these side
         # effects to disposable storage, while the validator reads the real DB path.

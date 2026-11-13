@@ -7,12 +7,11 @@ from collections import deque
 import time
 import copy
 
-from fat_fish.participation.upstream_selfreply.decision import DecisionMaker, DECISION_MAX_TOKENS
-from fat_fish.participation.upstream_selfreply.models import MessageRecord, SessionState, Settings
-
-
 class DecisionAdapter:
     async def evaluate(self, provider, records, *, bot_age=3600, followup=False):
+        from fat_fish.participation.upstream_selfreply.decision import DecisionMaker, DECISION_MAX_TOKENS
+        from fat_fish.participation.upstream_selfreply.models import MessageRecord, SessionState, Settings
+
         settings = Settings.from_config({
             'decision_model_enabled': True,
             'decision_timeout_sec': 8,

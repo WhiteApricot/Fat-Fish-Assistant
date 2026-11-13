@@ -95,10 +95,13 @@ def start(instance,python):
         return _start_locked(instance,python)
 
 def _start_locked(instance,python):
+    from fat_fish_management.instance import require_platform_gateway_release, require_verified_instance
+    require_verified_instance(instance)
     if (instance/'private/MIGRATED-OUT.json').exists():raise ValueError('Source is suspended after migration export; do not run the same QQ identity on both hosts')
     if (instance/'private/upgrade-journal.json').exists():raise ValueError('Interrupted upgrade; recover-upgrade before launch')
     release=Path(json.loads((instance/'instance.json').read_text())['release'])
     verify_release(release)
+    require_platform_gateway_release(release)
     verify_plugins(instance,release)
     if process(instance):raise ValueError('Already running')
     if any((instance/'private'/x).exists() for x in ['DIRTY','RUNNING']):raise ValueError('Resolve dirty or stale lifecycle marker before launch')
@@ -172,9 +175,10 @@ def _activate_locked(instance,release,fail=False,crash=False):
         temp.write_text(json.dumps(candidate));temp.replace(pointer)
         if crash:os._exit(88)
         if fail:raise RuntimeError('Injected upgrade failure')
-        bridges=('astrbot/astrbot/core/fat_fish_gateway.py','astrbot/astrbot/core/feiyu_p2c.py')
-        identity_modules=('src/fat_fish/core/instance_identity.py','src/ffa_components/core/instance_identity.py','src/p2c/instance_identity.py')
-        if not any((release/name).is_file() for name in bridges) or not any((release/name).is_file() for name in identity_modules):raise ValueError('Incomplete release')
+        from fat_fish_management.instance import require_platform_gateway_release
+        require_platform_gateway_release(release)
+        if not (release / 'src/fat_fish/core/identity.py').is_file():
+            raise ValueError('Incomplete release')
     except Exception:
         temp.write_bytes(before);temp.replace(pointer)
         current_plugins.rename(instance/('.plugin-failed-'+suffix))

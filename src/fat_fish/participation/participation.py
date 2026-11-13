@@ -7,6 +7,10 @@ import re
 from collections import deque
 from fat_fish.participation.decision_adapter import DecisionAdapter
 
+DEFAULT_COOLDOWN = 90
+JUDGMENT_INTERVAL = 16
+FOLLOWUP_JUDGMENT_INTERVAL = 3
+
 
 class Participation:
     def __init__(self, clock=time.monotonic):
@@ -41,7 +45,7 @@ class Participation:
                          for stamp, sender, text in room.get('messages', [])
                          if self.clock()-stamp <= 300)
 
-    async def choose(self, group, epoch, cooldown=120, *, quote_context=''):
+    async def choose(self, group, epoch, cooldown=DEFAULT_COOLDOWN, *, quote_context='', provider=None):
         room = self.rooms.get((group, epoch))
         if not room:
             return None
@@ -58,9 +62,11 @@ class Participation:
             if room['busy']: return 'busy'
             if len(room['sent']) >= 12: return 'hourly_limit'
             if now-room['last'] < (2 if followup else cooldown): return 'cooldown'
-            if now-room['judged'] < (4 if followup else 20): return 'judge_interval'
+            if now-room['judged'] < (FOLLOWUP_JUDGMENT_INTERVAL if followup else JUDGMENT_INTERVAL):
+                return 'judge_interval'
             return ''
-        if self.provider is None:
+        provider = self.provider if provider is None else provider
+        if provider is None:
             return skip('provider_unavailable')
         if room['busy']:
             return skip('busy')
@@ -107,7 +113,7 @@ class Participation:
         room['judged'] = now
         try:
             result = ({'should_reply': True} if directed else
-                await self.decision.evaluate(self.provider, records,
+                await self.decision.evaluate(provider, records,
                     bot_age=now-room.get('bot_at', -1e9), followup=followup))
             if not valid() or room['version'] != version:
                 return skip('superseded')

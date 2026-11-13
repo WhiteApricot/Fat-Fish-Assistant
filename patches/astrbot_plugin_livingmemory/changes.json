@@ -71,5 +71,222 @@
         ]
       }
     ]
+  },
+  {
+    "path": "core/managers/memory_engine_crud.py",
+    "before": "daf32466727d30abbece3274e3171b534ef9421e117c4fc81212d8b0f66d1b3e",
+    "after": "0194685fee54cb48370c29c173cbef0b7e2b9573a961aa6c84210a7a3b8f7b27",
+    "edits": [
+      {
+        "start": 5,
+        "end": 5,
+        "old": [],
+        "new": [
+          "from fat_fish.memory.experience import native_history_read_only\n"
+        ]
+      },
+      {
+        "start": 83,
+        "end": 83,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            raise PermissionError('LivingMemory history is read-only')\n"
+        ]
+      },
+      {
+        "start": 239,
+        "end": 239,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            raise PermissionError('LivingMemory history is read-only')\n"
+        ]
+      },
+      {
+        "start": 394,
+        "end": 394,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            return []\n"
+        ]
+      },
+      {
+        "start": 869,
+        "end": 869,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            raise PermissionError('LivingMemory history is read-only')\n"
+        ]
+      },
+      {
+        "start": 1020,
+        "end": 1020,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            raise PermissionError('LivingMemory history is read-only')\n"
+        ]
+      },
+      {
+        "start": 1140,
+        "end": 1140,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            raise PermissionError('LivingMemory history is read-only')\n"
+        ]
+      },
+      {
+        "start": 1233,
+        "end": 1233,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            raise PermissionError('LivingMemory history is read-only')\n"
+        ]
+      },
+      {
+        "start": 1277,
+        "end": 1277,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            raise PermissionError('LivingMemory history is read-only')\n"
+        ]
+      },
+      {
+        "start": 1335,
+        "end": 1335,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            return 0\n"
+        ]
+      },
+      {
+        "start": 1489,
+        "end": 1489,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            return False\n"
+        ]
+      }
+    ]
+  },
+  {
+    "path": "core/managers/memory_engine_batch.py",
+    "before": "e8480a5ca1c332806a7695a4978afb11d4c7d8bc21d950014a56d784f9797836",
+    "after": "e111093be6e2e06706407396e72df274f763c80f51bbd2cfc5ed5ce59cd26898",
+    "edits": [
+      {
+        "start": 5,
+        "end": 5,
+        "old": [],
+        "new": [
+          "from fat_fish.memory.experience import native_history_read_only\n"
+        ]
+      },
+      {
+        "start": 40,
+        "end": 40,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            raise PermissionError('LivingMemory history is read-only')\n"
+        ]
+      },
+      {
+        "start": 127,
+        "end": 127,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            return 0\n"
+        ]
+      },
+      {
+        "start": 215,
+        "end": 215,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            raise PermissionError('LivingMemory history is read-only')\n"
+        ]
+      },
+      {
+        "start": 286,
+        "end": 286,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            raise PermissionError('LivingMemory history is read-only')\n"
+        ]
+      },
+      {
+        "start": 386,
+        "end": 386,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            return None\n"
+        ]
+      },
+      {
+        "start": 699,
+        "end": 699,
+        "old": [],
+        "new": [
+          "        if native_history_read_only():\n",
+          "            raise PermissionError('LivingMemory history is read-only')\n"
+        ]
+      }
+    ]
+  },
+  {
+    "path": "main.py",
+    "before": "d28cb338ae00cb917b96411d8672f57d7b7bde4bd5c5ad58385907dffe8bed5e",
+    "after": "dd0997e50e6474233f4e00b7cbc7528df803d4394beedc41cf9f1808b58de5f6",
+    "edits": [
+      {
+        "start": 5,
+        "end": 5,
+        "old": [],
+        "new": [
+          "from fat_fish.memory.experience import native_history_read_only\n"
+        ]
+      },
+      {
+        "start": 380,
+        "end": 380,
+        "old": [],
+        "new": [
+          "        if native_history_read_only() and handler_name not in {\"handle_status\", \"handle_help\", \"handle_webui\"}:\n",
+          "            yield event.plain_result(\"当前实例由统一记忆管理，请使用 /memory。\")\n",
+          "            return\n"
+        ]
+      },
+      {
+        "start": 403,
+        "end": 403,
+        "old": [],
+        "new": [
+          "        if event.get_extra('_ffa_unified_memory', False):\n",
+          "            return\n"
+        ]
+      },
+      {
+        "start": 418,
+        "end": 418,
+        "old": [],
+        "new": [
+          "        if event.get_extra('_ffa_unified_memory', False):\n",
+          "            return\n"
+        ]
+      }
+    ]
   }
 ]

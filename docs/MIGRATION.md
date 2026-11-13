@@ -1,8 +1,6 @@
 # 迁移操作与数据清单
 
-当前指南适用于 Windows 基线的 FFA 自有数据及现行 QQ 接入。跨平台身份和 LivingMemory 兼容设计见 [Memory Service](protocols/MEMORY_SERVICE.md)。
-
-> S2 批次 1 已将迁移计划限定为 FFA 自有数据。现有 Windows 冷迁移流程保留，完整迁移重构与跨平台验收属于后续批次。
+本指南适用于 Windows 上的 FFA 自有数据换机。
 
 普通用户只用 **Migrate-Fat-Fish-Assistant.cmd**；目录快照 backup/restore 保留给维护者，不要求用户执行命令或复制数据库。
 
@@ -39,6 +37,10 @@
 |不迁移|SnowLuma 的官方配置、运行数据、QQ 登录态和设备认证、日志、已知临时缓存、WAL/SHM 旁路文件、PID/运行标记/锁、安装归属证明、配置/索引修复/生命周期诊断历史|
 
 缓存只按已知路径排除：data/temp、data/plugin_data/meme_manager/temp、字节码缓存等；不会因为自定义资源目录名恰为 temp 就全部排除。
+
+## 账号与记忆
+
+启用统一身份或记忆后，身份、绑定、记忆 SQLite 和授权配置随现有 `instance/private` 冷备份迁移。旧 LivingMemory 的 SQLite 和 FAISS 索引仍按原流程验证。恢复旧快照时可重新应用先前的记忆删除记录。平台登录按各平台的授权流程重新完成。[长期记忆](MEMORY.md)
 
 ## 加密与拒绝条件
 

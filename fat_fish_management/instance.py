@@ -48,6 +48,24 @@ def verify_release(release):
         p=(release/row['path']).resolve();p.relative_to(release.resolve())
         if digest(p)!=row['sha256']:raise ValueError('Release integrity mismatch; refusing activation')
 
+def require_verified_instance(instance):
+    private = instance / 'private'
+    identity = json.loads((private / 'instance-identity.json').read_text(encoding='utf-8'))
+    if (identity.get('schema') != 2 or identity.get('mode') != 'verified'
+            or not (private / 'ffa-identities.sqlite3').is_file()):
+        raise ValueError('Invalid verified identity configuration')
+
+
+def require_platform_gateway_release(release):
+    entry = release / 'astrbot/astrbot/core/fat_fish_gateway.py'
+    try:
+        tree = ast.parse(entry.read_bytes())
+    except (OSError, SyntaxError) as exc:
+        raise ValueError('The installed release has no valid platform gateway entry.') from exc
+    if not any(isinstance(node, ast.ImportFrom) and node.module == 'fat_fish.gateway.platform_gateway'
+               and any(alias.name == 'PlatformGateway' for alias in node.names) for node in tree.body):
+        raise ValueError('The installed release uses the retired gateway. Install the current release before starting.')
+
 def verify_plugins(instance,release):
     expected=set()
     for row in json.loads((release/'payload-manifest.json').read_text()):
@@ -85,22 +103,28 @@ def materialize(destination,cache=None,plugins=None,offline=False):
     cache=cache or Path(os.environ.get('FFA_CACHE',PROJECT.parent/'Fat-Fish-Assistant.local/cache'))
     build_release(destination,cache,plugins,offline)
 
-def initialize(destination, owner, release,seed_persona=True):
+def initialize(destination, release, seed_persona=True):
     verify_release(release)
     if destination.exists(): raise ValueError('Instance destination exists')
-    if not owner.isascii() or not owner.isdecimal(): raise ValueError('Invalid owner')
     destination.mkdir(parents=True)
     for name in ['private','data','logs','persona']:(destination/name).mkdir()
     protect_boundary(destination)
     import imageio_ffmpeg
     (destination/'bin').mkdir()
     link_or_copy(imageio_ffmpeg.get_ffmpeg_exe(),destination/'bin/ffmpeg.exe')
-    cfg = {'owner':owner,'global_admins':[],'admins':[],'blocked':[],'approved_groups':[],'groups':{},
-           'group_admins':{},'group_blocked':{},'naturalcommand':{},'webresearch':{},
-           'identity_salt':secrets.token_hex(32),'epoch':0}
-    (destination/'private/p2c-access.json').write_text(json.dumps(cfg))
-    (destination/'private/instance-identity.json').write_text(json.dumps({'owner':owner}))
-    (destination/'data/cmd_config.json').write_text(json.dumps({'dashboard':{'host':'127.0.0.1','port':6185},'platform':[],'provider':[],'admins_id':[owner],
+    private = destination / 'private'
+    (private / 'instance-identity.json').write_text(json.dumps({'schema': 2, 'mode': 'verified'}))
+    for name in ('ffa-communication.json', 'ffa-memory.json'):
+        shutil.copy2(PROJECT / 'examples/config' / name, private / name)
+    sys.path.insert(0, str(PROJECT / 'src'))
+    try:
+        from fat_fish.core.identity import IdentityDirectory
+        from fat_fish.memory.service import MemoryService
+        IdentityDirectory(private / 'ffa-identities.sqlite3').owner_account()
+        MemoryService(private / 'ffa-memory.sqlite3').status()
+    finally:
+        sys.path.pop(0)
+    (destination/'data/cmd_config.json').write_text(json.dumps({'dashboard':{'host':'127.0.0.1','port':6185},'platform':[],'provider':[],'admins_id':[],
         'provider_settings':{'persona_pool':['feiyu-v1']},'agent_runner':{'config':{'persona':{'persona_id':'feiyu-v1'}}}}))
     (destination/'instance.json').write_text(json.dumps({'schema':SCHEMA,'project':'Fat-Fish-Assistant','deployment_id':secrets.token_hex(16),'release':str(release.resolve())}))
     shutil.copytree(release/'plugins', destination/'data/plugins')
@@ -173,7 +197,7 @@ def _backup_locked(instance, destination):
     identity=json.loads((instance/'instance.json').read_text());identity.pop('release',None)
     (destination/'manifest.json').write_text(json.dumps({'schema':DATA_SCHEMA,'software':software,'instance_identity':identity,'files':rows,'integrity':integrity,'consistency':'cold instance; all managed writers stopped','private':True},indent=2))
 
-def restore(snapshot,destination,release,installation_root=None):
+def restore(snapshot,destination,release,installation_root=None,*,erasure_ledger=None):
     verify_release(release)
     if destination.exists():raise ValueError('Refusing to overwrite existing instance or newer chats')
     manifest=json.loads((snapshot/'manifest.json').read_text())
@@ -222,8 +246,23 @@ def restore(snapshot,destination,release,installation_root=None):
         relocate_configuration(stage,destination,installation_root,manifest.get('relocation',{}))
     from fat_fish_management.data_integrity import validate
     validate(stage,release)
-    owner=json.loads((stage/'private/instance-identity.json').read_text())['owner']
-    if json.loads((stage/'private/p2c-access.json').read_text())['owner']!=owner:raise ValueError('Owner/access identity mismatch')
+    require_verified_instance(stage)
+    if erasure_ledger is not None:
+        data = json.loads(erasure_ledger.read_text(encoding="utf-8"))
+        sys.path.insert(0, str(PROJECT / 'src'))
+        try:
+            from fat_fish.memory.service import MemoryService
+            from fat_fish.core.identity import IdentityDirectory
+            directory = IdentityDirectory(stage / 'private/ffa-identities.sqlite3')
+            owner_account = directory.owner_account()
+            principal = directory.principal_id(owner_account) if owner_account else None
+            expected = {'schema': 2, 'owner_principal': principal}
+            if not isinstance(data, dict) or any(value is None or data.get(key) != value
+                                                for key, value in expected.items()):
+                raise ValueError("Memory erasure ledger belongs to a different owner or version")
+            MemoryService(stage/'private/ffa-memory.sqlite3').reapply_erasures(data.get("entries"))
+        finally:
+            sys.path.pop(0)
     verify_plugins(stage,release)
     stage.rename(destination)
 
@@ -234,13 +273,13 @@ if __name__=='__main__':
     p.add_argument('--instance',type=Path)
     p.add_argument('--snapshot',type=Path)
     p.add_argument('--release',type=Path)
-    p.add_argument('--owner')
     p.add_argument('--cache',type=Path)
     p.add_argument('--offline',action='store_true')
     p.add_argument('--installation-root',type=Path)
+    p.add_argument('--erasure-ledger',type=Path)
     a=p.parse_args()
     if a.command=='materialize':materialize(a.destination.resolve(),a.cache,offline=a.offline)
-    elif a.command=='init':initialize(a.destination.resolve(),a.owner,a.release)
+    elif a.command=='init':initialize(a.destination.resolve(),a.release)
     elif a.command=='backup':backup(a.instance.resolve(),a.destination.resolve())
-    else:restore(a.snapshot.resolve(),a.destination.resolve(),a.release,a.installation_root)
+    else:restore(a.snapshot.resolve(),a.destination.resolve(),a.release,a.installation_root,erasure_ledger=a.erasure_ledger)
     print('Completed:',a.command)

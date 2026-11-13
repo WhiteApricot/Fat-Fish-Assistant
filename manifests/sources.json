@@ -12,13 +12,13 @@
     "license_source": "https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/LICENSE",
     "strip_prefix": "AstrBot-f61a7f42696da6df25dc7a249ec9b8d54ed9da18/",
     "patches": "patches/astrbot/changes.json",
-    "patch_sha256": "4ceaa69c97a195cd093de050e9b247025672d45197aad61d7f523add71773183"
+    "patch_sha256": "7a19da6295cc43532b82752e27c4d1545570a4e84d5f11a0f1e45b8ddc86b172"
   },
   {
     "name": "astrbot_plugin_livingmemory",
     "commit": "e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b",
     "archive_sha256": "343ca1c45bffa79c006096de966f0233a0368e36f76d060531c3501617d780e2",
-    "changes": 3,
+    "changes": 6,
     "repository": "https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory",
     "url": "https://codeload.github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory/zip/e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b",
     "filename": "astrbot_plugin_livingmemory-e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b.zip",
@@ -27,7 +27,7 @@
     "license_source": "https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory/blob/e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b/LICENSE",
     "strip_prefix": "astrbot_plugin_livingmemory-e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b/",
     "patches": "patches/astrbot_plugin_livingmemory/changes.json",
-    "patch_sha256": "22871a48905b003f05aae5efe66180ee71ea784a0d10a74557c38e77d14568a1"
+    "patch_sha256": "85f5a4c731e31ee44c5e8f7434eafbf0c08570935c96a96bdddd2b09ebc6f4e1"
   },
   {
     "name": "astrbot_plugin_continuous_message",
@@ -42,7 +42,7 @@
     "license_source": "https://github.com/aliveriver/astrbot_plugin_continuous_message/blob/4a2a52ba90544d1527a72602762ae5ce3ae27dca/LICENSE",
     "strip_prefix": "astrbot_plugin_continuous_message-4a2a52ba90544d1527a72602762ae5ce3ae27dca/",
     "patches": "patches/astrbot_plugin_continuous_message/changes.json",
-    "patch_sha256": "58c96c43504a68b4a7da54a8c3b6db8aea11730fb88964244e6f97f1ef5d4957"
+    "patch_sha256": "e13895cceb79f8f5106d083d7b8f799190fd5ca094ec486443265e23307c3879"
   },
   {
     "name": "meme_manager",

@@ -31,7 +31,7 @@ CMD 使用 `daily-start`，仍调用既有组件管理和健康接口：依次�
 - DIRTY：不能直接清除。先检查一致性；主记忆索引可通过既有 MemoryEngine/IndexValidator 修复，原 DB/索引及故障标记保留副本，失败保留 DIRTY。缺少 Embedding、损坏 SQLite、graph_memory 或未知向量状态时拒绝自动恢复。
 - upgrade-journal.json：日常入口先调用原 recover-upgrade，不与失效生命周期标记混用。活动或状态模糊时停止恢复，保留证据。
 
-手工索引修复工具仍为 fat_fish_management/rebuild_memory.py；升级/回滚仍由 manage.py 管理。普通用户无需运行工具或手动删除标记。诊断在安装根 logs、instance/logs、private/data-integrity.log 及 private 下的生命周期/索引修复历史；不得直接公开这些私人材料。
+优先使用安装向导的修复入口。诊断在安装根 logs、instance/logs、private/data-integrity.log 及 private 下的生命周期/索引修复历史；不得直接公开这些私人材料。
 
 ## 迁移与切换
 
@@ -43,7 +43,7 @@ CMD 使用 `daily-start`，仍调用既有组件管理和健康接口：依次�
 
 固定来源组装并校验新 release，停止写入后事务切换插件和发布指针；故障由原 journal 回退/恢复。插件自定义资源及已识别的私密图床配置在升级和恢复时保留；锁定程序漂移或资源与程序冲突拒绝覆盖。数据库不回灌、不做未经测试的 schema 降级，新聊天不能用旧快照覆盖。
 
-既有 patches 记录上游版本、前后 SHA 和恢复方式；AstrBot 通过固定补丁部署，SnowLuma 运行文件由官方发行包提供。回滚采用重建并切回已校验发布，不在运行目录逐文件反向编辑。所有正式实例操作须按维护授权执行，测试只在 local 的独立实例。
+既有 patches 记录上游版本、前后 SHA 和恢复方式；AstrBot 通过固定补丁部署，SnowLuma 运行文件由官方发行包提供。回滚采用重建并切回已校验发布，不在运行目录逐文件反向编辑。
 
 ## 常见失败
 
@@ -53,4 +53,4 @@ CMD 使用 `daily-start`，仍调用既有组件管理和健康接口：依次�
 - 协议未连接：检查向导中的机器人 QQ、独立运行包完整性和手动登录；查看本机日志，不通过扩大群权限解决。
 - SQLite/向量状态不支持：保留原件，按诊断使用测试过的恢复适配器；不能删除 DIRTY 强行启动。
 
-代码更新后通过原安装向导的修复入口重建并切换发布。当前源码对比覆盖核心及自有插件。引导、生命周期、配置和迁移的维护入口见 [系统设计](protocols/CONTRIBUTING.md#系统设计)。
+代码更新后通过原安装向导的修复入口重建并切换发布。当前源码对比覆盖核心及自有插件。

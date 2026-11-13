@@ -6,6 +6,8 @@ Backup/
 Fat-Fish-Assistant.local/
 private/
 instances/
+/instance/
+/data/
 cache/
 logs/
 models/
@@ -26,6 +28,9 @@ models/
 
 /tests/*
 !/tests/test_management.py
+!/tests/test_communication.py
+!/tests/test_memory_service.py
+!/tests/test_native_media.py
 .pytest_cache/
 .coverage
 *.sqlite
@@ -37,3 +42,7 @@ models/
 *.sqlite3-wal
 *.sqlite3-shm
 *.partial
+*.pem
+*.key
+*.pfx
+*.p12

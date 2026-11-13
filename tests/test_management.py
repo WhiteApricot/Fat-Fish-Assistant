@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, patch
 from fat_fish_management import controller as c, windows
 from fat_fish_management.components import communication_health, lifecycle, snowluma_status
 from fat_fish_management.configure_onebot import configure
+from fat_fish_management.instance import require_verified_instance, initialize
 from fat_fish_management.lifecycle_lock import exclusive
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
@@ -127,6 +128,50 @@ class ManagementTest(unittest.TestCase):
         self.assertEqual(c.read(self.instance / 'private/bot-identity.json'), {'bot_id': '100000001'})
         with self.assertRaisesRegex(ValueError, 'differs'):
             configure(self.instance, '100000002')
+
+    def test_verified_instance_initializes_local_databases_and_registers_bound_bot(self):
+        from fat_fish.communication.model import ProviderId
+        from fat_fish_management.instance import require_platform_gateway_release, require_verified_instance
+        from fat_fish.communication.registry import ProviderRegistry
+        from fat_fish.core.identity import IdentityDirectory
+        from fat_fish.memory.service import MemoryService
+
+        target = self.root / 'verified'
+        release = self.root / 'release'
+        (release / 'plugins').mkdir(parents=True)
+        (release / 'payload-manifest.json').write_text('[]')
+        ffmpeg = SimpleNamespace(get_ffmpeg_exe=lambda: 'fixture')
+        with patch.dict(sys.modules, {'imageio_ffmpeg': ffmpeg}), patch(
+            'fat_fish_management.instance.link_or_copy'
+        ), patch('fat_fish_management.instance.protect_boundary'), patch(
+            'fat_fish_management.instance.subprocess.run'
+        ):
+            initialize(target, release, seed_persona=False)
+        require_verified_instance(target)
+        gateway_entry = release / 'astrbot/astrbot/core/fat_fish_gateway.py'
+        gateway_entry.parent.mkdir(parents=True)
+        gateway_entry.write_text('from fat_fish.gateway.scoped_gateway import ScopedGateway')
+        with self.assertRaisesRegex(ValueError, 'retired gateway'):
+            require_platform_gateway_release(release)
+        gateway_entry.write_text('from fat_fish.gateway.platform_gateway import PlatformGateway')
+        require_platform_gateway_release(release)
+        private = target / 'private'
+        self.assertFalse((private / 'p2c-access.json').exists())
+        with self.assertRaises(c.Fault):
+            c.parser().parse_args(['install', '--owner', '12345'])
+        self.assertEqual(IdentityDirectory(private / 'ffa-identities.sqlite3').owner_account(), None)
+        self.assertEqual(MemoryService(private / 'ffa-memory.sqlite3').status()['activities'], 0)
+        from fat_fish_management.data_integrity import validate
+        with patch('fat_fish_management.data_integrity.subprocess.run') as native_validator:
+            self.assertEqual(validate(target, release)['native_memory'], 'unused')
+        native_validator.assert_not_called()
+        registry = ProviderRegistry(private / 'ffa-communication.json')
+        self.assertEqual(registry.configured(), {})
+        c.atomic(target / 'data/cmd_config.json', {'platform': [self.platform]})
+        (private / 'onebot-token.txt').write_text(self.token)
+        for _ in range(2):
+            configure(target, '100000001')
+        self.assertEqual(list(registry.configured()), [ProviderId('qq', 'feiyu-onebot')])
 
     def test_binding_rejects_bad_listener_and_token(self):
         for field, value in [('ws_reverse_host', '0.0.0.0'), ('ws_reverse_port', True),
@@ -368,7 +413,10 @@ class SnowLumaReleaseTest(unittest.TestCase):
                 patch.object(windows, 'launch_snowluma', return_value=SimpleNamespace(pid=912)) as launch:
             response = self.invoke('launch', '--webui-port', '5999')
             self.assertEqual(response['webui_url'], 'http://127.0.0.1:5999/')
-            launch.assert_called_once_with(self.destination, 'launcher.bat', 5999)
+            launch.assert_called_once()
+            actual_path, launcher, port = launch.call_args.args
+            self.assertTrue(actual_path.samefile(self.destination))
+            self.assertEqual((launcher, port), ('launcher.bat', 5999))
             self.assertTrue(self.invoke('status')['tracked_launcher_running'])
             self.assertEqual(self.invoke('status')['webui_url'], response['webui_url'])
             with self.assertRaises(c.Fault) as exc:
@@ -422,7 +470,7 @@ class SnowLumaReleaseTest(unittest.TestCase):
                 patch.dict(os.environ, {'FFA_GITHUB_TRANSFER_BASE': 'https://unapproved.invalid'}):
             self.assertEqual(acquire(lock, cache, official_release=True).read_bytes(), self.archive.read_bytes())
             opener.open.assert_called_once_with(lock['url'], timeout=15)
-            self.assertEqual(acquire(lock, cache, True, official_release=True), cache / lock['filename'])
+            self.assertTrue(acquire(lock, cache, True, official_release=True).samefile(cache / lock['filename']))
             opener.open.assert_called_once()
 
     def test_official_download_falls_back_to_direct_and_rejects_hash_error(self):

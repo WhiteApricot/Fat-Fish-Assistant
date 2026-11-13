@@ -4,7 +4,7 @@ PERSONA_HELP = (
     '/{command} list | set 内容 | add 内容 | edit 编号 内容 | remove 编号 | reset | undo'
 )
 PERSONA_ROUTES = {'': {0}, 'help': {1}, 'list': {1}, 'set': {2}, 'add': {2},
-                  'edit': {3}, 'remove': {2}, 'reset': {1}, 'undo': {1}}
+                  'edit': {3}, 'remove': {2}, 'reset': {1}}
 
 
 def effective_notes(cfg, actor, group=''):

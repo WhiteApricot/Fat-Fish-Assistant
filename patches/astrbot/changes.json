@@ -2,7 +2,7 @@
   {
     "path": "astrbot/core/astr_agent_hooks.py",
     "before": "accd70ee25c31732f4915f3dfb5cedfd5c1ca2e2890c4d8fa070eb4c74d12317",
-    "after": "ad5f6068c920bd25a0bbeed863db63e85327d4442a1c451e1de4fd08cec4a993",
+    "after": "2e72d8ae1d93310aac364490e069858791d8203363d4d018db4bbbcbf450523f",
     "edits": [
       {
         "start": 0,
@@ -18,15 +18,10 @@
         "old": [],
         "new": [
           "        event=run_context.context.event\n",
-          "        if event.get_extra('_ffa_access_checked', False):\n",
-          "            from astrbot.core.fat_fish_gateway import gateway\n",
-          "            cfg,policy=gateway.load()\n",
-          "            group=str(event.get_group_id() or '')\n",
-          "            if str(event.get_sender_id()) in policy.blocked_for(group) or (group and (group not in policy.groups or gateway.epoch(cfg,group)!=event.get_extra('_ffa_security_epoch'))):\n",
-          "                raise PermissionError('Fat-Fish-Assistant access revoked before tool execution')\n",
-          "            if getattr(tool, 'name', '') not in {'memorize_long_term_memory','web_search_deepseek','deepseek_fetch_web_page'}:\n",
-          "                raise PermissionError('Tool outside the chat capability boundary')\n",
-          "            gateway.audit('tool_start',event)\n"
+          "        if event.get_extra('_ffa_platform_admission', None) is not None:\n",
+          "            allowed = event.get_extra('_ffa_platform_authorize')\n",
+          "            if not allowed or not allowed() or getattr(tool, 'name', '') not in {'web_search_deepseek', 'deepseek_fetch_web_page'}:\n",
+          "                raise PermissionError('Tool outside the canonical chat capability boundary')\n"
         ]
       }
     ]
@@ -34,7 +29,7 @@
   {
     "path": "astrbot/core/fat_fish_gateway.py",
     "before": null,
-    "after": "2ceea8b7da1c361f4b15580b74cf9bd305bb90225e9188f8d5700f071862a219",
+    "after": "b24013034a2c96c46f996b5b5a8081bc3d002932815fe18404c95e79f32b850e",
     "edits": [
       {
         "start": 0,
@@ -46,8 +41,8 @@
           "from pathlib import Path\n",
           "source=Path(os.environ['FEIYU_SOURCE_ROOT']).resolve()\n",
           "sys.path.insert(0,str(source))\n",
-          "from fat_fish.gateway.scoped_gateway import ScopedGateway\n",
-          "gateway=ScopedGateway(Path(os.environ['FEIYU_RUNTIME_ROOT'])/'private/p2c-access.json')\n"
+          "from fat_fish.gateway.platform_gateway import PlatformGateway\n",
+          "gateway=PlatformGateway(private=Path(os.environ['FEIYU_RUNTIME_ROOT'])/'private')\n"
         ]
       }
     ]
@@ -104,7 +99,7 @@
   {
     "path": "astrbot/core/pipeline/scheduler.py",
     "before": "dfdb757e1ec30ebc84fa6c98d4ab7de3b4c5f967a5b57a4055c7ec307cc882a2",
-    "after": "9914d55bbf8348126d4b3858b092cd6717e70f83642d5e45f727ac61b5a815a5",
+    "after": "73a7dfe5215e7feb5532e5f708a14445e8344eeb53ef6e5414c1f3be1f8994be",
     "edits": [
       {
         "start": 0,
@@ -123,8 +118,6 @@
         "new": [
           "            from astrbot.core.fat_fish_gateway import gateway\n",
           "            gateway.context=self.ctx.plugin_manager.context\n",
-          "            if event.get_platform_name() == 'aiocqhttp' and not event.is_private_chat():\n",
-          "                gateway.participation.provider = await self.ctx.plugin_manager.context.get_using_provider_async()\n",
           "            await gateway.run(event, lambda: self._process_stages(event))\n"
         ]
       }
@@ -133,7 +126,7 @@
   {
     "path": "astrbot/core/agent/runners/tool_loop_agent_runner.py",
     "before": "ac20138ada8ce83bc88ffec72e40ef4d5ac174a3695a27ae84ad2d9912537645",
-    "after": "48d4ba58ec66dfbf3872b1f54306854a44c19343f8b20c4da6b358d4349653f6",
+    "after": "d794868b9980356b535fd9e818aced53262717649fae56f690e98959d8019e6c",
     "edits": [
       {
         "start": 0,
@@ -150,16 +143,7 @@
         "new": [
           "        # Metadata-only diagnostic after context processing, at the actual\n",
           "        # provider boundary. Never log prompts or private persona text.\n",
-          "        event = getattr(getattr(self.run_context, \"context\", None), \"event\", None)\n",
-          "        if event is not None and event.is_private_chat() and event.get_extra('_ffa_access_checked', False):\n",
-          "            from astrbot.core.fat_fish_gateway import gateway\n",
-          "            cfg, _ = gateway.load()\n",
-          "            notes = cfg.get('private_persona_notes', {})\n",
-          "            actor = str(event.get_sender_id())\n",
-          "            if actor in notes:\n",
-          "                systems = [str(getattr(m, 'content', '') if not isinstance(m, dict) else m.get('content', '')) for m in payload['contexts'] if (getattr(m, 'role', None) if not isinstance(m, dict) else m.get('role')) == 'system']\n",
-          "                expected = notes[actor] or '已恢复默认私聊人格'\n",
-          "                gateway.audit('persona_wire', event, 'present' if any(expected in text for text in systems) else 'missing')\n"
+          "        event = getattr(getattr(self.run_context, \"context\", None), \"event\", None)\n"
         ]
       }
     ]
@@ -219,7 +203,7 @@
   {
     "path": "astrbot/core/pipeline/waking_check/stage.py",
     "before": "d880be8a1e23561f86c3883cedad65c7e7be34fc2eeccec647bd2ddfc1b55a65",
-    "after": "043d4fd59c2acbfa4b00dc81d80b1c703881e7d8989c933758467f32f32611b3",
+    "after": "cecdb297f87c519a038a14fb3bba4509cb3321299b4a0b076bdcc20c9e233613",
     "edits": [
       {
         "start": 0,
@@ -238,13 +222,38 @@
         ]
       },
       {
+        "start": 82,
+        "end": 89,
+        "old": [
+          "        for admin_id in self.ctx.astrbot_config[\"admins_id\"]:\n",
+          "            if (\n",
+          "                api_key_allow_admin_role is not False\n",
+          "                and str(event.get_sender_id()) == admin_id\n",
+          "            ):\n",
+          "                event.role = \"admin\"\n",
+          "                break\n"
+        ],
+        "new": [
+          "        if event.get_extra('_ffa_platform_admission', None) is None:\n",
+          "            for admin_id in self.ctx.astrbot_config[\"admins_id\"]:\n",
+          "                if (\n",
+          "                    api_key_allow_admin_role is not False\n",
+          "                    and str(event.get_sender_id()) == admin_id\n",
+          "                ):\n",
+          "                    event.role = \"admin\"\n",
+          "                    break\n",
+          "        else:\n",
+          "            event.role = \"member\"\n"
+        ]
+      },
+      {
         "start": 93,
         "end": 94,
         "old": [
           "        is_wake = False\n"
         ],
         "new": [
-          "        is_wake = bool(event.get_extra('_ffa_access_checked', False) and event.get_extra('_ffa_smart', False) and not event.is_private_chat())\n"
+          "        is_wake = bool(event.get_extra('_ffa_canonical_wake', False))\n"
         ]
       },
       {
@@ -252,9 +261,8 @@
         "end": 161,
         "old": [],
         "new": [
-          "            if event.get_extra('_ffa_access_checked', False) and event.get_extra('_ffa_level', -1) < 3:\n",
-          "                commands=[f for f in handler.event_filters if isinstance(f,(CommandFilter,CommandGroupFilter))]\n",
-          "                if commands and not (event.is_private_chat() and event.get_extra('_ffa_personal_native',False) and all(getattr(f,'command_name','')=='new' for f in commands)):\n",
+          "            if event.get_extra('_ffa_platform_admission', None) is not None:\n",
+          "                if any(isinstance(f, (CommandFilter, CommandGroupFilter)) for f in handler.event_filters):\n",
           "                    continue\n"
         ]
       }
@@ -263,7 +271,7 @@
   {
     "path": "astrbot/core/pipeline/whitelist_check/stage.py",
     "before": "c186cecd1f66be22aeba29c27bf40d5fbada6c1b6e97a15d689a3e6de5dabccd",
-    "after": "523f385b819ccd181481f4cca75dd2bf5030be7d4a719e3084e893bd1530eca6",
+    "after": "3a8e19bab36f482df57f033e81184b0eb68f4440f8632cdae4b11d058848cdb6",
     "edits": [
       {
         "start": 0,
@@ -278,8 +286,8 @@
         "end": 34,
         "old": [],
         "new": [
-          "        if event.get_extra('_ffa_access_checked', False):\n",
-          "            return\n"
+          "        if event.get_extra('_ffa_platform_admission', None) is not None:\n",
+          "            return  # FFA has already verified this platform and conversation.\n"
         ]
       }
     ]
@@ -287,7 +295,7 @@
   {
     "path": "astrbot/core/pipeline/process_stage/method/agent_sub_stages/internal.py",
     "before": "dbe18dec7382d788432e089b513c009dda038a9fc0225ca1fc1e2b2b8c8bd8dd",
-    "after": "185d17981b8d8ed599791e083d11bc3aa5d048d71013da330eb3e876c4ce5010",
+    "after": "a20ecdcc5d1454ec66ada06e99e11e1a6ae9e87137d3b5887f5b6e5c4e94041b",
     "edits": [
       {
         "start": 0,
@@ -295,18 +303,6 @@
         "old": [],
         "new": [
           "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
-        ]
-      },
-      {
-        "start": 515,
-        "end": 515,
-        "old": [],
-        "new": [
-          "        profile_restore=event.get_extra('_ffa_persona_turn_restore')\n",
-          "        if profile_restore and event.is_private_chat() and event.get_extra('_ffa_access_checked',False):\n",
-          "            from fat_fish.persona.private_persona import restore_for_storage\n",
-          "            all_messages=restore_for_storage(all_messages,profile_restore)\n",
-          "\n"
         ]
       }
     ]

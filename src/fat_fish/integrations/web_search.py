@@ -36,7 +36,8 @@ def offer_search(event, request, settings, *, enabled=True, may_search):
     if request.func_tool:
         for name in ('web_search_deepseek', 'deepseek_fetch_web_page'):
             request.func_tool.remove_tool(name)
-    if not enabled or not event.get_extra('_ffa_access_checked', False):
+    if not enabled or not (event.get_extra('_ffa_access_checked', False)
+                           or event.get_extra('_ffa_platform_admission') is not None):
         return
     if (event.get_extra('_ffa_search_blocked', False)
             or '[FFA_FILE_MATERIAL]' in event.message_str or contains_secret(event.message_str)):

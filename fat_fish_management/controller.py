@@ -48,6 +48,23 @@ COMPONENT_LAYOUT_PATCH = '690344201ffa2b36c23a67e612eb3eaeb3ce6ff1dd11ef31a0cba8
 
 PRE_NORMALIZATION_PATCHES = {'astrbot': '690344201ffa2b36c23a67e612eb3eaeb3ce6ff1dd11ef31a0cba85928fdc0ac', 'astrbot_plugin_livingmemory': '77ecabeea6b288758c6b1ea4584fbbedb2a377471563ee231a0761a29bc0585f', 'astrbot_plugin_continuous_message': '3c24c6ea166fcbdcfcd6f1ffd162e1b9805d1e013bce3da9e08c2727b018c4c5', 'meme_manager': 'a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f'}
 
+# Previously shipped descriptors for these same pinned upstream revisions.
+P3_PATCH_TRANSITIONS = {
+    'astrbot': {
+        '4ceaa69c97a195cd093de050e9b247025672d45197aad61d7f523add71773183': 11,
+        '4af65c9b77e2bd124bdfdf46d5934a287f2e14aa5a5bc1d16058eef4917fcdc6': 11,
+    },
+    'astrbot_plugin_livingmemory': {
+        '77ecabeea6b288758c6b1ea4584fbbedb2a377471563ee231a0761a29bc0585f': 3,
+        '22871a48905b003f05aae5efe66180ee71ea784a0d10a74557c38e77d14568a1': 3,
+        '85f5a4c731e31ee44c5e8f7434eafbf0c08570935c96a96bdddd2b09ebc6f4e1': 3,
+    },
+    'astrbot_plugin_continuous_message': {
+        '58c96c43504a68b4a7da54a8c3b6db8aea11730fb88964244e6f97f1ef5d4957': 4,
+    },
+}
+
+
 def source_descriptor_compatible(before,current):
     if before==current:return True
     name=before['name']
@@ -56,6 +73,9 @@ def source_descriptor_compatible(before,current):
         if before.get('target') not in ('src/p2d/upstream_selfreply','src/ffa_components/participation/upstream_selfreply'):
             return False
         return dict(before,target='src/fat_fish/participation/upstream_selfreply')==current
+    previous_count = P3_PATCH_TRANSITIONS.get(name, {}).get(before.get('patch_sha256'))
+    if previous_count is not None and before.get('changes') == previous_count:
+        return dict(before, changes=current['changes'], patch_sha256=current['patch_sha256']) == current
     allowed={PRE_NORMALIZATION_PATCHES.get(name)}
     if name=='astrbot_plugin_continuous_message':allowed.add('41ad668ad70748b66fa7e6d5aa7c91415724f762216c6f88cf5b3f1638ed28fe')
     if name=='astrbot':allowed.update((*P2F_R1_PATCH_TRANSITION,COMPONENT_LAYOUT_PATCH,
@@ -131,7 +151,7 @@ def chat_python(root,record):
 
 def instance(root,record):
     value=record.get('instance')
-    if not value:raise Fault('needs_input','No initialized instance','Install with --owner, or restore into a new empty instance.')
+    if not value:raise Fault('needs_input','No initialized instance','Run install, or restore into a new empty instance.')
     path=resolve(root,value)
     if root.resolve() not in path.resolve().parents:raise Fault('read_only','Instance is outside this managed root')
     return path
@@ -371,21 +391,20 @@ def install(root,args):
         progress('5/5','independent instance initialization')
         if 'astrbot' in chosen and not args.no_instance:
             if not record.get('instance'):
-                if not args.owner:raise Fault('needs_input','A new instance needs your own QQ owner identity','Repeat install with --owner; downloaded software will be reused.')
                 target=root/'instance'
                 receipt=root/'instance-initialization.json'
                 if target.exists():
                     origin=target/'private/install-origin.json'
                     if not receipt.exists() or not origin.exists():raise Fault('read_only','Unregistered instance directory exists; no ownership proof; no overwrite')
                     proof=read(receipt)
-                    if proof!=read(origin) or proof.get('root_deployment')!=read(root/'.ffa-managed.json')['deployment_id'] or proof.get('owner')!=args.owner or proof.get('release')!=str(release):
+                    if proof!=read(origin) or proof.get('root_deployment')!=read(root/'.ffa-managed.json')['deployment_id'] or proof.get('identity_mode')!='verified' or proof.get('release')!=str(release):
                         raise Fault('read_only','Interrupted initialization ownership mismatch; no overwrite')
                     invoke(root,chat_python(root,record),'doctor.py','--instance',target,json_output=True)
                 else:
                     stage=root/('instance.staging-'+secrets.token_hex(5))
-                    proof={'transaction':secrets.token_hex(16),'root_deployment':read(root/'.ffa-managed.json')['deployment_id'],'owner':args.owner,'release':str(release)}
+                    proof={'transaction':secrets.token_hex(16),'root_deployment':read(root/'.ffa-managed.json')['deployment_id'],'identity_mode':'verified','release':str(release)}
                     atomic(receipt,proof)
-                    invoke(root,chat_python(root,record),'instance.py','init','--destination',stage,'--release',resolve(root,record['release']),'--owner',args.owner)
+                    invoke(root,chat_python(root,record),'instance.py','init','--destination',stage,'--release',resolve(root,record['release']))
                     atomic(stage/'private/install-origin.json',proof)
                     stage.rename(target)
                 record['instance']=rel(root,target);save()
@@ -419,11 +438,12 @@ def prepare_instance_assets(root,record,runtime):
             output.parent.mkdir(parents=True,exist_ok=True);link_or_copy(path,output)
 
 def guidance(root,record):
-    if not record.get('instance'):return ['Software is ready; initialize with your own QQ identity or restore a verified backup into a new instance.']
+    if not record.get('instance'):return ['Run install to initialize an instance, or restore a verified backup.']
     target=instance(root,record);cfg=read(target/'data/cmd_config.json');port=cfg['dashboard']['port']
     return [f'肥鱼助手 / Fat-Fish-Assistant: start opens only the local service at http://127.0.0.1:{port}.',
             'Dashboard credentials are saved with Windows DPAPI; use the desktop launcher to securely update the saved password after changing it.',
             'Use the official SnowLuma Launcher and WebUI for startup, QR login and reverse WebSocket settings. See docs/QUICK_START.md.',
+            'For a new instance, register a communication provider and start Owner setup with /ffa-owner in a verified private chat.',
             'No group is approved by default. Dagu, Work and the P6 GUI are not implemented in this stage.']
 
 def component_status(root,record,name):
@@ -634,9 +654,16 @@ def component_inventory(root,record):
     return items
 
 def config_view(root,record):
-    target=instance(root,record);cfg=read(target/'data/cmd_config.json');identity=read(target/'private/instance-identity.json');access=read(target/'private/p2c-access.json')
-    return {'project':'Fat-Fish-Assistant','dashboard':{'host':cfg['dashboard']['host'],'port':cfg['dashboard']['port']},'identity_valid':identity['owner']==access['owner'],
-            'approved_group_count':len(access.get('approved_groups',[])),'providers':[{'id':x.get('id'),'type':x.get('type')} for x in cfg.get('provider',[])],
+    from contextlib import closing
+    import sqlite3
+    from fat_fish_management.instance import require_verified_instance
+    target=instance(root,record);cfg=read(target/'data/cmd_config.json')
+    require_verified_instance(target)
+    identity_db = (target / 'private/ffa-identities.sqlite3').resolve().as_uri() + '?mode=ro'
+    with closing(sqlite3.connect(identity_db, uri=True)) as db:
+        approved_groups = db.execute('SELECT COUNT(*) FROM rooms').fetchone()[0]
+    return {'project':'Fat-Fish-Assistant','dashboard':{'host':cfg['dashboard']['host'],'port':cfg['dashboard']['port']},'identity_valid':True,
+            'approved_group_count':approved_groups,'providers':[{'id':x.get('id'),'type':x.get('type')} for x in cfg.get('provider',[])],
             'dashboard_password_file':rel(root,target/'private/dashboard-credential.dpapi'),'secrets_redacted':True,
             'experience':{'segmented_reply_enabled':bool(cfg.get('platform_settings',{}).get('segmented_reply',{}).get('enable')),
                 'meme_plugin_installed':(target/'data/plugins/meme_manager').is_dir(),
@@ -697,7 +724,7 @@ def parser():
     sub=p.add_subparsers(dest='command',required=True)
     check=sub.add_parser('check');check.add_argument('--network',action='store_true')
     setup=sub.add_parser('install');setup.add_argument('--components',default='chat');setup.add_argument('--plugins',default='astrbot_plugin_livingmemory,astrbot_plugin_continuous_message,meme_manager')
-    setup.add_argument('--owner');setup.add_argument('--python',type=Path);setup.add_argument('--cache',type=Path);setup.add_argument('--offline',action='store_true');setup.add_argument('--accept-external-licenses',action='store_true');setup.add_argument('--no-instance',action='store_true')
+    setup.add_argument('--python',type=Path);setup.add_argument('--cache',type=Path);setup.add_argument('--offline',action='store_true');setup.add_argument('--accept-external-licenses',action='store_true');setup.add_argument('--no-instance',action='store_true')
     setup.add_argument('--dependency-profile',choices=['core','chat'])
     setup.add_argument('--retain-cache',action='store_true')
     setup.add_argument('--repair',action='store_true',help='Explicit same-dependency repair through the existing transactional upgrade mechanism')
@@ -705,7 +732,7 @@ def parser():
     component=sub.add_parser('component');component.add_argument('name',choices=list(COMPONENTS));component.add_argument('action',choices=['status','version','dependencies','start','stop','restart','health','integrity','connection-health'])
     conf=sub.add_parser('config');conf.add_argument('config_action',choices=['show','validate','apply','initialize-chat','initialize-onebot','initialize-experience','initialize-local-models']);conf.add_argument('--file',default='-');conf.add_argument('--onebot-port',type=int,default=6199);conf.add_argument('--model',choices=['deepseek-chat','deepseek-reasoner'],default='deepseek-chat');conf.add_argument('--bot-id')
     backup=sub.add_parser('backup');backup.add_argument('--destination',required=True,type=Path)
-    restore=sub.add_parser('restore');restore.add_argument('--snapshot',required=True,type=Path);restore.add_argument('--destination',type=Path)
+    restore=sub.add_parser('restore');restore.add_argument('--snapshot',required=True,type=Path);restore.add_argument('--destination',type=Path);restore.add_argument('--erasure-ledger',type=Path)
     upgrade=sub.add_parser('upgrade');upgrade.add_argument('--release',required=True,type=Path)
     recover=sub.add_parser('recover-upgrade')
     export=sub.add_parser('migration-export');export.add_argument('--destination',required=True,type=Path)
@@ -867,7 +894,8 @@ def dispatch(args):
     if args.command=='restore':
         destination=args.destination.resolve() if args.destination else root/'instance'
         if root not in destination.parents:raise Fault('read_only','Restore destination must be inside this managed root')
-        result=invoke(root,chat_python(root,record),'instance.py','restore','--snapshot',args.snapshot.resolve(),'--destination',destination,'--release',resolve(root,record['release']))
+        erasure_options = ('--erasure-ledger', args.erasure_ledger.resolve(strict=True)) if args.erasure_ledger else ()
+        result=invoke(root,chat_python(root,record),'instance.py','restore','--snapshot',args.snapshot.resolve(),'--destination',destination,'--release',resolve(root,record['release']),*erasure_options)
         record['instance']=rel(root,destination);atomic(root/'installation.json',record);return result
     if args.command=='upgrade':
         release=args.release.resolve()

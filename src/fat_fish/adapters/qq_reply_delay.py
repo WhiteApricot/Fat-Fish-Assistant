@@ -103,6 +103,8 @@ def bind_event_delay(event, prepare_recheck):
         event.set_extra('_ffa_reply_committing', True)
         try:
             result = await original_send(message)
+            count = event.get_extra('_ffa_native_send_count', 0)
+            event.set_extra('_ffa_native_send_count', count + 1)
             sent = True
             return result
         finally:

@@ -46,7 +46,7 @@ class MemeRequestState:
 
 
 def expose_requested_catalog(context, event, request, state=None):
-    if not event.get_extra('_ffa_access_checked', False):
+    if event.get_extra('_ffa_platform_admission') is None:
         return False
     if event.get_extra('_ffa_material', False) or '[FFA_FILE_MATERIAL]' in event.message_str:
         return False
@@ -95,7 +95,7 @@ def expose_requested_catalog(context, event, request, state=None):
 def ensure_requested_selection(event, response, state=None):
     """An explicit request must not depend on the automatic 35% selection path."""
     catalog = event.get_extra('_ffa_meme_catalog', {})
-    if not event.get_extra('_ffa_access_checked', False) or not catalog:
+    if event.get_extra('_ffa_platform_admission') is None or not catalog:
         return
     selected = [key for key in (event.get_extra('found_emotions', []) or []) if key in catalog]
     if not selected:

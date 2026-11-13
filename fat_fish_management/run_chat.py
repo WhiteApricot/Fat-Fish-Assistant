@@ -13,6 +13,7 @@ import sys
 sys.dont_write_bytecode=True
 from pathlib import Path
 from fat_fish_management.lifecycle_lock import exclusive
+from fat_fish_management.instance import require_platform_gateway_release, require_verified_instance
 
 p=argparse.ArgumentParser()
 p.add_argument('--instance',type=Path,required=True)
@@ -59,6 +60,8 @@ async def run():
         else:(instance/'private/DIRTY').write_text('Native shutdown incomplete; recover before migration')
 
 with exclusive(instance):
+    require_verified_instance(instance)
+    require_platform_gateway_release(release)
     # All subsequent application imports live in the independent local release
     # and environment. Reuse their caches without writing into formal scripts/.
     sys.pycache_prefix=None

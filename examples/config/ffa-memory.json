@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "enabled": true,
+  "capture_text": true,
+  "auto_extract": true,
+  "legacy_persona": null,
+  "legacy_group_personas": {},
+  "legacy_auto_sync": false,
+  "embedding_space": "local-bge",
+  "embedding": null,
+  "context_token_budget": null,
+  "card_max_chars": 0,
+  "timezone": "UTC",
+  "reflect": true,
+  "allow_sensitive_explicit": false
+}

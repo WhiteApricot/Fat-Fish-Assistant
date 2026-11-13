@@ -20,6 +20,7 @@ class ReminderStore:
             created REAL,PRIMARY KEY(id,due));
             CREATE TABLE IF NOT EXISTS authorization_failures(id TEXT PRIMARY KEY,count INTEGER,error TEXT,updated REAL);
             CREATE TABLE IF NOT EXISTS reminder_numbers(number INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL);
+            CREATE TABLE IF NOT EXISTS reminder_principals(id TEXT PRIMARY KEY,creator TEXT NOT NULL,target TEXT NOT NULL);
             INSERT INTO reminder_numbers(id)
             SELECT id FROM reminders WHERE id NOT IN (SELECT id FROM reminder_numbers) ORDER BY due,id;
             CREATE TRIGGER IF NOT EXISTS reminder_number_on_insert AFTER INSERT ON reminders
@@ -31,48 +32,55 @@ class ReminderStore:
     def connect(self):
         db=sqlite3.connect(self.path,timeout=5);db.row_factory=sqlite3.Row;return db
     def rows(self):
-        with closing(self.connect()) as db:return [dict(r) for r in db.execute('SELECT reminders.*, reminder_numbers.number FROM reminders JOIN reminder_numbers USING(id) ORDER BY due,number')]
-    def allowed(self,row,actor,policy,group):
-        if row['scope']!=group:return False
-        if actor in policy.blocked_for(group):return False
-        if not group:return row['creator']==actor
-        return row['creator']==actor or actor==policy.owner or actor in policy.global_admins or (bool(group) and policy.authorize(actor,'group',private=False,group=group))
+        with closing(self.connect()) as db:return [dict(r) for r in db.execute(
+            'SELECT reminders.*, reminder_numbers.number, p.creator AS creator_principal, p.target AS target_principal '
+            'FROM reminders JOIN reminder_numbers USING(id) LEFT JOIN reminder_principals p USING(id) ORDER BY due,number')]
     def remember_undo(self,db,event,ident,before):
         if hasattr(event,'set_extra'):
             after=db.execute('SELECT * FROM reminders WHERE id=?',(ident,)).fetchone()
             event.set_extra('_ffa_reminder_undo',(before,dict(after)))
 
-    def restore_recent(self,gateway,event,cfg,policy,task):
-        before,after=task
-        ident=after['id']
-        actor=str(event.get_sender_id())
-        group=str(event.get_group_id() or '')
-        with closing(self.connect()) as db:
-            db.execute('BEGIN IMMEDIATE')
-            row=db.execute('SELECT * FROM reminders WHERE id=?',(ident,)).fetchone()
-            if not row or dict(row)!=after or not self.allowed(row,actor,policy,group):
-                return '提醒状态或权限已变化，未撤销。'
-            due=before['due'] if before else after['due']
-            if db.execute("SELECT 1 FROM deliveries WHERE id=? AND due IN (?,?)",(ident,due,after['due'])).fetchone():
-                return '提醒已进入发送流程，不能撤销。'
-            if before and before['state']=='active' and due<=time.time():
-                return '原提醒时间已过，请指定新时间。'
+    def undo(self, actor, access, task):
+        before, after = task
+        ident = after["id"]
+        with closing(self.connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM reminders WHERE id=?", (ident,)).fetchone()
+            principal = db.execute("SELECT creator FROM reminder_principals WHERE id=?", (ident,)).fetchone()
+            if (not row or dict(row) != after or after["scope"] != access.room.storage_key
+                    or not principal or (principal[0] != access.principal(actor) and not access.can_moderate(actor))):
+                return "提醒状态或权限已变化，未撤销。"
+            original_due = before["due"] if before else after["due"]
+            if db.execute("SELECT 1 FROM deliveries WHERE id=? AND due IN (?,?)",
+                          (ident, original_due, after["due"])).fetchone():
+                return "提醒已进入发送流程，不能撤销。"
+            if before and before["state"] == "active" and original_due <= time.time():
+                return "原提醒时间已过，请指定新时间。"
             if before:
-                db.execute('UPDATE reminders SET body=?,due=?,rule=?,state=?,epoch=?,updated=? WHERE id=?',
-                           (before['body'],due,before['rule'],before['state'],gateway.epoch(cfg,group),time.time(),ident))
+                db.execute("UPDATE reminders SET body=?,due=?,rule=?,state=?,updated=? WHERE id=?",
+                           (before["body"], original_due, before["rule"], before["state"], time.time(), ident))
             else:
-                db.execute("UPDATE reminders SET state='deleted',updated=? WHERE id=?",(time.time(),ident))
-            db.commit()
-        return '已撤销最近的提醒操作。'
+                db.execute("UPDATE reminders SET state='deleted',updated=? WHERE id=?", (time.time(), ident))
+            return "已撤销最近的提醒操作。"
 
-    def command(self,gateway,event,args,*,access=None):
-        cfg,policy=gateway.load() if access is None else access
-        actor=str(event.get_sender_id());group=str(event.get_group_id() or '')
-        if policy.level(actor,True,group)<0:return '当前权限不足，未执行'
-        if not args or args[0]=='help':return '/remind add 时间提醒我内容：创建提醒\n/remind addto QQ 时间提醒内容：为群成员创建提醒\n/remind list：查看提醒\n/remind show 编号：查看详情\n/remind time 编号 时间：调整时间\n/remind text 编号 内容：修改内容\n/remind pause|resume 编号：暂停或恢复\n/remind delete 编号：删除提醒'
-        operation=args[0]
-        if operation=='audio':return 'QQ电话及自定义音频暂缓；文字提醒不接收或保存上传音频'
-        rows=[r for r in self.rows() if self.allowed(r,actor,policy,group)]
+    def command(self, event, args, access):
+        route = access.room
+        actor = str(event.get_sender_id())
+        group = bool(event.get_group_id())
+        storage_scope = route.storage_key
+        principal = access.principal(actor)
+        if principal is None:
+            return '当前权限不足，未执行'
+        if not args or args[0] == 'help':
+            return ('/remind add 时间提醒我事项\n/remind addto 账号 时间提醒事项\n/remind list\n'
+                    '/remind show 编号\n/remind time 编号 时间\n/remind text 编号 内容\n'
+                    '/remind pause|resume 编号\n/remind delete 编号')
+        operation = args[0]
+        if operation == 'audio':
+            return '当前支持文字提醒。'
+        rows = [row for row in self.rows() if row['scope'] == storage_scope and (
+            row['creator_principal'] == principal or
+            (group and access.can_moderate(actor) and row['creator_principal']))]
         if operation=='list':return '\n'.join(self.format(r) for r in rows if r['state']!='deleted') or '当前会话没有可管理的提醒'
         if operation=='select':
             label=args[1] if len(args)>1 else ''
@@ -84,15 +92,14 @@ class ReminderStore:
                 weekday='一二三四五六日'.index(label[-1].replace('天','日'))
                 selected=[r for r in selected if json.loads(r['rule'])['kind']=='weekly' and datetime.fromtimestamp(r['due'],TZ).weekday()==weekday]
             else:selected=[]
-            if len(selected)==1:return self.command(gateway,event,['time',selected[0]['id'],args[2]] if len(args)>2 else ['delete',selected[0]['id']],access=(cfg,policy))
+            if len(selected)==1:return self.command(event, ['time', selected[0]['id'], args[2]] if len(args) > 2 else ['delete', selected[0]['id']], access)
             return '请指定提醒编号后执行；匹配不唯一或无法可靠确定：\n'+('\n'.join(self.format(r) for r in (selected or rows)) or '暂无')
         if operation in {'add','addto'}:
             target=actor
             if operation=='addto':
-                if len(args)<3 or not args[1].isdecimal():return '请明确指定目标QQ和提醒时间、内容'
+                if len(args)<3:return '请明确指定目标账号和提醒时间、内容'
                 target=args[1]
-                if not group or (target!=actor and not policy.authorize(actor,'group',private=False,group=group)):return '只有本群管理者可以为明确指定的其他成员创建提醒'
-                if target in policy.blocked_for(group):return '不能提醒黑名单成员'
+                if not group or (target!=actor and not access.can_moderate(actor)):return '只有本群管理者可以为明确指定的其他成员创建提醒'
             values=args[2:] if operation=='addto' else args[1:]
             if getattr(event,'get_extra',lambda *_:False)('_ffa_natural',False):
                 if len(values)!=2 or not all(value.strip() for value in values):
@@ -108,12 +115,17 @@ class ReminderStore:
             if len(body)>2000:return '提醒内容最多2000字'
             if len([r for r in self.rows() if r['creator']==actor and r['state'] not in {'deleted','done'}])>=100:return '提醒数量已达100，请先清理'
             ident=uuid.uuid4().hex[:12]
+            principals = (access.principal(actor), access.principal(target))
+            if None in principals:
+                return '发起者或目标账号没有当前会话授权'
             with closing(self.connect()) as db:
-                db.execute('INSERT INTO reminders VALUES(?,?,?,?,?,?,?,?,?,?,?)',(ident,actor,target,group,event.get_platform_id(),gateway.epoch(cfg,group),body,due,json.dumps(rule),'active',time.time()));db.commit()
+                db.execute('INSERT INTO reminders VALUES(?,?,?,?,?,?,?,?,?,?,?)',(ident,actor,target,storage_scope,event.get_platform_id(),0,body,due,json.dumps(rule),'active',time.time()))
+                db.execute('INSERT INTO reminder_principals VALUES(?,?,?)', (ident, *principals))
+                db.commit()
                 self.remember_undo(db,event,ident,None)
             if hasattr(event,'set_extra'):
                 event.set_extra('_ffa_reminder_reference',ident)
-            return '已创建提醒 '+str(next(row['number'] for row in self.rows() if row['id']==ident))+'：'+display(due)+'；目标QQ：'+target+'；'+note+'；'+body
+            return '已创建提醒 '+str(next(row['number'] for row in self.rows() if row['id']==ident))+'：'+display(due)+'；目标账号：'+target+'；'+note+'；'+body
         if len(args)<2:return '请指定提醒编号'
         row=next((r for r in rows if r['id']==args[1] or str(r['number'])==args[1]),None)
         if row is None:return '没有此编号或无权管理该提醒'
@@ -131,7 +143,7 @@ class ReminderStore:
             due=row['due']
             if operation=='resume' and due<=time.time():due=next_time(due,json.loads(row['rule']),time.time())
             with closing(self.connect()) as db:
-                db.execute('UPDATE reminders SET state=?,due=?,epoch=?,updated=? WHERE id=?',(state,due,gateway.epoch(cfg,group),time.time(),row['id']));db.commit()
+                db.execute('UPDATE reminders SET state=?,due=?,epoch=?,updated=? WHERE id=?',(state,due,0,time.time(),row['id']));db.commit()
                 if operation=='resume':db.execute('DELETE FROM authorization_failures WHERE id=?',(row['id'],));db.commit()
                 self.remember_undo(db,event,row['id'],row)
             return '已'+{'delete':'删除','pause':'暂停','resume':'恢复'}[operation]+'提醒 '+str(row['number'])
@@ -147,7 +159,7 @@ class ReminderStore:
                     rule=old_rule;due=base.timestamp()
                     if due<=time.time():due=next_time(due,rule,time.time())
                     note+='；保留原循环规则'
-                db.execute("UPDATE reminders SET due=?,rule=?,state='active',epoch=?,updated=? WHERE id=?",(due,json.dumps(rule),gateway.epoch(cfg,group),time.time(),row['id']));result='已修改提醒时间：'+display(due)+'；'+note
+                db.execute("UPDATE reminders SET due=?,rule=?,state='active',epoch=?,updated=? WHERE id=?",(due,json.dumps(rule),0,time.time(),row['id']));result='已修改提醒时间：'+display(due)+'；'+note
                 db.execute('DELETE FROM authorization_failures WHERE id=?',(row['id'],))
             elif operation=='text':
                 if not value.strip() or len(value)>2000:return '提醒内容应为1至2000字'
@@ -163,9 +175,10 @@ class ReminderStore:
         return f"【{state}】编号：{row['number']}；时间：{display(row['due'])}；提醒内容：{row['body']}；{cycle}。"
 
 
-    async def tick(self,authorize,send,now=None):
+    async def tick(self,authorize,send,now=None,*,only=None):
         now=time.time() if now is None else now
         for row in self.rows():
+            if only is not None and not only(row):continue
             if row['state']!='active' or row['due']>now:continue
             # Authorization precedes reservation and is repeated immediately before I/O.
             try:permitted=await authorize(row)

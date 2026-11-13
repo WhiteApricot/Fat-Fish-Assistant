@@ -1,8 +1,12 @@
 """Small runtime policies around existing meme_manager and LivingMemory APIs."""
 import asyncio
+from contextlib import closing
 import functools
 import json
+import os
+from pathlib import Path
 import re
+import sqlite3
 import time
 from collections import OrderedDict
 
@@ -20,6 +24,43 @@ MEMORY_INSTRUCTION = '''
 '''
 
 
+def native_history_read_only():
+    """Keep native history immutable after the instance selects unified memory."""
+    root = os.environ.get("FEIYU_RUNTIME_ROOT")
+    if not root:
+        return False
+    private = Path(root) / "private"
+    identity = private / "instance-identity.json"
+    if identity.is_file():
+        try:
+            mode = json.loads(identity.read_text(encoding="utf-8")).get("mode")
+            if mode == "verified":
+                return True
+        except (OSError, ValueError, AttributeError):
+            return True
+    try:
+        path = private / "ffa-memory.json"
+        config = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        config = {}
+    except (OSError, ValueError):
+        return True
+    if not isinstance(config, dict) or config.get("enabled") is True:
+        return True
+    database = private / "ffa-memory.sqlite3"
+    if not database.is_file():
+        return False
+    try:
+        uri = database.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=1)) as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] < 9:
+                return False
+            return connection.execute("""SELECT 1 FROM memory_erasures e
+                JOIN legacy_source_owners o USING(scope) LIMIT 1""").fetchone() is not None
+    except (OSError, sqlite3.Error):
+        return True
+
+
 def contains_secret(value):
     if isinstance(value, dict):
         return any((bool(re.fullmatch(r'password|passwd|token|api[_ -]?key|client[_ -]?secret|cookie|authorization|密码|口令|验证码|密钥|令牌', str(key), re.I)) and bool(item)) or contains_secret(item) for key,item in value.items())
@@ -35,14 +76,32 @@ def contains_secret(value):
         r'(?:密码|口令|验证码|密钥|令牌)[是为:：=\s]*[a-z0-9][a-z0-9_-]{2,})', text))
 
 
+_SENSITIVE_PERSONAL = re.compile(
+    r"过敏|病史|确诊|病历|用药|手术|残疾|怀孕|抑郁|焦虑症|精神科|"
+    r"身份证|护照|手机号|电话号码|住址|家庭地址|银行卡|银行账号|性取向|"
+    r"QQ号|QQ账号|微信号|飞书账号|\b(?:open_id|union_id|tenant_key)\b|"
+    r"配偶|伴侣|我(?:的)?(?:父母|父亲|母亲|丈夫|妻子|儿子|女儿|男友|女友)|"
+    r"\b(?:diagnos(?:ed|is)|allerg(?:y|ic)|medication|passport|phone number|home address)\b", re.I
+)
+
+
+def sensitive_information(text):
+    """Conservative screening for unattended capture and provider submission."""
+    return contains_secret(text) or bool(_SENSITIVE_PERSONAL.search(text))
+
+
 def durable_content(text):
     return bool(re.search(r'长期|一直|通常|每[天周月年]|习惯|偏[好爱]|最喜欢|不喜欢|过敏|'
                           r'职业|工作是|从事|项目|计划|目标|家人|父亲|母亲|爸爸|妈妈|'
                           r'妻子|丈夫|伴侣|姐姐|妹妹|哥哥|弟弟|朋友|同事|喜欢|爱好|住在|居住|专业|生日', text))
 
 
-def protect_memorize_tool(tool):
-    if tool is None or getattr(tool, '_ffa_candidate_guard', False):
+def protect_memorize_tool(tool, *, unified_write=None):
+    if tool is None:
+        return
+    if unified_write is not None:
+        tool._ffa_unified_write = unified_write
+    if getattr(tool, '_ffa_candidate_guard', False):
         return
     original = tool.call
 
@@ -54,16 +113,23 @@ def protect_memorize_tool(tool):
         explicit = bool(re.search(r'记住|记一下|记下来|remember', text, re.I))
         denied = bool(re.search(r'不要.{0,8}记|别记|不用记|假设|假如|比如|角色扮演|开玩笑|测试口令|(?:只是|临时|这是).{0,4}测试', text))
         valid = explicit or (durable_content(text) and not text.rstrip().endswith(('？','?')))
-        if denied or not valid or contains_secret([text, memory, args, kwargs]):
+        if (denied or not valid or contains_secret([text, memory, args, kwargs])
+                or (sensitive_information(str(memory)) and (not explicit or str(memory).strip() not in text))):
             return json.dumps({'memorized': False, 'error': 'No safe durable candidate'}, ensure_ascii=False)
+        if event.get_extra('_ffa_unified_memory'):
+            writer = getattr(tool, '_ffa_unified_write', None)
+            written = await writer(event, memory) if writer else False
+            return json.dumps({'memorized': bool(written)}, ensure_ascii=False)
         return await original(context, memory, *args, **kwargs)
 
     tool.call = call
     tool._ffa_candidate_guard = True
 
 
-def protect_memory_engine(engine):
+def protect_memory_engine(engine, *, on_change=None):
     """Guard all plugin writes (tools, reflection, UI) without a second store."""
+    if on_change is not None:
+        engine._ffa_projection_changed = on_change
     if getattr(engine, '_ffa_write_guard', False):
         return
     original_add, original_update = engine.add_memory, engine.update_memory
@@ -76,6 +142,9 @@ def protect_memory_engine(engine):
         if contains_secret({'content': content, 'metadata': metadata or {}, 'sources': kwargs.get('source_messages')}):
             raise ValueError('Credential content cannot be stored in long-term memory')
         direct = (metadata or {}).get('source') == 'explicit_user' or (metadata or {}).get('memory_origin') == 'agent_memorize_tool' or 'previous_id' in (metadata or {})
+        explicit = (metadata or {}).get('source') == 'explicit_user'
+        if not explicit and sensitive_information(content):
+            raise ValueError('Sensitive facts require explicit user authorization')
         if not direct and (float(importance) < 0.65 or not durable_content(content)):
             # Raising is intentional: native tool must never report memorized=true.
             raise ValueError('No durable memory candidate')
@@ -101,8 +170,12 @@ def protect_memory_engine(engine):
                     if old_meta.get('session_id')==session_id and old_meta.get('persona_id')==persona_id and (equal or equal_facts):
                         if await engine.merge_duplicate_memory(int(match['id']), importance=importance, metadata=metadata):
                             return int(match['id'])
-            return await original_add(content=content, session_id=session_id, persona_id=persona_id,
-                                      importance=importance, metadata=metadata, **kwargs)
+            memory_id = await original_add(content=content, session_id=session_id, persona_id=persona_id,
+                                           importance=importance, metadata=metadata, **kwargs)
+        callback = getattr(engine, '_ffa_projection_changed', None)
+        if callback is not None:
+            await callback(session_id, persona_id)
+        return memory_id
 
     @functools.wraps(original_update)
     async def update(memory_id, updates, **kwargs):

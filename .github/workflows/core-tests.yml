@@ -1,0 +1,41 @@
+name: Core offline tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: src
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check Python syntax
+        run: python -c "import ast,pathlib; [ast.parse(p.read_bytes(),filename=str(p)) for d in ('src','plugins','fat_fish_management','tests') for p in pathlib.Path(d).rglob('*.py')]"
+      - name: Install offline test dependencies
+        run: |
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          versions = {entry["name"]: entry["version"] for entry in json.loads(Path("manifests/core.json").read_text(encoding="utf-8"))}
+          dependencies = [f"{name}=={versions[name]}" for name in ("cryptography", "psutil")]
+          subprocess.check_call([sys.executable, "-m", "pip", "install", *dependencies])
+        shell: python
+      - name: Run offline regressions
+        run: python -m unittest discover -s tests -v

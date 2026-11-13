@@ -1,11 +1,11 @@
-"""Bounded plain-text QQ attachment reading, after the Core access check.
+"""Bounded plain-text attachment reading, after the Core access check.
 
 No arbitrary path reads, document service, or Work execution is provided here.
 """
 import asyncio
 import ipaddress
 import json
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 from urllib.parse import urljoin, urlparse
 
 MAX_BYTES = 64 * 1024
@@ -70,8 +70,18 @@ def decode_text(data):
     raise ValueError('Unknown text encoding')
 
 
-async def read_attachments(parts, fetch=fetch_bytes):
-    """Return material for File components already supplied by the QQ adapter."""
+def read_materialized(path, root, limit):
+    """Read only native attachments materialized within the AstrBot temp directory."""
+    resolved = Path(path).resolve(strict=True)
+    resolved.relative_to(Path(root).resolve(strict=True))
+    if not resolved.is_file():
+        raise ValueError("Attachment is not a regular file")
+    with resolved.open("rb") as source:
+        return source.read(limit + 1)
+
+
+async def read_attachments(parts, fetch=fetch_bytes, *, temp_root=None):
+    """Return material for File components supplied by an authenticated adapter."""
     rows = []
     remaining = MAX_BYTES
     for part in parts:
@@ -88,11 +98,15 @@ async def read_attachments(parts, fetch=fetch_bytes):
             row['说明'] = '本轮附件总量超过64KiB；未读取此文件'
         else:
             try:
-                url = str(getattr(part, 'url', '') or '')
-                if not allowed_url(url):
-                    raise ValueError('Unsafe or missing QQ file URL')
                 async with asyncio.timeout(12):
-                    data = await fetch(url, remaining)
+                    path = getattr(part, "file_", None)
+                    if path and temp_root is not None:
+                        data = await asyncio.to_thread(read_materialized, path, temp_root, remaining)
+                    else:
+                        url = str(getattr(part, 'url', '') or '')
+                        if not allowed_url(url):
+                            raise ValueError('Unsafe or missing file URL')
+                        data = await fetch(url, remaining)
                 if len(data) > remaining:
                     raise ValueError('Text attachment exceeds the size limit')
                 remaining -= len(data)

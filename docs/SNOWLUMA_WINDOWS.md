@@ -1,12 +1,10 @@
 # Windows SnowLuma 官方接入
 
-本文仅指导本地原始软件包或现有安装目录的使用。基线历史自动获取入口仍在代码中，P3-D 将移除自动获取，详见[路线图](protocols/ROADMAP.md)。
-
 SnowLuma 是当前 Windows x64 的临时 QQ 兼容方案。FFA 使用 2.4.2 Full 官方 ZIP，单独放置。Full 已包含 Node，桌面 QQ 由腾讯官方渠道提供。 [发行锁](../manifests/snowluma/windows-x64.json) · [官方 Windows 指南](https://snowluma.github.io/en/docs/guide/deploy/windows)
 
 ## 获取程序与打开窗口
 
-使用 `python -B ffa.py --root "<FFA 安装目录>" snowluma <操作>` 运行下表命令。已有双击入口继续承担 FFA 部署，统一菜单属于下一批次。
+使用 `python -B ffa.py --root "<FFA 安装目录>" snowluma <操作>` 运行下表命令。FFA 安装请使用[快速开始](QUICK_START.md)中的双击入口。
 
 | 操作 | 用途 |
 | --- | --- |

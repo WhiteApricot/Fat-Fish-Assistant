@@ -10,8 +10,8 @@ class GroupMedia:
         self.pending = {}
         self.speech = {}
 
-    def observe(self, event, epoch, *, mentioned):
-        group, sender = str(event.get_group_id()), str(event.get_sender_id())
+    def observe(self, event, epoch, *, mentioned, room=None):
+        group, sender = room or str(event.get_group_id()), str(event.get_sender_id())
         now = self.clock()
         for key, (stamp, pending) in list(self.pending.items()):
             ttl=90 if pending and all(p.__class__.__name__=='Record' for p in pending) else 12
@@ -42,10 +42,10 @@ class GroupMedia:
             self.speech.pop(key,None)
             self.pending.pop(key,None)
 
-    async def transcribe(self,event,epoch,context,allowed):
+    async def transcribe(self,event,epoch,context,allowed,*,room=None):
         """Make authorized voice visible before smart decisions and memory capture."""
         from astrbot.api.message_components import Plain
-        key=(str(event.get_group_id()),epoch,str(event.get_sender_id()))
+        key=(room or str(event.get_group_id()),epoch,str(event.get_sender_id()))
         parts=event.get_messages()
         records=[(i,p) for i,p in enumerate(parts) if p.__class__.__name__=='Record']
         mentioned=event.get_extra('_ffa_group_mentioned',False)

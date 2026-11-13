@@ -1,14 +1,14 @@
 # 第三方来源、许可与分发边界
 
-本轮仅在既有私有仓库维护自有集成代码、必要派生补丁、清单/模板/测试和文档，不公开发布。根 LICENSE 为 AGPL-3.0；不是对整个外部依赖栈重新授权。外部源码、wheel、模型、SnowLuma、QQ 与个人素材均不捆绑，也不进入本工程 Git 历史。
+本项目以 AGPL-3.0 提供自有代码和集成补丁。外部依赖、模型、SnowLuma、QQ 和素材适用各自许可，按各自条款单独获取。
 
-默认表情现为 Dejavu Moe 的 DeepSeek 鲸鱼娘同人动图精选 24 张，安装时从公开固定版本下载，不把图片二进制写入本工程 Git。旧几何小鱼测试包不再生成；只有经核对未改动的旧包才在留存恢复材料后替换，用户自定义素材保留。
+默认表情现为 Dejavu Moe 的 DeepSeek 鲸鱼娘同人动图精选 24 张，安装时从公开固定版本下载，不把图片二进制写入本工程 Git。
 
 |依赖|固定版本与来源|许可与处理|
 |---|---|---|
 |AstrBot|f61a7f42696da6df25dc7a249ec9b8d54ed9da18，[原文](https://github.com/AstrBotDevs/AstrBot/tree/f61a7f42696da6df25dc7a249ec9b8d54ed9da18)|AGPL-3.0；保留必要补丁及修改说明|
 |AstrBot WebUI|官方 v4.29.3 发布包，dashboard.json 固定 SHA|AGPL 及内含前端依赖声明；不捆绑，安装时校验并保留原资源|
-|LivingMemory|e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b，[来源](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)|AGPL-3.0，3 个适配文件|
+|LivingMemory|e95a5a9fa5f8a47f4d0b7274c1b646ea322b3d0b，[来源](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)|AGPL-3.0，6 个适配文件|
 |continuous_message|4a2a52ba90544d1527a72602762ae5ce3ae27dca，[来源](https://github.com/aliveriver/astrbot_plugin_continuous_message)|AGPL-3.0，4 个适配文件|
 |meme_manager|5cec301481b8b99682ba2a0021a432656a3a92ec，[来源](https://github.com/anka-afk/astrbot_plugin_meme_manager)|MIT，原版获取；不代表表情素材授权|
 |DeepSeek 鲸鱼娘动图（精选 24 张）|DejavuMoe/deepseek_wale_girl，提交 2e471f37d66fcc71274946d91f44da09c44fb7ad；[作者目录](https://github.com/DejavuMoe/deepseek_wale_girl/blob/2e471f37d66fcc71274946d91f44da09c44fb7ad/README.zh-CN.md)|[MIT](https://github.com/DejavuMoe/deepseek_wale_girl/blob/2e471f37d66fcc71274946d91f44da09c44fb7ad/LICENSE)，Copyright (c) 2026 Dejavu Moe；保留原始 GIF、作者 LICENSE 与 SOURCE，逐文件 SHA-256 见 starter-memes.json；非 DeepSeek 官方素材|
@@ -22,8 +22,13 @@
 |QQ / Node.js|QQ 由用户通过官方指引准备；Node 由 SnowLuma Full 发行包提供|分别遵守腾讯 QQ 条款与 Node 及随附依赖声明|
 |Microsoft runtime|固定官方安装程序，版本与哈希见 assets.json|用户接受条款后仅在缺失时启动官方安装程序；必要的系统确认由用户完成|
 
-AstrBot 同时含 [AGPL LICENSE](https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/LICENSE) 与 [EULA](https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/EULA.md)。其中用途及不可转让/不可再许可表述的适用关系仍需解释。本轮不删除原文、不作法律效力裁定，也不把一般解释歧义当作停止工程的理由。分发方式已改为自有代码+必要补丁+外部获取，未发现已证实必须通过削弱安全或更换内核才能解决的重大冲突；实际公开前仍须维护者复核适用义务。下载器不能规避条款。
+AstrBot 同时含 [AGPL LICENSE](https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/LICENSE) 与 [EULA](https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/EULA.md)。其中用途及不可转让/不可再许可表述的适用关系仍需解释。分发前请核对两份上游文件的适用条件。
 
 BGE 原模型为 MIT，但固定 GGUF 转换条件仍有核实项；SenseVoice 转换来自 ASLP-lab/WSYue-ASR 的 sensevoice_small_yue，不能只引用旧 SenseVoiceSmall 或 Sherpa 代码许可推导权重授权。它们和私人表情/头像/素材都不分发。可选安装必须自行审阅外部条件并明确选择，不表示本项目保证其适用于任何用途。
 
-本轮仅准备候选，不公开推送。许可元数据不是完整法律权利链证明；风险保留记录，不虚称全部第三方及模型许可已无条件通过。
+## 算法和接口参考
+
+- SurfCore 固定提交 `0ce8580048d3dddb21860114edb8b115d5d79d1e`。根许可的 MIT 版权行为 Copyright (c) 2026 Derpyu520 and qq-bridge / QSH contributors。FFA 对记忆分档和混合排序做 Python 算法适配，并借鉴事件、视图及外发检查设计。参考的 Node 模块及根文件列明的独立许可组件未随 FFA 分发。随包保留 [MIT 许可正文](src/fat_fish/memory/surfcore.LICENSE)。[固定上游许可及独立归属](https://github.com/Mieksido/surfcore/blob/0ce8580048d3dddb21860114edb8b115d5d79d1e/LICENSE)
+- dsh-bili-whale 固定提交 `8b0009f8ce2ebdc421afcb2e727b19ac18912ec6` 用于核对命令、日记和平台回读的输入输出。FFA 自有 Python 适配器独立提供。 [固定上游源码](https://github.com/Alterssss/dsh-bili-whale/tree/8b0009f8ce2ebdc421afcb2e727b19ac18912ec6)
+
+FFA 从固定版本适配 SurfCore 向量维护分工、复习与归档、隐私来源和提交状态边界。新代码以 Python/SQLite 实现。LivingMemory 提炼器通过固定插件 API 调用，未复制实现。IANA 时区在 Windows 使用锁定的 `tzdata` 包，许可证据在 `manifests/license-evidence.json`。
