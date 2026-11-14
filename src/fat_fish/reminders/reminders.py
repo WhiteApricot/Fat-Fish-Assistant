@@ -35,6 +35,13 @@ class ReminderStore:
         with closing(self.connect()) as db:return [dict(r) for r in db.execute(
             'SELECT reminders.*, reminder_numbers.number, p.creator AS creator_principal, p.target AS target_principal '
             'FROM reminders JOIN reminder_numbers USING(id) LEFT JOIN reminder_principals p USING(id) ORDER BY due,number')]
+    def erase_principal(self, principal):
+        with closing(self.connect()) as db, db:
+            rows = db.execute("SELECT id FROM reminder_principals WHERE creator=? OR target=?",
+                              (principal, principal)).fetchall()
+            for table in ("deliveries", "authorization_failures", "reminder_numbers", "reminders", "reminder_principals"):
+                db.executemany(f"DELETE FROM {table} WHERE id=?", rows)
+
     def remember_undo(self,db,event,ident,before):
         if hasattr(event,'set_extra'):
             after=db.execute('SELECT * FROM reminders WHERE id=?',(ident,)).fetchone()
@@ -63,7 +70,7 @@ class ReminderStore:
                 db.execute("UPDATE reminders SET state='deleted',updated=? WHERE id=?", (time.time(), ident))
             return "已撤销最近的提醒操作。"
 
-    def command(self, event, args, access):
+    def command(self, event, args, access, *, structured=False):
         route = access.room
         actor = str(event.get_sender_id())
         group = bool(event.get_group_id())
@@ -101,7 +108,7 @@ class ReminderStore:
                 target=args[1]
                 if not group or (target!=actor and not access.can_moderate(actor)):return '只有本群管理者可以为明确指定的其他成员创建提醒'
             values=args[2:] if operation=='addto' else args[1:]
-            if getattr(event,'get_extra',lambda *_:False)('_ffa_natural',False):
+            if structured:
                 if len(values)!=2 or not all(value.strip() for value in values):
                     return '请明确提醒的时间和事项。'
                 parts=values

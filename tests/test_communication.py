@@ -1,10 +1,12 @@
 import asyncio
 from contextlib import closing
 import json
+import logging
 from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -12,7 +14,7 @@ from uuid import UUID
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from fat_fish.adapters.astrbot_communication import QQ, convert
+from fat_fish.adapters.astrbot_communication import QQ, convert, filter_native_lark_chat_log
 from fat_fish.communication.model import (
     Account, Capability, ChatKind, Conversation, MessageRetraction, NotSubmitted, Outgoing, ProviderId,
 )
@@ -157,6 +159,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.gateway = PlatformGateway(private=Path(tmp.name))
+        self.gateway.chat_settings.save({"global_features": {"naturalcommand": True}})
         self.runtime = self.gateway.communication()
         self.ids = self.runtime.identities
         self.providers = (ProviderId("lark", "office"), QQ, ProviderId("synthetic", "third"))
@@ -165,12 +168,12 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
             await self.runtime.enable(address)
         self.sequence = 0
 
-    async def event(self, account, text, *, group="", message_id=None):
+    async def event(self, account, text, *, group="", message_id=None, mentions=()):
         self.sequence += 1
         address = account.provider
         platform = "aiocqhttp" if address == QQ else address.platform
         event = NativeEvent(platform, address.instance, sender=account.subject, text=text,
-                            group=group, ident=message_id or str(self.sequence))
+                            group=group, ident=message_id or str(self.sequence), parts=[At(x) for x in mentions])
 
         async def downstream():
             access = event.get_extra("_ffa_memory_access")
@@ -180,6 +183,37 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         await self.gateway.run(event, downstream)
         return event
 
+    async def test_command_receipts_reach_later_chat_and_natural_reply_follows_system(self):
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        await self.event(owner, "/personal 简短")
+        with patch.object(self.gateway.natural_language, "classify", new=unittest.mock.AsyncMock(
+                side_effect=[("personal", ["标准"]), None])):
+            with patch("fat_fish.gateway.platform_gateway.render", new=unittest.mock.AsyncMock(return_value="好啦。\n已经调整。")):
+                event = await self.event(owner, "把回复改回标准长度")
+                self.assertTrue(event.sent[0].startswith("【系统】"))
+                self.assertEqual(event.sent[1:], ["好啦。", "已经调整。"])
+            followup = await self.event(owner, "刚才改了什么")
+        receipts = followup.get_extra("_ffa_recent_command_receipts")
+        self.assertEqual(len(receipts), 2)
+        self.assertIn("简短", receipts[0])
+        self.assertIn("标准", receipts[1])
+
+    async def test_text_batch_preserves_order_and_isolates_route_and_sender(self):
+        from fat_fish.gateway.text_batch import TextBatch
+
+        batch = TextBatch(window=60)
+        first = asyncio.create_task(batch.collect(("room", "alice"), "第一句"))
+        await asyncio.sleep(0)
+        self.assertIsNone(await batch.collect(("room", "alice"), "第二句"))
+        other = asyncio.create_task(batch.collect(("room", "bob"), "另一人"))
+        await asyncio.sleep(0)
+        batch.flush(("room", "alice"))
+        self.assertEqual(await first, "第一句\n第二句")
+        self.assertFalse(other.done())
+        batch.flush(("room", "bob"))
+        self.assertEqual(await other, "另一人")
+
     async def test_managed_gateway_and_reminder_share_delivery_boundary(self):
         from fat_fish.gateway.platform_gateway import PlatformGateway
         from fat_fish.reminders.dispatch import ReminderDispatch
@@ -188,26 +222,44 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         gateway = PlatformGateway(private=self.gateway.path.parent)
         gateway.runtime = self.runtime
         gateway.reminders = ReminderStore(self.gateway.path.with_name("reminders.sqlite3"))
+        model = SimpleNamespace(text_chat=unittest.mock.AsyncMock(side_effect=[
+            SimpleNamespace(completion_text='{"command":"reminder","args":["add","十五秒之后","去喝水"]}'),
+            SimpleNamespace(completion_text='{"command":"reminder","args":["add","十秒以后","交作业"]}'),
+        ]))
+        gateway.context = SimpleNamespace(get_using_provider_async=unittest.mock.AsyncMock(return_value=model))
         owner = Account(self.providers[0], "31")
         self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
-        native = NativeEvent("lark", owner.provider.instance, sender=owner.subject,
-                             text="/remind add 10分钟后提醒我看鲸鱼")
+        qq = Account(QQ, "32")
+        await self.bind(owner, qq)
 
         async def unexpected():
             self.fail("Reminder command escaped to the model")
 
-        await gateway.run(native, unexpected)
-        self.assertIn("已创建提醒", native.sent[0])
-        row = gateway.reminders.rows()[0]
-        self.assertEqual(row["creator_principal"], self.ids.principal_id(owner))
+        natives = (
+            NativeEvent("lark", owner.provider.instance, sender=owner.subject,
+                        text="/remind add 十五秒之后叫我去喝水"),
+            NativeEvent("aiocqhttp", qq.provider.instance, sender=qq.subject,
+                        text="/remind add 十秒以后提醒我交作业"),
+        )
+        for native, seconds in zip(natives, (15, 10)):
+            started = time.time()
+            await gateway.run(native, unexpected)
+            self.assertIn("已创建提醒", native.sent[0])
+            row = next(row for row in gateway.reminders.rows() if row["platform"] == native.instance)
+            self.assertEqual(row["creator_principal"], self.ids.principal_id(owner))
+            self.assertGreaterEqual(row["due"], started + seconds)
+            self.assertLessEqual(row["due"], time.time() + seconds)
+            self.assertEqual(self.runtime.seen.delivery("reply:" + convert(native).conversation.storage_key,
+                                                       convert(native).event_id + ":1"), "submitted")
         dispatch = ReminderDispatch(gateway.reminders, self.runtime)
-        await gateway.reminders.tick(dispatch.authorize, dispatch.send, now=row["due"] + 1)
-        await gateway.reminders.tick(dispatch.authorize, dispatch.send, now=row["due"] + 1)
-        provider = self.runtime.connections[owner.provider].provider
-        self.assertEqual(len(provider.deliveries), 1)
-        self.assertIn("看鲸鱼", provider.deliveries[0][1].text)
-        self.assertEqual(self.runtime.seen.delivery("reply:" + convert(native).conversation.storage_key,
-                                                   convert(native).event_id + ":1"), "submitted")
+        due = max(row["due"] for row in gateway.reminders.rows())
+        for _ in range(2):
+            await gateway.reminders.tick(dispatch.authorize, dispatch.send, now=due + 1)
+        self.assertEqual(model.text_chat.await_count, 2)
+        for account, body in ((owner, "去喝水"), (qq, "交作业")):
+            provider = self.runtime.connections[account.provider].provider
+            self.assertEqual(len(provider.deliveries), 1)
+            self.assertEqual(provider.deliveries[0][1].text, "提醒：" + body)
 
     async def test_reset_confirmation_is_bound_to_account_and_scope(self):
         owner = Account(self.providers[0], "31")
@@ -216,14 +268,13 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         await self.bind(owner, other)
         await self.event(owner, "我喜欢观察蓝鲸")
         request = await self.event(owner, "/memory reset")
-        code = request.sent[0].split("/confirm ")[1].split()[0]
-        self.assertIn("没有匹配", (await self.event(other, "/confirm " + code)).sent[0])
-        self.assertIn("已清除", (await self.event(owner, "/confirm " + code)).sent[0])
-        self.assertIn("没有匹配", (await self.event(owner, "/confirm " + code)).sent[0])
+        self.assertIn("没有待确认", (await self.event(other, "/confirm")).sent[0])
+        self.assertIn("已清除", (await self.event(owner, "/confirm")).sent[0])
+        self.assertIn("没有待确认", (await self.event(owner, "/confirm")).sent[0])
         request = await self.event(owner, "/memory reset")
         self.assertIn("/confirm ", request.sent[0])
-        self.assertEqual((await self.event(owner, "/memory cancel")).sent, ["已取消待确认操作。"])
-        self.assertEqual((await self.event(owner, "/cancel")).sent, ["当前没有有效的待确认操作。"])
+        self.assertEqual((await self.event(owner, "/memory cancel")).sent, ["【系统】已取消待确认操作。"])
+        self.assertEqual((await self.event(owner, "/cancel")).sent, ["【系统】当前没有有效的待确认操作。"])
 
     async def test_owner_opens_mention_room_and_confirms_member_grant(self):
         owner = Account(self.providers[0], "31")
@@ -232,13 +283,11 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.ids.observe(member)
         self.ids.provision(owner, member, Role.MEMBER)
         reply = await self.event(owner, "/whitelist add 123")
-        code = reply.sent[0].split("/confirm ")[1].split()[0]
-        self.assertIn("已更新", (await self.event(owner, "/confirm " + code)).sent[0])
+        self.assertIn("已更新", (await self.event(owner, "/confirm")).sent[0])
         room = Conversation(owner.provider, "900", ChatKind.GROUP, "123", "123")
         other = Conversation(owner.provider, "900", ChatKind.GROUP, "124", "124")
         self.assertEqual(self.runtime.permissions.conversation(owner, room).mode, "mention")
-        self.assertIsNone(self.runtime.permissions.conversation(member, room))
-        self.ids.change_room_member(owner, room, member, grant=True)
+        self.assertIsNotNone(self.runtime.permissions.conversation(member, room))
         self.assertIsNotNone(self.runtime.permissions.conversation(member, room, mentions=("900",)))
         self.assertIsNone(self.runtime.permissions.conversation(member, room, mentions=()))
         self.assertIsNone(self.runtime.permissions.conversation(member, other))
@@ -250,32 +299,56 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.ids.provision(owner, admin, Role.ADMIN)
         self.assertIn("授权群数量：0", (await self.event(admin, "/whitelist")).sent[0])
         request = await self.event(admin, "/whitelist add 123")
-        code = request.sent[0].split("/confirm ")[1].split()[0]
         self.ids.provision(owner, admin, Role.MEMBER)
-        self.assertIn("权限不足", (await self.event(admin, "/confirm " + code)).sent[0])
+        self.assertIn("权限不足", (await self.event(admin, "/confirm")).sent[0])
         self.assertEqual(self.ids.rooms_for_admin(owner), [])
 
+    async def test_owner_opens_current_group_and_visitors_chat_until_blacklisted(self):
+        owner, visitor = (Account(self.providers[0], subject) for subject in ("31", "ou_visitor"))
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        async def group(account, text, *mentions):
+            return await self.event(account, text, group="oc_team", mentions=("900", *mentions))
+
+        self.assertEqual((await group(visitor, "hello")).sent, [])
+        self.assertIn("/confirm", (await group(owner, "/whitelist add")).sent[0])
+        self.assertIn("没有待确认", (await self.event(owner, "/confirm")).sent[0])
+        self.assertIn("已更新群准入", (await group(owner, "/confirm")).sent[0])
+        self.assertEqual((await group(visitor, "hello")).sent, ["response"])
+        self.assertIn("访客", (await group(visitor, "/role")).sent[0])
+        self.assertIn("已更新", (await group(owner, "/blacklist add", visitor.subject)).sent[0])
+        self.assertEqual((await group(visitor, "hello")).sent, [])
+        self.assertIn("已更新", (await group(owner, "/blacklist remove", visitor.subject)).sent[0])
+        self.assertIn("/blacklist", (await group(owner, "/role add ou_visitor")).sent[0])
+        self.assertEqual((await group(visitor, "hello")).sent, ["response"])
+        await group(owner, "/whitelist remove")
+        await self.event(owner, "/whitelist add oc_other")
+        self.assertIn("没有待确认", (await group(owner, "/confirm")).sent[0])
+        self.assertIn("已更新群准入", (await self.event(owner, "/confirm")).sent[0])
+
     async def bind(self, actor, target):
-        address = target.provider
-        request = f"/ffa-invite {address.platform} {address.instance} {target.subject}"
-        reply = await self.event(actor, request)
+        reply = await self.event(actor, "/invite")
         token = reply.sent[0].split()[-1]
-        self.assertIn("已完成", (await self.event(target, "/ffa-link " + token)).sent[0])
+        self.assertIn("已完成", (await self.event(target, "/link " + token)).sent[0])
         return token
 
     async def test_non_qq_owner_and_transitive_bindings_recover_across_providers(self):
         owner, qq, third = (Account(address, "31") for address in self.providers)
-        issued = await self.event(owner, "/ffa-owner")
+        issued = await self.event(owner, "/owner")
         code = issued.sent[0].split()[-1]
-        self.assertIn("未完成", (await self.event(qq, "/ffa-owner " + code)).sent[0])
-        self.assertEqual((await self.event(owner, "/ffa-owner " + code, group="123")).sent, [])
-        self.assertIn("已完成", (await self.event(owner, "/ffa-owner " + code)).sent[0])
+        self.assertIn("未完成", (await self.event(qq, "/owner " + code)).sent[0])
+        self.assertEqual((await self.event(owner, "/owner " + code, group="123")).sent, [])
+        self.assertIn("已完成", (await self.event(owner, "/owner " + code)).sent[0])
         principal = self.ids.principal_id(owner)
         UUID(principal)
-        self.assertIn("未完成", (await self.event(owner, "/ffa-owner " + code)).sent[0])
+        self.assertIn("未完成", (await self.event(owner, "/owner " + code)).sent[0])
         await self.bind(owner, qq)
+        lark_help = (await self.event(owner, "/help")).sent[0]
+        self.assertEqual(lark_help, (await self.event(qq, "/help")).sent[0])
+        self.assertIn("【系统】/help — 查看指令", lark_help)
+        whitelist_help = (await self.event(owner, "/help whitelist")).sent[0]
+        self.assertIn("\n/whitelist add|remove 群号 — ", whitelist_help)
         token = await self.bind(qq, third)
-        self.assertIn("未完成", (await self.event(third, "/ffa-link " + token)).sent[0])
+        self.assertIn("未完成", (await self.event(third, "/link " + token)).sent[0])
         for account in (owner, qq, third):
             self.assertEqual(self.ids.resolve(account), (principal, Role.OWNER))
         first = await self.event(owner, "我最喜欢观赏鲸鱼")
@@ -296,7 +369,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
     async def test_pending_principal_transitive_binding_and_role_grant(self):
         owner = Account(self.providers[2], "31")
         code = self.ids.issue_owner_challenge(owner)
-        self.assertIn("已完成", (await self.event(owner, "/ffa-owner " + code)).sent[0])
+        self.assertIn("已完成", (await self.event(owner, "/owner " + code)).sent[0])
         alice, qq, third = (Account(address, "48") for address in self.providers)
         event = await self.event(alice, "你好")
         self.assertEqual(event.sent, [])
@@ -311,14 +384,16 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.event(third, "你好")).sent, ["response"])
         other = Account(self.providers[0], "49")
         await self.event(other, "你好")
-        reply = await self.event(qq, f"/ffa-invite lark office {other.subject}")
-        self.assertIn("未完成", reply.sent[0])
-        self.assertNotEqual(self.ids.principal_id(other), principal)
+        previous = self.ids.principal_id(other)
+        await self.bind(qq, other)
+        self.assertEqual(self.ids.principal_id(other), principal)
+        with closing(sqlite3.connect(self.ids.path)) as db:
+            self.assertIsNone(db.execute("SELECT 1 FROM people WHERE id=?", (previous,)).fetchone())
 
     async def test_memory_pause_is_shared_only_by_the_same_principal_and_scope(self):
         owner = Account(self.providers[0], "31")
         code = self.ids.issue_owner_challenge(owner)
-        await self.event(owner, "/ffa-owner " + code)
+        await self.event(owner, "/owner " + code)
         qq = Account(QQ, "42")
         await self.bind(owner, qq)
         await self.event(owner, "我最喜欢观赏鲸鱼")
@@ -441,10 +516,10 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         provider = SimpleNamespace(text_chat=AsyncMock(return_value=SimpleNamespace(
             completion_text='{"command":"sample","args":["show"]}')))
         self.gateway.context = SimpleNamespace(get_using_provider_async=AsyncMock(return_value=provider))
-        self.assertEqual((await self.event(owner, "/help sample")).sent, ["/sample show"])
-        self.assertEqual((await self.event(member, "请查询扩展状态")).sent, ["当前会话权限不足。"])
+        self.assertEqual((await self.event(owner, "/help sample")).sent, ["【系统】/sample show"])
+        self.assertEqual((await self.event(member, "请查询扩展状态")).sent, ["【系统】当前会话权限不足。"])
         handler.assert_not_awaited()
-        self.assertEqual((await self.event(owner, "请查询扩展状态")).sent, ["已执行扩展"])
+        self.assertEqual((await self.event(owner, "请查询扩展状态")).sent, ["【系统】已执行扩展"])
         command, admission, _ = handler.await_args.args
         self.assertEqual((command.name, command.args), ("sample", ("show",)))
         self.assertEqual(admission.role, Role.OWNER)
@@ -470,7 +545,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/confirm", await natural(owner, "开放群123", "whitelist", "add", "123"))
         self.assertIsNone(self.runtime.permissions.conversation(owner, room))
         self.assertIn("已取消", await natural(owner, "取消刚才的操作", "cancel"))
-        self.assertIn("没有匹配", await natural(owner, "确定", "confirm"))
+        self.assertIn("没有待确认", await natural(owner, "确定", "confirm"))
         await natural(owner, "开放群123", "whitelist", "add", "123")
         self.assertIn("已更新", await natural(owner, "确定", "confirm"))
         self.assertEqual(self.runtime.permissions.conversation(owner, room).mode, "mention")
@@ -495,7 +570,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.gateway.pending.clock = lambda: clock
         await natural(owner, "关闭群123", "whitelist", "remove", "123")
         clock += 90
-        self.assertIn("没有匹配", await natural(owner, "确定", "confirm"))
+        self.assertIn("没有待确认", await natural(owner, "确定", "confirm"))
         self.assertEqual(self.runtime.permissions.conversation(owner, room).mode, "mention")
         self.assertIn("已更新群准入", (await self.event(owner, "/history all")).sent[0])
 
@@ -521,9 +596,8 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("1 个群", (await self.event(owner, "/role remove 32 all")).sent[0])
         self.assertFalse(self.ids.conversation_permissions(target, room)[-1])
         request = await self.event(owner, "/role add 32 123")
-        code = request.sent[0].split("/confirm ")[1].split()[0]
         self.assertIn("权限没有变更", (await self.event(owner, "/role undo")).sent[0])
-        self.assertIn("没有匹配", (await self.event(owner, "/confirm " + code)).sent[0])
+        self.assertIn("没有待确认", (await self.event(owner, "/confirm")).sent[0])
         await self.event(owner, "/role add 32 123")
         self.assertIn("已授予", (await self.event(owner, "/confirm")).sent[0])
         self.assertIn("已撤销", (await self.event(owner, "/role undo")).sent[0])
@@ -704,11 +778,38 @@ class PersonaScopeTests(unittest.TestCase):
                     return settings.undo_preference("webresearch", message, actor, permissions, lambda: True)
                 return settings.command(event, message, actor, permissions, lambda: True)
 
+            self.assertIn("全局联网搜索已关闭", command("/webresearch on", first))
+            self.assertIn("开启", command("/webresearch global on", first))
             self.assertIn("关闭", command("/webresearch off", first))
             self.assertIn("开启", command("/webresearch on", second))
             self.assertIn("未覆盖", command("/undo webresearch", first))
             self.assertIn("已撤销", command("/undo webresearch", second))
             self.assertIn("未覆盖", command("/undo webresearch", first))
+
+    def test_token_features_gate_private_group_and_global_changes(self):
+        from fat_fish.permissions.service import Admission, PermissionService
+        from fat_fish.persona.chat_settings import ChatSettings, feature_enabled
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings = ChatSettings(Path(directory) / "settings.json")
+            member = Admission("member", Role.MEMBER, "mention")
+            moderator = Admission("moderator", Role.MEMBER, "mention", True)
+            admin = Admission("admin", Role.ADMIN, "mention")
+
+            def command(text, actor, group=""):
+                event = NativeEvent(group=group, text=text)
+                return settings.command(event, convert(event), actor, PermissionService(None), lambda: True)
+
+            for name in ("webresearch", "naturalcommand"):
+                self.assertIn("已关闭", command(f"/{name} on", member))
+                self.assertIn("只有主人", command(f"/{name} global on", moderator, "group"))
+                self.assertIn("已开启全局", command(f"/{name} global on", admin, "group"))
+                self.assertIn("群管理权限", command(f"/{name} off", member, "group"))
+                self.assertIn("关闭", command(f"/{name} off", moderator, "group"))
+                self.assertIn("开启", command(f"/{name} on", member))
+                self.assertTrue(feature_enabled(settings.read(), name, member.principal_id))
+                self.assertIn("已关闭全局", command(f"/{name} global off", admin))
+                self.assertFalse(feature_enabled(settings.read(), name, member.principal_id))
 
     def test_concurrent_persona_edits_preserve_newer_revision(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -776,9 +877,9 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
                                   permissions=PermissionService(None))
         actor = (admission.principal_id, message.sender.storage_key)
         scope = message.conversation.storage_key
-        code = gateway.pending.issue(actor, scope, "groupmode", ("smart",))
-        outcome = await gateway._role_command(runtime, message, admission, ["/confirm", code], None)
-        self.assertIn("仅 L2/L3", outcome)
+        gateway.pending.issue(actor, scope, "groupmode", ("smart",))
+        outcome = await gateway._role_command(runtime, message, admission, ["/confirm"], None)
+        self.assertIn("本群管理员", outcome)
         change_mode.assert_called_once_with(message.sender, message.conversation, "smart")
         self.assertIsNone(gateway.pending.peek(actor, scope))
 
@@ -963,15 +1064,14 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(msg.timestamp, 1771000000)
 
 
-    async def test_binding_uses_verified_target_and_cannot_replay(self):
+    async def test_binding_uses_cross_platform_proof_and_cannot_replay(self):
         target = Account(self.lark, "ou_owner")
-        invitation = self.ids.invite(self.owner, self.owner, target)
-        impostor = NativeEvent(sender="ou_other", text="/ffa-link " + invitation)
-        await self.deliver(impostor)
-        self.assertIn("未完成", impostor.sent[0])
-        proof = NativeEvent(sender="ou_owner", text="/ffa-link " + invitation)
+        invitation = self.ids.issue_platform_link(self.owner)
+        with self.assertRaises(PermissionError):
+            self.ids.confirm_platform_link(Account(QQ, "same-platform"), invitation)
+        proof = NativeEvent(sender="ou_owner", text="/link " + invitation)
         await self.deliver(proof)
-        self.assertIn("完成", proof.sent[0])
+        self.assertIn("账号验证已完成", proof.sent[0])
         self.assertEqual(self.ids.resolve(target), (self.ids.principal_id(self.owner), Role.OWNER))
         owner_id = self.ids.principal_id(self.owner)
         self.assertEqual(str(UUID(owner_id)), owner_id)
@@ -979,7 +1079,7 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
         event = convert(NativeEvent(sender="ou_owner"))
         self.assertEqual(self.runtime.authorize(event).principal_id, owner_id)
         with self.assertRaises(PermissionError):
-            self.ids.confirm(target, invitation)
+            self.ids.confirm_platform_link(target, invitation)
         with self.assertRaises(PermissionError):
             self.ids.provision(Account(self.second, "31"), target, Role.ADMIN)
         self.ids.unlink(self.owner, target)
@@ -1099,8 +1199,13 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
             {"provider": "astrbot", "platform": "lark", "instance": "native-lark", "bot": "900"},
         ]}
         (self.private / "ffa-communication.json").write_text(json.dumps(cfg))
-        native = SimpleNamespace(meta=lambda: SimpleNamespace(name="lark"))
+        native = SimpleNamespace(meta=lambda: SimpleNamespace(name="lark"), bot_open_id="")
         self.gateway.context = SimpleNamespace(get_platform_inst=lambda name: native)
+        await self.gateway.start_configured()
+        self.assertEqual(await self.runtime.health(address), "unhealthy")
+        native.bot_open_id = "ou_wrong_bot"
+        self.assertEqual(await self.runtime.health(address), "unhealthy")
+        native.bot_open_id = "900"
         first = NativeEvent(instance=address.instance, sender=alice.subject, thread="pinned-session")
         colliding = NativeEvent(instance=address.instance, sender=bob.subject, thread="pinned-session")
         await self.deliver(first)
@@ -1111,3 +1216,11 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
         route = convert(colliding).conversation
         with self.assertRaises(PermissionError):
             await self.runtime.send(bob, route, Outgoing("mismatched native target"), "bad-route")
+
+    def test_native_chat_log_filters_lark_outlines(self):
+        record = logging.LogRecord("astrbot", logging.INFO, "event_bus.py", 1, "chat", (), None)
+        record.category = "user_chat"
+        record.platform_type = "lark"
+        self.assertFalse(filter_native_lark_chat_log(record))
+        record.platform_type = "aiocqhttp"
+        self.assertTrue(filter_native_lark_chat_log(record))

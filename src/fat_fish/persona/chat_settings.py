@@ -6,7 +6,15 @@ from time import monotonic
 from threading import Lock
 
 from fat_fish.communication.model import ChatKind
+from fat_fish.core.identity import Role
 from fat_fish.persona.persona_settings import PERSONA_HELP, edit_persona, effective_notes
+
+
+FEATURES = {"naturalcommand": "自然语言指令", "webresearch": "联网搜索"}
+
+
+def feature_enabled(config, name, scope):
+    return config.get("global_features", {}).get(name, False) is True and config.get(name, {}).get(scope, True) is True
 
 
 class ChatSettings:
@@ -27,6 +35,21 @@ class ChatSettings:
         temp.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
         temp.replace(self.path)
 
+    def erase_principal(self, principal):
+        with self.lock:
+            config = self.read()
+            for field in ("preferences", "webresearch", "naturalcommand", "private_persona_notes"):
+                config.get(field, {}).pop(principal, None)
+            for revisions in config.get("preference_revisions", {}).values():
+                revisions.pop(principal, None)
+            config.get("persona_entries", {}).pop("private:" + principal, None)
+            if self.path.exists():
+                self.save(config)
+            for entries in (self.persona_undo, self.preference_undo):
+                for key in tuple(entries):
+                    if key[0] == principal:
+                        del entries[key]
+
     def prepare(self, event, message, admission):
         config = self.read()
         private = message.conversation.kind is ChatKind.PRIVATE
@@ -35,7 +58,7 @@ class ChatSettings:
         event.set_extra("_ffa_persona_notes", effective_notes(config, subject, group))
         if private:
             event.set_extra("_ffa_preference", config.get("preferences", {}).get(subject, "标准"))
-        event.set_extra("_ffa_webresearch", config.get("webresearch", {}).get(group or subject, True))
+        event.set_extra("_ffa_webresearch", lambda: feature_enabled(self.read(), "webresearch", group or subject))
 
     def latest_persona_undo(self, principal, room):
         with self.lock:
@@ -53,6 +76,9 @@ class ChatSettings:
         field = {"personal": "preferences", "groupsettings": "cooldowns"}.get(command, command)
         with self.lock:
             config = self.read()
+            if command in FEATURES and (admission.role < Role.MEMBER
+                    or config.get("global_features", {}).get(command) is not True):
+                return "当前无权修改此功能设置。"
             current = config.get(field, {}).get(key)
             undo_key = admission.principal_id, room, command
             entry = self.preference_undo.get(undo_key)
@@ -94,7 +120,12 @@ class ChatSettings:
             return "此指令不适用于当前会话。"
         if name == "globalpersona" and (not private or not permissions.is_global_admin(admission)):
             return "请在授权私聊中管理全局人格。"
-        if not private and not permissions.can_moderate(admission):
+        global_feature = name in FEATURES and payload.split()[:1] == ["global"]
+        if global_feature and not permissions.is_global_admin(admission):
+            return "只有主人和全局管理员可以设置全局开关。"
+        if name in FEATURES and admission.role < Role.MEMBER:
+            return "此操作需要普通成员权限。"
+        if not private and not global_feature and not permissions.can_moderate(admission):
             return "此操作需要本群管理权限。"
         with self.lock:
             if not allowed():
@@ -111,18 +142,31 @@ class ChatSettings:
                     return "格式：/personal 简短|标准|详细"
                 value = lengths[payload]
                 result = "个人回复长度已设为 " + lengths[payload]
-            elif name in {"webresearch", "naturalcommand"}:
+            elif name in FEATURES:
+                label = FEATURES[name]
+                global_values = config.get("global_features", {})
+                if global_feature:
+                    args = payload.split()[1:]
+                    if not args:
+                        state = "开启" if global_values.get(name) is True else "关闭"
+                        return f"全局{label}：{state}。使用 /{name} global on|off。"
+                    if args not in (["on"], ["off"]):
+                        return f"用法：/{name} global [on|off]"
+                    config.setdefault("global_features", {})[name] = args == ["on"]
+                    self.save(config)
+                    return f"已{'开启' if args == ['on'] else '关闭'}全局{label}。"
+                if global_values.get(name) is not True:
+                    return f"全局{label}已关闭。请联系主人或全局管理员开启。"
                 values = config.setdefault(name, {})
                 field = name
                 key = actor if private else group
-                label = "自然语言指令" if name == "naturalcommand" else "联网搜索"
                 if payload in {"", "help"}:
                     state = "开启" if values.get(key, True) else "关闭"
-                    return f"当前作用域{label}：{state}。使用 /{name} on|off。"
+                    return f"当前会话{label}：{state}。使用 /{name} on|off。"
                 if payload not in {"on", "off"}:
                     return f"用法：/{name} on|off"
                 value = payload == "on"
-                result = f"已保存当前作用域的{label}设置：" + ("开启" if payload == "on" else "关闭")
+                result = f"已保存当前会话的{label}设置：" + ("开启" if payload == "on" else "关闭")
             elif name == "groupsettings":
                 values = config.setdefault("cooldowns", {})
                 field, key = "cooldowns", group

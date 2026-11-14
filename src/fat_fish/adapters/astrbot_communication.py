@@ -100,6 +100,10 @@ def convert(event):
     conversation = Conversation(provider, _id(event.get_self_id()), kind, peer, _id(native_session or peer))
     legacy = event.get_platform_name() == ONEBOT_NAME
     mentions, reply, media, quoted_sender = _components(event, legacy)
+    if provider.platform == "lark" and not reply:
+        parent = getattr(getattr(event.message_obj, "raw_message", None), "parent_id", None)
+        if isinstance(parent, str) and parent:
+            reply = parent
     timestamp = float(getattr(event.message_obj, "timestamp", time.time()))
     text = event.message_str
     if provider.platform == "lark" and mentions:
@@ -177,6 +181,35 @@ class AstrBotCommunication:
 
     async def send(self, target, message):
         return await self.send_checked(target, message, lambda: True)
+
+    async def prepare_media(self, event, message, allowed, author_allowed):
+        if self.address.platform != "lark" or not message.reply_to:
+            return
+        from fat_fish.adapters.lark_quote import quote_context
+
+        quote = await quote_context(event, message, author_allowed)
+        if not allowed():
+            raise PermissionError("Quote authorization revoked")
+        if not quote:
+            parts = event.get_messages()
+            parts[:] = [part for part in parts if type(part).__name__ != "Reply"]
+        event.set_extra("_ffa_quoted_context", quote or "用户明确引用了一条消息，但未能核实其内容。请勿猜测引用原文。")
+
+    async def reply_native(self, event, target, result, original_send):
+        if self.address.platform != "lark" or not hasattr(result, "chain") or not result.chain:
+            return await original_send(result)
+        if any(type(part).__name__ not in {"Plain", "At", "Reply"} for part in result.chain):
+            return await original_send(result)
+        if any(type(part).__name__ == "Reply" and str(part.id) != str(event.message_obj.message_id)
+               for part in result.chain):
+            return await original_send(result)
+        from astrbot.core.platform.astr_message_event import AstrMessageEvent
+
+        result = result.derive([part for part in result.chain if type(part).__name__ != "Reply"])
+        if result.chain:
+            if not await self.context.send_native(self.routes[target], result):
+                raise ConnectionError("Native adapter rejected delivery")
+            await AstrMessageEvent.send(event, result)
 
     async def send_checked(self, target, message, allowed):
         origin = self.routes.get(target)

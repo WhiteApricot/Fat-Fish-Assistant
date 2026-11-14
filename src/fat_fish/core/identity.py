@@ -19,6 +19,10 @@ class Role(IntEnum):
     ADMIN = 2
     OWNER = 3
 
+    @property
+    def label(self):
+        return ("已封禁", "访客", "普通成员", "全局管理员", "主人")[self + 1]
+
 
 class IdentityDirectory:
     def __init__(self, path, *, clock=time.time):
@@ -76,6 +80,11 @@ class IdentityDirectory:
                 digest TEXT PRIMARY KEY, address TEXT NOT NULL,
                 person TEXT NOT NULL REFERENCES people(id), issuer TEXT NOT NULL,
                 expires REAL NOT NULL, issuer_address TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS platform_link_codes (
+                digest TEXT PRIMARY KEY, issuer_address TEXT NOT NULL UNIQUE,
+                principal_id TEXT NOT NULL REFERENCES people(principal_id) ON DELETE CASCADE,
+                expires REAL NOT NULL
             );
             CREATE TABLE IF NOT EXISTS rooms (
                 address TEXT PRIMARY KEY, mode TEXT NOT NULL
@@ -245,7 +254,7 @@ class IdentityDirectory:
         db.execute("INSERT INTO identity_audit VALUES (?,?,?,?,?,?)",
                    (str(uuid4()), action, actor, target, principal, self.clock()))
 
-    def observe(self, account):
+    def observe(self, account, *, room=None):
         """Register an authenticated first contact with no chat permissions."""
         with self.transaction(write=True) as db:
             person, _, principal = self._lookup_identity(db, account)
@@ -253,6 +262,11 @@ class IdentityDirectory:
                                     (account.storage_key,)).fetchone():
                 return principal
             if not db.execute("SELECT 1 FROM people WHERE role=?", (Role.OWNER,)).fetchone():
+                return None
+            if room is not None and (room.kind is not ChatKind.GROUP or room.provider != account.provider
+                    or not db.execute("SELECT 1 FROM rooms WHERE address=?", (room.storage_key,)).fetchone()
+                    or db.execute("SELECT 1 FROM account_room_blocks WHERE room=? AND address=?",
+                                  (room.storage_key, account.storage_key)).fetchone()):
                 return None
             principal = self._create_person(db, Role.VISITOR)
             self._bind(db, account.storage_key, principal, "provider-first-contact")
@@ -373,28 +387,80 @@ class IdentityDirectory:
     def _digest(token):
         return hashlib.sha256(token.encode()).hexdigest()
 
+    def issue_platform_link(self, source):
+        with self.transaction(write=True) as db:
+            _, role, principal = self._lookup_identity(db, source)
+            if principal is None or role == Role.BLOCKED:
+                raise PermissionError("Binding requires an active account")
+            token = secrets.token_urlsafe(32)
+            now = self.clock()
+            db.execute("DELETE FROM platform_link_codes WHERE expires<=? OR issuer_address=?",
+                       (now, source.storage_key))
+            db.execute("INSERT INTO platform_link_codes VALUES (?,?,?,?)",
+                       (self._digest(token), source.storage_key, principal, now + 300))
+            return token
+
+    def confirm_platform_link(self, target, token, *, erase_previous=None):
+        with self.transaction(write=True) as db:
+            digest = self._digest(token)
+            row = db.execute("SELECT issuer_address,principal_id,expires FROM platform_link_codes WHERE digest=?",
+                             (digest,)).fetchone()
+            if row is None:
+                return self._confirm_exact_invitation(db, target, digest)
+            if row[2] <= self.clock():
+                raise PermissionError("Invalid or expired invitation")
+            issuer_address, principal, _ = row
+            platform, instance, subject = json.loads(issuer_address)
+            issuer = Account(ProviderId(platform, instance), subject)
+            _, issuer_role, current = self._lookup_identity(db, issuer)
+            _, target_role, previous = self._lookup_identity(db, target)
+            if (current != principal or issuer_role == Role.BLOCKED or target.provider.platform == platform
+                    or (previous != principal and target_role in {Role.BLOCKED, Role.OWNER})):
+                raise PermissionError("Binding authorization denied")
+            if previous is not None and previous != principal:
+                count = db.execute("SELECT count(*) FROM identity_bindings WHERE principal_id=? AND revoked_at IS NULL",
+                                   (previous,)).fetchone()[0]
+                if count != 1:
+                    raise PermissionError("Target has other active bindings")
+                if erase_previous is not None:
+                    erase_previous(previous)
+                db.execute("DELETE FROM account_members WHERE address=?", (target.storage_key,))
+                db.execute("DELETE FROM invitations WHERE person=? OR issuer=?", (previous, previous))
+                db.execute("DELETE FROM identity_audit WHERE principal_id=?", (previous,))
+                db.execute("DELETE FROM identity_bindings WHERE principal_id=?", (previous,))
+                db.execute("DELETE FROM people WHERE principal_id=?", (previous,))
+            if previous != principal:
+                self._bind(db, target.storage_key, principal, "platform-link-code", issuer=issuer_address)
+            db.execute("DELETE FROM retired_accounts WHERE address=?", (target.storage_key,))
+            db.execute("DELETE FROM platform_link_codes WHERE digest=?", (digest,))
+            self._audit(db, "binding-confirmed", target.storage_key, actor=target.storage_key, principal=principal)
+            return previous if previous != principal else None
+
     def confirm(self, authenticated_target, token):
         with self.transaction(write=True) as db:
-            row = db.execute("SELECT address, person, issuer, expires, issuer_address FROM invitations WHERE digest=?",
-                             (self._digest(token),)).fetchone()
-            if row is None or row[0] != authenticated_target.storage_key or row[3] <= self.clock():
-                raise PermissionError("Invalid or expired invitation")
-            roles = dict(db.execute("SELECT id,role FROM people WHERE id IN (?,?)", (row[1], row[2])))
-            if roles.get(row[1], Role.BLOCKED) < Role.VISITOR or roles.get(row[2], Role.BLOCKED) < Role.VISITOR:
-                raise PermissionError("Binding authorization revoked")
-            if not db.execute("""SELECT 1 FROM identity_bindings b JOIN people p USING(principal_id)
-                WHERE b.address=? AND p.id=? AND b.revoked_at IS NULL""", (row[4], row[2])).fetchone():
-                raise PermissionError("Binding issuer account revoked")
-            if row[1] != row[2] and roles[row[2]] != Role.OWNER:
-                raise PermissionError("Binding authorization revoked")
-            if self._lookup(db, authenticated_target)[0] is not None:
-                raise ValueError("Target already has an identity")
-            self._bind(db, row[0], row[1], "adapter-invitation", issuer=row[4])
-            db.execute("DELETE FROM retired_accounts WHERE address=?", (row[0],))
-            db.execute("DELETE FROM invitations WHERE address=?", (row[0],))
-            self._audit(db, "binding-confirmed", row[0], actor=row[0],
-                        principal=self._lookup_identity(db, authenticated_target)[2])
-            return row[1]
+            return self._confirm_exact_invitation(db, authenticated_target, self._digest(token))
+
+    def _confirm_exact_invitation(self, db, authenticated_target, digest):
+        row = db.execute("SELECT address, person, issuer, expires, issuer_address FROM invitations WHERE digest=?",
+                         (digest,)).fetchone()
+        if row is None or row[0] != authenticated_target.storage_key or row[3] <= self.clock():
+            raise PermissionError("Invalid or expired invitation")
+        roles = dict(db.execute("SELECT id,role FROM people WHERE id IN (?,?)", (row[1], row[2])))
+        if roles.get(row[1], Role.BLOCKED) < Role.VISITOR or roles.get(row[2], Role.BLOCKED) < Role.VISITOR:
+            raise PermissionError("Binding authorization revoked")
+        if not db.execute("""SELECT 1 FROM identity_bindings b JOIN people p USING(principal_id)
+            WHERE b.address=? AND p.id=? AND b.revoked_at IS NULL""", (row[4], row[2])).fetchone():
+            raise PermissionError("Binding issuer account revoked")
+        if row[1] != row[2] and roles[row[2]] != Role.OWNER:
+            raise PermissionError("Binding authorization revoked")
+        if self._lookup(db, authenticated_target)[0] is not None:
+            raise ValueError("Target already has an identity")
+        self._bind(db, row[0], row[1], "adapter-invitation", issuer=row[4])
+        db.execute("DELETE FROM retired_accounts WHERE address=?", (row[0],))
+        db.execute("DELETE FROM invitations WHERE address=?", (row[0],))
+        self._audit(db, "binding-confirmed", row[0], actor=row[0],
+                    principal=self._lookup_identity(db, authenticated_target)[2])
+        return row[1]
 
     def unlink(self, actor, account):
         with self.transaction(write=True) as db:
@@ -512,14 +578,14 @@ class IdentityDirectory:
     def conversation_permissions(self, account, room):
         with self.transaction() as db:
             principal, role, principal_id = self._lookup_identity(db, account)
-            if account.provider != room.provider or role < Role.MEMBER:
+            if principal_id is None or account.provider != room.provider or role == Role.BLOCKED:
                 return principal, role, None, principal_id, False
             if room.kind is ChatKind.PRIVATE:
-                return principal, role, "open" if account.subject == room.peer else None, principal_id, False
-            row = db.execute("""SELECT mode FROM rooms JOIN account_members ON account_members.room=rooms.address
-                              WHERE rooms.address=? AND account_members.address=?
+                allowed = role >= Role.MEMBER and account.subject == room.peer
+                return principal, role, "open" if allowed else None, principal_id, False
+            row = db.execute("""SELECT mode FROM rooms WHERE rooms.address=?
                               AND NOT EXISTS (SELECT 1 FROM account_room_blocks b
-                                  WHERE b.room=rooms.address AND b.address=account_members.address)""",
+                                  WHERE b.room=rooms.address AND b.address=?)""",
                              (room.storage_key, account.storage_key)).fetchone()
             return (principal, role, row[0] if row else None, principal_id,
                     self._room_admin(db, account, room, role))

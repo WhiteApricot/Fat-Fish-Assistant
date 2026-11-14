@@ -5,6 +5,10 @@ from datetime import datetime,timedelta,timezone
 
 TZ=timezone(timedelta(hours=8),'Asia/Taipei')
 NUM={'零':0,'一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9}
+RELATIVE_NUMBER = r"(?:\d+|[零一二两三四五六七八九]?十[一二三四五六七八九]?|[零一二两三四五六七八九])"
+RELATIVE_DELAY = re.compile(rf"(?<![\d.零一二两三四五六七八九十百千万负-])({RELATIVE_NUMBER})\s*(秒|分钟|小时|天)(?:以后|之后|后)")
+REPEATING_DELAY = re.compile(rf"每隔({RELATIVE_NUMBER})\s*(分钟|小时|天)")
+LEADING_DELAY = re.compile(rf"(?:再过|过|等)\s*({RELATIVE_NUMBER})\s*(?:个\s*)?(秒|分钟|小时|天)")
 def number(value):
     if value.isdecimal():return int(value)
     if '十' in value:
@@ -38,9 +42,9 @@ def parse_time(text,now=None):
     now=now.astimezone(TZ)
     rule={'kind':'once'};note=''
     text=text.replace('半分钟后','30秒后').replace('半小时后','30分钟后')
-    rel=re.search(r'(?<![\d.])(\d+)\s*(秒|分钟|小时|天)(?:后|以后)',text) or re.search(r'每隔(\d+)\s*(分钟|小时|天)',text)
+    rel = RELATIVE_DELAY.search(text) or REPEATING_DELAY.search(text) or LEADING_DELAY.fullmatch(text.strip())
     if rel:
-        seconds=int(rel[1])*{'秒':1,'分钟':60,'小时':3600,'天':86400}[rel[2]]
+        seconds=number(rel[1])*{'秒':1,'分钟':60,'小时':3600,'天':86400}[rel[2]]
         if seconds<=0 or seconds>366*86400:raise ValueError('相对时间应在1秒至366天内')
         if '每隔' in text or '每' in text:rule={'kind':'interval','seconds':seconds}
         return (now+timedelta(seconds=seconds)).timestamp(),rule,'采用明确相对时间'

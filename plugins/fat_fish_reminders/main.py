@@ -18,7 +18,7 @@ class FatFishReminders(Star):
     async def tick(self):
         task=asyncio.current_task();self.active.add(task)
         try:
-            await ReminderDispatch(self.store,self.gateway.reminder_runtime).tick()
+            await ReminderDispatch(self.store,self.gateway.reminder_runtime,self.gateway.render_reminder).tick()
         finally:self.active.discard(task)
     async def terminate(self):
         self.stopping=True

@@ -21,6 +21,8 @@ from fat_fish.core.identity import IdentityDirectory, Role
 from fat_fish.memory.experience import contains_secret, sensitive_information
 from fat_fish.participation.participation import DEFAULT_COOLDOWN, Participation
 from fat_fish.persona.chat_settings import ChatSettings
+from fat_fish.persona.persona_settings import effective_notes
+from fat_fish.persona.persona_reply import render, reply_segments
 from fat_fish.commands.confirmation import PendingActions
 from fat_fish.commands.intents import ROUTES
 from fat_fish.commands.natural_language import NaturalLanguageManager
@@ -29,9 +31,10 @@ from fat_fish.commands.registry import Command, CommandRegistry
 from fat_fish.reminders.dispatch import ReminderAccess
 from fat_fish.memory.gateway_bridge import GatewayMemory
 from fat_fish.gateway.media_ingress import UnsupportedMedia, prepare_media
+from fat_fish.gateway.text_batch import TextBatch
 
 
-IDENTITY_REQUEST = re.compile(r"^/?ffa-(owner|invite|link|unlink)(?:\s|$)", re.I)
+IDENTITY_REQUEST = re.compile(r"^/(owner|invite|link|unlink)(?:\s|$)", re.I)
 logger = logging.getLogger(__name__)
 
 
@@ -74,6 +77,21 @@ class PlatformGateway:
         self._command_receipts = OrderedDict()
         self._reminder_undo = OrderedDict()
         self._admin_undo = OrderedDict()
+        self.text_batch = TextBatch()
+
+    async def render_reminder(self, room, principal, body):
+        kind = "FriendMessage" if room.kind is ChatKind.PRIVATE else "GroupMessage"
+        origin = f"{room.provider.instance}:{kind}:{room.thread}"
+        group = room.storage_key if room.kind is ChatKind.GROUP else ""
+        notes = effective_notes(self.chat_settings.read(), principal, group)
+        reply = await render(self.context, origin, "aiocqhttp" if room.provider.platform == "qq" else room.provider.platform,
+                             {"到期事项": body}, notes=notes,
+                             instructions="用当前人格自然提醒用户现在该做什么。保留原事项，不添加新的任务或承诺。")
+        if reply and body in reply:
+            return reply
+        from fat_fish.persona.private_persona import apply_affix
+
+        return apply_affix("到时间啦，记得" + body, notes)
 
     @property
     def reminder_runtime(self):
@@ -85,16 +103,17 @@ class PlatformGateway:
 
     def _record_command(self, key, words, result):
         name = words[0].removeprefix("/")
-        if name in {"history", "clarify", "cancel"} or "/confirm " in result:
+        if name in {"history", "help"}:
             return
         label = name
         if len(words) > 1 and words[1] in ROUTES.get(name, {}):
             label += " " + words[1]
         if name in {"memory", "groupmemory", "persona", "globalpersona", "privatepersona", "grouppersona"}:
-            result = "[已返回回执，记忆正文或自定义人格内容已隐藏]"
+            state = "操作已完成" if result.startswith("已") else "已返回结果"
+            result = "[" + state + "，正文已隐藏]"
         elif contains_secret(result):
             result = "[已返回回执，敏感内容已隐藏]"
-        history = self._command_receipts.setdefault(key, deque(maxlen=8))
+        history = self._command_receipts.setdefault(key, deque(maxlen=16))
         history.append((time.monotonic(), f"{label}：{result[:800]}"))
         self._command_receipts.move_to_end(key)
         if len(self._command_receipts) > 512:
@@ -189,11 +208,12 @@ class PlatformGateway:
             await self._memory_command(runtime, message, admission, words, event)
             return None
         return platform_help(message.conversation.kind is ChatKind.PRIVATE, admission, words[1:],
-                             reminders=self.reminders is not None, registry=self.commands)
+                             reminders=self.reminders is not None, registry=self.commands,
+                             global_features=self.chat_settings.read().get("global_features"))
 
     async def _group_mode_command(self, runtime, message, admission, words, event):
         if message.conversation.kind is not ChatKind.GROUP or not runtime.permissions.can_moderate(admission):
-            return "仅 L2/L3 可在授权群设置本群行为"
+            return "只有本群管理员可以设置群聊行为"
         if len(words) == 1:
             return f"本群模式：{admission.mode}；/groupmode mention|smart"
         modes = {"mention": "mention", "@": "mention", "@触发": "mention",
@@ -201,8 +221,8 @@ class PlatformGateway:
         if len(words) != 2 or words[1] not in modes:
             return "格式：/groupmode @触发|智能插话"
         actor = (admission.principal_id, message.sender.storage_key)
-        code = self.pending.issue(actor, message.conversation.storage_key, "groupmode", (modes[words[1]],))
-        return f"90秒内发送 /confirm {code} 确认本群模式变更"
+        self.pending.issue(actor, message.conversation.storage_key, "groupmode", (modes[words[1]],))
+        return "90秒内发送 /confirm 确认本群模式变更"
 
     async def _undo_command(self, runtime, message, admission, words, event):
         if words[1:] in (["role"], ["globaladmin"]):
@@ -239,8 +259,8 @@ class PlatformGateway:
                     revision = await asyncio.to_thread(runtime.identities.authorization_revision)
                     if revision != expected:
                         raise ValueError("Authorization changed after the grant")
-                    code = self.pending.issue(actor, scope, "global-admin-undo", (target, expected, previous_role))
-                    return f"撤销刚才授予 {target.subject} 的全局管理员权限。90秒内发送 /confirm {code}"
+                    self.pending.issue(actor, scope, "global-admin-undo", (target, expected, previous_role))
+                    return f"撤销刚才授予 {target.subject} 的全局管理员权限。90秒内发送 /confirm"
                 await asyncio.to_thread(runtime.identities.change_room_moderator, message.sender, room,
                                         target, grant=False, from_global=True, expected=expected)
             except (PermissionError, ValueError):
@@ -251,7 +271,7 @@ class PlatformGateway:
         _, operation, _, _ = item
         if operation not in {"scoped-moderator", "group-moderator", "global-admin", "global-admin-undo"}:
             return "当前待确认的是其他操作，管理员申请没有变更"
-        if self.pending.consume(actor, scope, item[0]) is None:
+        if self.pending.consume_latest(actor, scope) is None:
             return "近期授权已过期或权限配置已有变化，请明确指定账号和范围"
         return "已取消刚才的管理员申请，权限没有变更"
 
@@ -259,8 +279,31 @@ class PlatformGateway:
         if self.reminders is None:
             return "当前未启用提醒服务。"
         access = ReminderAccess(runtime, message.conversation)
+        args = words[1:]
+        operation = args[0] if args else ""
+        structured = event.get_extra("_ffa_natural", False)
+        if operation in {"add", "addto"} and not structured:
+            from fat_fish.commands.intents import IntentUnavailable, classify
+
+            first_content = 2 if operation == "addto" else 1
+            request = " ".join(args[first_content:])
+            if not request:
+                return "请提供提醒的时间和事项。"
+            if operation == "addto" and (message.conversation.kind is not ChatKind.GROUP
+                    or not runtime.permissions.can_moderate(admission)):
+                return "只有本群管理员可以为其他成员创建提醒。"
+            try:
+                parsed = await classify(self.context, event, request, "", (), recent=(), pending=None,
+                                        reminders=(), reminder_creation=True)
+            except IntentUnavailable:
+                return "暂时无法使用模型解析提醒，请稍后重试。"
+            if (not parsed or parsed[0] != "reminder" or parsed[1][:1] != ["add"]
+                    or len(parsed[1]) != 3 or parsed[1][1] not in request):
+                return "请明确提醒的时间和事项。"
+            args = [*args[:first_content], *parsed[1][1:]]
+            structured = True
         try:
-            reply = await asyncio.to_thread(self.reminders.command, event, words[1:], access)
+            reply = await asyncio.to_thread(self.reminders.command, event, args, access, structured=structured)
         except ValueError:
             return "提醒时间、目标或内容无效。"
         if task := event.get_extra("_ffa_reminder_undo"):
@@ -289,6 +332,14 @@ class PlatformGateway:
             return None
         if command == "/role" and args[:1] == ["global"]:
             command, args = "/globaladmin", args[1:]
+        room = message.conversation
+        if (room.kind is ChatKind.GROUP and len(args) == 1
+                and (command == "/blacklist" and args[0] in {"add", "remove"}
+                     or command == "/role" and args[0] in {"moderator-add", "moderator-remove"})):
+            targets = [subject for subject in message.mentions if subject not in {room.bot, "all"}]
+            if len(targets) != 1:
+                return "请明确 @ 一位成员，或输入成员账号。"
+            args.append(targets[0])
         global_admin_request = command == "/globaladmin" and args[:1] in (["add"], ["remove"])
         if command == "/blacklist" and message.conversation.kind is ChatKind.GROUP:
             room = message.conversation
@@ -312,7 +363,7 @@ class PlatformGateway:
             return "用 /blacklist help 查看当前场景的格式"
         if command == "/globaladmin" and args[:1] in (["add"], ["remove"]):
             if admission.role != Role.OWNER:
-                return "只有 Owner 可以任免全局管理员。"
+                return "只有主人可以任免全局管理员。"
             role = "admin" if args[0] == "add" else "member"
             args = ["grant", message.sender.provider.platform, message.sender.provider.instance, *args[1:], role]
             command = "/role"
@@ -337,31 +388,24 @@ class PlatformGateway:
         actor = (admission.principal_id, message.sender.storage_key)
         if command == "/role":
             if not args:
-                return f"当前角色：{Role(admission.role).name}。"
+                return f"当前角色：{Role(admission.role).label}。"
             if args == ["undo"]:
                 return await self._undo_admin(runtime, message, admission, "role")
             if args in (["help"], ["帮助"]):
-                return ("/role list [群号] · /role set 账号 管理员|普通好友 [群号]\n"
-                        "/role add|remove 账号 [群号] · /role global list|add|remove")
+                return platform_help(message.conversation.kind is ChatKind.PRIVATE, admission, ["role"],
+                                     reminders=self.reminders is not None, registry=self.commands)
+            if message.conversation.kind is ChatKind.GROUP and len(args) == 2 and args[0] in {"add", "remove"}:
+                return "获准群的成员可直接对话。限制成员请使用 /blacklist add 或 /blacklist remove。"
             if args[0] in {"add", "remove", "set", "list"} and (
                     event.get_extra("_ffa_natural") or message.conversation.kind is ChatKind.PRIVATE
                     or args[0] == "set" or len(args) > 2):
                 return await self._scoped_role(runtime, message, admission, actor, scope, args)
-            if message.conversation.kind == ChatKind.GROUP and args[:1] in (["add"], ["remove"]):
-                if not runtime.permissions.can_moderate(admission) or len(args) != 2:
-                    return "群成员授权需要本群管理员及明确的目标账号。"
-                try:
-                    target = Account(message.sender.provider, args[1])
-                except ValueError:
-                    return "目标账号无效。"
-                code = self.pending.issue(actor, scope, "group-member", (target, args[0] == "add"))
-                return f"请在 90 秒内发送 /confirm {code} 确认群授权变更。"
             if message.conversation.kind == ChatKind.GROUP and args[:1] in (["moderator-add"], ["moderator-remove"]):
                 if len(args) != 2 or not runtime.permissions.is_global_admin(admission):
                     return "群管理员任免需要全局管理权限和明确的目标账号。"
                 target = Account(message.sender.provider, args[1])
-                code = self.pending.issue(actor, scope, "group-moderator", (target, args[0] == "moderator-add"))
-                return f"请在 90 秒内发送 /confirm {code} 确认群管理员变更。"
+                self.pending.issue(actor, scope, "group-moderator", (target, args[0] == "moderator-add"))
+                return "请在 90 秒内发送 /confirm 确认群管理员变更。"
             if args[:1] == ["list"] and message.conversation.kind == ChatKind.GROUP:
                 if not runtime.permissions.can_moderate(admission):
                     return "当前账号无权查看群成员授权。"
@@ -375,18 +419,18 @@ class PlatformGateway:
                 return "目标平台、实例或账号无效。"
             role = Role[args[-1].upper()]
             if role == Role.ADMIN and admission.role != Role.OWNER:
-                return "只有 Owner 可以任免全局管理员。"
-            code = self.pending.issue(actor, scope, "global-admin" if global_admin_request else "grant-role", (target, role))
-            return f"请在 90 秒内发送 /confirm {code}，或使用 /cancel 取消。"
+                return "只有主人可以任免全局管理员。"
+            self.pending.issue(actor, scope, "global-admin" if global_admin_request else "grant-role", (target, role))
+            return "请在 90 秒内发送 /confirm，或使用 /cancel 取消。"
         if command == "/cancel":
             if args:
                 return "取消操作不接受参数。"
             if self.pending.consume_latest(actor, scope) is None:
                 return "当前没有有效的待确认操作。"
             return "已取消待确认操作。"
-        pending = self.pending.consume(actor, scope, args[0]) if len(args) == 1 else None
+        pending = self.pending.consume_latest(actor, scope) if not args else None
         if not pending:
-            return "没有匹配的待确认操作，或确认码已过期。"
+            return "没有待确认的操作，或操作已过期。"
         if pending[0] == "grant-role" and admission.role < Role.ADMIN:
             return "当前授权不足，权限未修改。"
         if pending[0] == "global-admin" and admission.role != Role.OWNER:
@@ -422,7 +466,7 @@ class PlatformGateway:
             target, grant = pending[1]
             try:
                 await asyncio.to_thread(runtime.identities.change_room_moderator, message.sender,
-                                        message.conversation, target, grant=grant)
+                                        message.conversation, target, grant=grant, from_global=True)
             except PermissionError:
                 return "当前授权不足，群管理员未修改。"
             return "已更新本群管理员。"
@@ -437,15 +481,6 @@ class PlatformGateway:
             if grant and revision is not None:
                 self._save_admin_undo(actor, scope, room, target, revision)
             return f"已{'授予' if grant else '撤销'} {target.subject} 在群 {room.peer} 的Bot管理权限"
-        if pending[0] == "group-member":
-            target, grant = pending[1]
-            try:
-                await asyncio.to_thread(runtime.identities.change_room_member, message.sender,
-                                        message.conversation, target, grant=grant)
-            except PermissionError:
-                return "当前授权不足，群成员权限未修改。"
-            self.participation.rooms.pop((scope, 0), None)
-            return "已更新本群成员授权。"
         if pending[0] == "room-admission":
             room, grant = pending[1]
             try:
@@ -459,7 +494,7 @@ class PlatformGateway:
                 await asyncio.to_thread(runtime.identities.change_room_mode, message.sender,
                                         message.conversation, pending[1][0])
             except PermissionError:
-                return "仅 L2/L3 可在授权群设置本群行为"
+                return "只有本群管理员可以设置群聊行为"
             self.participation.rooms.pop((scope, 0), None)
             return "已更新本群的回复模式。"
         target, role = pending[1]
@@ -473,7 +508,7 @@ class PlatformGateway:
                 await asyncio.to_thread(runtime.identities.provision, message.sender, target, role)
         except PermissionError:
             return "当前授权不足，权限未修改。"
-        return "已更新目标 Principal 的角色。"
+        return f"已将目标账号的角色设为{role.label}。"
 
     def _save_admin_undo(self, actor, scope, room, target, revision, previous_role=None):
         key = actor, scope
@@ -523,8 +558,8 @@ class PlatformGateway:
                 room.provider, room.bot, ChatKind.GROUP, groups[0], groups[0])
         except ValueError:
             return "请明确指定已批准的群号和有效账号。"
-        code = self.pending.issue(actor, scope, "scoped-moderator", (target_room, target, grant))
-        return f"90秒内发送 /confirm {code} 确认群管理员变更"
+        self.pending.issue(actor, scope, "scoped-moderator", (target_room, target, grant))
+        return "90秒内发送 /confirm 确认群管理员变更"
 
     async def _room_command(self, runtime, message, admission, words, event=None):
         if not runtime.permissions.is_global_admin(admission):
@@ -547,8 +582,8 @@ class PlatformGateway:
         except ValueError:
             return "群号无效。"
         actor = (admission.principal_id, message.sender.storage_key)
-        code = self.pending.issue(actor, original.storage_key, "room-admission", (room, words[1] == "add"))
-        return f"请在 90 秒内发送 /confirm {code} 确认群准入变更。"
+        self.pending.issue(actor, original.storage_key, "room-admission", (room, words[1] == "add"))
+        return "请在 90 秒内发送 /confirm 确认群准入变更。"
 
     def _memory_reset(self, event, message, admission, words):
         if len(words) != 2 or (message.conversation.kind != ChatKind.PRIVATE and not admission.room_moderator):
@@ -557,8 +592,8 @@ class PlatformGateway:
         access = bridge._access(event, message)
         access.require(write=True, moderate=access.scope.kind == "group")
         actor = (admission.principal_id, message.sender.storage_key)
-        code = self.pending.issue(actor, message.conversation.storage_key, "reset-memory", (access.scope,))
-        return f"请在 90 秒内发送 /confirm {code} 清除当前范围的记忆，或使用 /cancel 取消。"
+        self.pending.issue(actor, message.conversation.storage_key, "reset-memory", (access.scope,))
+        return "请在 90 秒内发送 /confirm 清除当前范围的记忆，或使用 /cancel 取消。"
 
     def communication(self):
         if self.runtime is None:
@@ -645,14 +680,22 @@ class PlatformGateway:
             try:
                 if command == "owner" and not args:
                     token = await asyncio.to_thread(runtime.identities.issue_owner_challenge, account)
-                    response = "请在此私聊于 5 分钟内发送 /ffa-owner " + token
-                elif command == "invite" and len(args) == 3:
-                    target = Account(ProviderId(*args[:2]), args[2])
-                    token = await asyncio.to_thread(runtime.identities.invite, account, account, target)
-                    response = "请在目标账号的 Bot 私聊中发送 /ffa-link " + token
+                    response = "请在此私聊于 5 分钟内发送 /owner " + token
+                elif command == "invite" and not args:
+                    token = await asyncio.to_thread(runtime.identities.issue_platform_link, account)
+                    response = "请在另一个平台的机器人私聊中于 5 分钟内发送 /link " + token
                 elif command in {"owner", "link"} and len(args) == 1 and re.fullmatch(r"[A-Za-z0-9_-]{43}", args[0]):
-                    operation = runtime.identities.confirm_owner_challenge if command == "owner" else runtime.identities.confirm
-                    await asyncio.to_thread(operation, account, args[0])
+                    if command == "owner":
+                        await asyncio.to_thread(runtime.identities.confirm_owner_challenge, account, args[0])
+                    else:
+                        def erase_previous(principal):
+                            self.memory_bridge.erase_private_principal(principal, message)
+                            self.chat_settings.erase_principal(principal)
+                            if self.reminders is not None:
+                                self.reminders.erase_principal(principal)
+
+                        await asyncio.to_thread(runtime.identities.confirm_platform_link, account, args[0],
+                                                erase_previous=erase_previous)
                     response = "账号验证已完成。"
                 elif command == "unlink" and len(args) == 3:
                     target = Account(ProviderId(*args[:2]), args[2])
@@ -663,17 +706,66 @@ class PlatformGateway:
                     if role < Role.MEMBER:
                         raise PermissionError("Unlink requires an admitted account")
                     actor = (principal, account.storage_key)
-                    code = self.pending.issue(actor, message.conversation.storage_key, "unlink", (target,))
-                    response = "请在 90 秒内发送 /confirm " + code + " 确认解绑。"
+                    self.pending.issue(actor, message.conversation.storage_key, "unlink", (target,))
+                    response = "请在 90 秒内发送 /confirm 确认解绑。"
                 else:
                     response = "账号操作格式有误。"
             except (PermissionError, ValueError):
                 response = "账号操作未完成，请核对授权、邀请和当前账号。"
-            await runtime.identity_reply(message, account, lambda: event.send(event.plain_result(response)))
+            await runtime.identity_reply(message, account, lambda: event.send(event.plain_result("【系统】" + response)))
         except BaseException:
             runtime.seen.finish_delivery(scope, message.event_id, "unknown")
             raise
         runtime.seen.finish_delivery(scope, message.event_id, "completed")
+        return True
+
+    async def _group_whitelist_command(self, runtime, message, event):
+        room = message.conversation
+        if (room.kind is not ChatKind.GROUP or room.bot not in message.mentions
+                or not runtime.accepts(message) or message.media or message.reply_to):
+            return False
+        words = message.text.strip().lower().split()
+        if words not in (["/whitelist", "add"], ["/whitelist", "remove"], ["/confirm"], ["/cancel"]):
+            return False
+        principal, role = await asyncio.to_thread(runtime.identities.resolve_principal, message.sender)
+        if role != Role.OWNER or await asyncio.to_thread(runtime.identities.is_room_blocked, room, message.sender):
+            return False
+        actor, scope = (principal, message.sender.storage_key), room.storage_key
+        confirming = words[0] in {"/confirm", "/cancel"}
+        pending = self.pending.peek(actor, scope)
+        if confirming and (not pending or pending[1] != "room-admission"):
+            return False
+        event.stop_event()
+        if not runtime.seen.begin_delivery("group-whitelist-command", message.event_id):
+            return True
+        try:
+            if not confirming:
+                self.pending.issue(actor, scope, "room-admission", (room, words[1] == "add"))
+                reply = "请在 90 秒内于本群 @机器人并发送 /confirm 确认群准入变更。"
+            elif words[0] == "/cancel":
+                self.pending.consume_latest(actor, scope)
+                reply = "已取消待确认操作。"
+            else:
+                action = self.pending.consume_latest(actor, scope)
+                if action is None:
+                    reply = "待确认操作已过期。"
+                else:
+                    target, grant = action[1]
+                    try:
+                        await asyncio.to_thread(runtime.identities.change_room_admission, message.sender, target, grant=grant)
+                    except PermissionError:
+                        reply = "当前授权不足，群准入未修改。"
+                    else:
+                        self.participation.rooms.pop((scope, 0), None)
+                        reply = "已更新群准入。"
+            if runtime.accepts(message):
+                fresh, fresh_role = await asyncio.to_thread(runtime.identities.resolve_principal, message.sender)
+                if fresh == principal and fresh_role == Role.OWNER:
+                    await event.send(event.plain_result("【系统】" + reply))
+        except BaseException:
+            runtime.seen.finish_delivery("group-whitelist-command", message.event_id, "unknown")
+            raise
+        runtime.seen.finish_delivery("group-whitelist-command", message.event_id, "completed")
         return True
 
     async def run(self, event, downstream):
@@ -687,11 +779,17 @@ class PlatformGateway:
             await self._configured_provider(runtime, message.conversation.provider, message.conversation.bot)
             if await self._identity_command(runtime, message, event):
                 return None
+            if await self._group_whitelist_command(runtime, message, event):
+                return None
             if runtime.accepts(message) and not await asyncio.to_thread(
                     runtime.identities.principal_id, message.sender):
-                account = await runtime.verify_account(message)
-                if account is not None:
-                    await asyncio.to_thread(runtime.identities.observe, account)
+                if message.conversation.kind is ChatKind.GROUP:
+                    # Registered native ingress authenticates the sender of a group event.
+                    await asyncio.to_thread(runtime.identities.observe, message.sender, room=message.conversation)
+                else:
+                    account = await runtime.verify_account(message)
+                    if account is not None:
+                        await asyncio.to_thread(runtime.identities.observe, account)
             admission = runtime.admit(message)
             if admission is not None:
                 slot = runtime.connections[message.conversation.provider]
@@ -753,7 +851,14 @@ class PlatformGateway:
             async def send(_):
                 nonlocal submitted
                 submitted = True
-                response = await original_send(result)
+                native_reply = getattr(slot.provider, "reply_native", None)
+                response = (await native_reply(event, message.conversation, result, original_send)
+                            if native_reply else await original_send(result))
+                text = result.get_plain_text() if hasattr(result, "get_plain_text") else result
+                if isinstance(text, str) and text.startswith("【系统】") and event.get_extra("_ffa_reply_is_command"):
+                    words = message.text.strip().split()
+                    if words:
+                        self._record_command(receipt_key, words, text.removeprefix("【系统】"))
                 await self.memory_bridge.sent(event, result)
                 self._record_group_reply(message, admission, event,
                                          result.get_plain_text() if hasattr(result, "get_plain_text") else "")
@@ -802,6 +907,29 @@ class PlatformGateway:
                 event.stop_event()
                 completed = True
                 return None
+            batch_key = (message.conversation.storage_key, message.sender.storage_key, admission.principal_id)
+            text = message.text.strip()
+            if text.startswith("/") or message.media or message.reply_to:
+                self.text_batch.flush(batch_key)
+            elif text and getattr(self.context, "get_registered_star", None):
+                # Keep the existing native plugin's private QQ handling for media and in-flight replies.
+                # Group text and Lark text must be combined before the intent model sees the message.
+                if message.conversation.kind is ChatKind.GROUP or message.conversation.provider.platform == "lark":
+                    from astrbot.api.message_components import Plain
+
+                    merged = await self.text_batch.collect(batch_key, text)
+                    if merged is None or not allowed():
+                        event.stop_event()
+                        completed = True
+                        return None
+                    event.set_extra("_ffa_text_batch_complete", True)
+                    if merged != text:
+                        message = replace(message, text=merged)
+                        event.message_str = merged
+                        event.message_obj.message_str = merged
+                        event.message_obj.message = [Plain(merged)] + [
+                            part for part in event.get_messages() if type(part).__name__ == "At"]
+                        event.set_extra("_ffa_message_event", message)
             pending = self.pending.peek((admission.principal_id, message.sender.storage_key),
                                         message.conversation.storage_key)
             private = message.conversation.kind is ChatKind.PRIVATE
@@ -822,7 +950,7 @@ class PlatformGateway:
                                                 message.conversation.storage_key)
                     if current != pending:
                         event.stop_event()
-                        await event.send(event.plain_result("待确认操作已变化，请重新核对。"))
+                        await event.send(event.plain_result("【系统】待确认操作已变化，请重新核对。"))
                         completed = True
                         return None
                 natural_words = ["/" + name, *args]
@@ -845,12 +973,16 @@ class PlatformGateway:
                 words[0] = words[0].lower()
                 if words[0] == "/comfirm":
                     words[0] = "/confirm"
-                if words[0] == "/confirm" and len(words) == 1 and pending:
-                    words.append(pending[0])
+                if words == ["/confirm"] and self.pending.peek(
+                        (admission.principal_id, message.sender.storage_key), message.conversation.storage_key) != pending:
+                    event.stop_event()
+                    await event.send(event.plain_result("【系统】待确认操作已变化，请重新核对。"))
+                    completed = True
+                    return None
                 if words in (["/memory", "cancel"], ["/groupmemory", "cancel"],
                              ["/memory", "confirm"]):
                     if pending and pending[1] == "reset-memory":
-                        words = ["/cancel"] if words[1] == "cancel" else ["/confirm", pending[0]]
+                        words = ["/cancel"] if words[1] == "cancel" else ["/confirm"]
                 if words[0] == "/undo":
                     persona_command = words[1] if words[1:] in (["persona"], ["globalpersona"],
                                                                 ["privatepersona"], ["grouppersona"]) else None
@@ -871,8 +1003,7 @@ class PlatformGateway:
                         event.set_extra("_ffa_message_event", message)
 
             async def command_reply(reply):
-                await event.send(event.plain_result(reply))
-                self._record_command(receipt_key, words, reply)
+                await event.send(event.plain_result("【系统】" + reply))
 
             if words and words[0].startswith("/") and self.commands.find(words[0][1:]) is not None:
                 event.stop_event()
@@ -886,6 +1017,28 @@ class PlatformGateway:
                     reply = "指令执行失败，不能确认是否完整生效；请检查本机日志后再试"
                 if reply is not None:
                     await command_reply(reply)
+                if natural_words and allowed():
+                    recent = self._recent_commands(receipt_key)
+                    outcome = reply or (recent[-1] if recent else "已返回系统回执")
+                    status = ("待确认" if "/confirm" in outcome else "已完成" if outcome.startswith("已")
+                              else "已返回结果")
+                    notes = effective_notes(self.chat_settings.read(), admission.principal_id,
+                                            "" if private else message.conversation.storage_key)
+                    trusted_receipt = recent[-1] if recent else status
+                    followup = await render(self.context, event.unified_msg_origin, event.get_platform_name(),
+                                            {"操作": words[0], "系统状态": status, "回执": trusted_receipt}, notes=notes,
+                                            instructions="用当前人格简短回应上一条系统回执。系统状态已经确定，不否定、重判或重复该结果，不执行新操作。")
+                    if followup and any(term in followup for term in ("失败", "没成", "改不了", "不能", "没法", "没改", "没执行")):
+                        followup = None
+                    if not followup and getattr(self.context, "persona_manager", None) is not None:
+                        from fat_fish.persona.private_persona import apply_affix
+
+                        followup = apply_affix({"待确认": "你核对好再确认就行。", "已完成": "好啦，我记住刚才的调整了。",
+                                                "已返回结果": "可以看看上面这条回执。"}[status], notes)
+                    for segment in reply_segments(followup or ""):
+                        if not allowed():
+                            break
+                        await event.send(event.plain_result(segment))
                 completed = True
                 return None
             await self.memory_bridge.prepare(event)
@@ -957,6 +1110,7 @@ class PlatformGateway:
                 completed = True
                 return None
             self.chat_settings.prepare(event, message, admission)
+            event.set_extra("_ffa_recent_command_receipts", self._recent_commands(receipt_key))
             result = await downstream()
             completed = True
             return result

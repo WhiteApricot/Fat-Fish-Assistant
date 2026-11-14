@@ -20,6 +20,12 @@ async def prepare_media(event, allowed, *, forward_reader=None, author_allowed=N
                 sender = getattr(part, "sender_id", None)
                 if sender in (None, "", 0, "0") or not author_allowed(str(sender)):
                     raise PermissionError("Quote author is unavailable or blocked")
+                if not event.get_extra("_ffa_quoted_context"):
+                    from fat_fish.gateway.quote_context import excerpt, with_neighbors
+
+                    body = excerpt("".join(item.text for item in part.chain if type(item).__name__ == "Plain"))
+                    if body:
+                        event.set_extra("_ffa_quoted_context", with_neighbors(body, (), ()))
     forward_types = {"Forward", "Node", "Nodes"}
     if any(type(part).__name__ in forward_types for part in parts):
         from astrbot.api.message_components import Image, Plain

@@ -5,6 +5,7 @@ from fat_fish.commands.intents import IntentUnavailable, classify, contains_exte
 from fat_fish.communication.model import ChatKind
 from fat_fish.gateway.media_ingress import UNSUPPORTED_MEDIA
 from fat_fish.memory.experience import contains_secret
+from fat_fish.persona.chat_settings import feature_enabled
 from fat_fish.persona.persona_settings import persona_catalog
 
 
@@ -29,7 +30,7 @@ class NaturalLanguageManager:
                 or any(type(part).__name__ in UNSUPPORTED_MEDIA for part in event.get_messages())):
             return None
         config = read_settings()
-        if not config.get("naturalcommand", {}).get(setting, True):
+        if not feature_enabled(config, "naturalcommand", setting):
             return None
         scope = ("private:" if private else "group:") + setting
         notes = config.get("private_persona_notes" if private else "group_persona_notes", {})

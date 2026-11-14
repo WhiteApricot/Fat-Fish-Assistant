@@ -203,6 +203,8 @@ def install_collector_bridge(collector, version):
     predicate=collector._is_private_message_event
     finalize=collector._finalize_merged
     def eligible(event):
+        if event.get_extra('_ffa_text_batch_complete', False):
+            return False
         if not predicate(event):
             if event.get_extra('_ffa_platform_admission') is None or event.get_extra('_ffa_reply_is_command',False):
                 return False

@@ -443,7 +443,7 @@ def guidance(root,record):
     return [f'肥鱼助手 / Fat-Fish-Assistant: start opens only the local service at http://127.0.0.1:{port}.',
             'Dashboard credentials are saved with Windows DPAPI; use the desktop launcher to securely update the saved password after changing it.',
             'Use the official SnowLuma Launcher and WebUI for startup, QR login and reverse WebSocket settings. See docs/QUICK_START.md.',
-            'For a new instance, register a communication provider and start Owner setup with /ffa-owner in a verified private chat.',
+            'For a new instance, register a communication provider and start Owner setup with /owner in a verified private chat.',
             'No group is approved by default. Dagu, Work and the P6 GUI are not implemented in this stage.']
 
 def component_status(root,record,name):

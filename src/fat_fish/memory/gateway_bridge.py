@@ -95,6 +95,17 @@ class GatewayMemory:
                                          card_max_chars=options.get("card_max_chars", 0))
         return self.service
 
+    def erase_private_principal(self, principal, message):
+        if not self.gateway.path.with_name("ffa-memory.sqlite3").is_file():
+            return
+        room = message.conversation
+        source = Source(room.provider.platform, room.provider.instance, room.bot,
+                        message.sender.subject, room.storage_key)
+        # Called while IdentityDirectory holds the write transaction that validated the link.
+        access = Access(principal, Scope("private", principal), source, lambda: True,
+                        purpose="operator", authenticated_chat=True)
+        self.memory().reset_scope(access)
+
     @staticmethod
     def command(event):
         return bool(COMMAND.match(event.message_str.strip()))
@@ -163,7 +174,7 @@ class GatewayMemory:
             reply = "此范围的长期记忆已开启。" if enabled else "此范围的长期记忆已暂停。"
         except (*STORAGE_FAILURES, PermissionError):
             reply = "无法修改此范围的记忆设置。"
-        await event.send(event.plain_result(reply))
+        await event.send(event.plain_result("【系统】" + reply))
         return True
 
     async def prepare(self, event):
@@ -531,7 +542,7 @@ class GatewayMemory:
                 reply = await asyncio.to_thread(self._command, access, ref, event.message_str)
             except (PermissionError, *STORAGE_FAILURES):
                 reply = "统一记忆操作未生效，请检查权限、修订号或内容。"
-        await event.send(event.plain_result(reply))
+        await event.send(event.plain_result("【系统】" + reply))
         return True
 
     def _group_command(self, access, ref, text):

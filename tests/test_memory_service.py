@@ -395,7 +395,7 @@ class MemoryTests(unittest.TestCase):
                                              expected_revision=1), 2)
         self.assertIsNone(self.store.fact_history(self.alice, "preference")[1]["content"])
 
-    def test_group_membership_does_not_follow_a_bound_alias(self):
+    def test_group_chat_admits_bound_alias_without_grant(self):
         platform = ProviderId("lark", "fixture")
         owner = Account(QQ, "10001")
         first, second = Account(platform, "first"), Account(platform, "second")
@@ -407,7 +407,7 @@ class MemoryTests(unittest.TestCase):
         identities.set_room(owner, room, "open", [first])
         self.assertEqual(identities.confirm(second, identities.invite(first, first, second)), person)
         self.assertEqual(identities.access(first, room)[2], "open")
-        self.assertIsNone(identities.access(second, room)[2])
+        self.assertEqual(identities.access(second, room)[2], "open")
         identities.unlink(owner, first)
         self.assertIsNone(identities.access(first, room)[2])
         identities.set_room(owner, room, "mention", [second])

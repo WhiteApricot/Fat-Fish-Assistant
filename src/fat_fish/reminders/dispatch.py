@@ -28,9 +28,10 @@ class ReminderAccess:
 
 
 class ReminderDispatch:
-    def __init__(self, store, runtime):
+    def __init__(self, store, runtime, render=None):
         self.store = store
         self.runtime = runtime
+        self.render = render
 
     def allowed(self, row):
         latest = next((item for item in self.store.rows() if item["id"] == row["id"]), None)
@@ -57,7 +58,9 @@ class ReminderDispatch:
     async def send(self, row):
         room, actor = address(row)
         mentions = (row["target"],) if room.kind is ChatKind.GROUP else ()
-        message = Outgoing("提醒：" + row["body"], mentions=mentions)
+        text = (await self.render(room, row["creator_principal"], row["body"]) if self.render
+                else "提醒：" + row["body"])
+        message = Outgoing(text, mentions=mentions)
         operation = f"reminder:{row['id']}:{row['due']}"
         sent = await self.runtime.send(actor, room, message, operation, proactive=True,
                                        recheck=lambda: self.allowed(row))

@@ -4,6 +4,7 @@
 | --- | --- | --- |
 | Python | 独立管理及聊天环境 | 3.12.3，[解释器清单](../manifests/python-runtime.json) |
 | AstrBot 与 Dashboard | 消息管线、模型和插件生命周期、本机管理页 | Dashboard 4.29.3，源码按提交固定，[源码清单](../manifests/sources.json)与[管理页清单](../manifests/dashboard.json) |
+| 飞书 | AstrBot 内置原生适配器与固定 SDK 提供长连接 | [飞书接入](LARK.md) |
 | SnowLuma / QQ | 当前 Windows QQ 临时兼容组件，使用官方发行包独立安装 | 官方 v2.4.2 Full，[Windows x64 发行锁](../manifests/snowluma/windows-x64.json) |
 | LivingMemory、Continuous Message、Meme Manager、SelfReply 决策子集 | 记忆、消息合并、表情和主动参与判断 | [固定提交及许可证](../manifests/sources.json) |
 | 嵌入与语音组件 | 可选本地记忆检索与语音识别 | [模型清单](../manifests/model-runtime-lock.json) |

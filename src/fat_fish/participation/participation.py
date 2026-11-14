@@ -99,13 +99,13 @@ class Participation:
             records.append((stamp, sender, text))
         if quote_context and records:
             stamp,sender,text=records[-1]
-            records[-1]=(stamp,sender,'[本条实际引用资料]'+quote_context[-1000:]+'\n[本条追问]'+text)
+            records[-1]=(stamp,sender,'[本条实际引用资料]'+quote_context[:1800]+'\n[本条追问]'+text)
         followup = now-room.get('bot_at', -1e9) <= 180 and room['followups'] < 4
         # A verified quote of Bot, or the same recipient asking about their
         # immediately preceding question, is directed conversation in smart
         # mode. Keep all program budgets; do not require another @ or LLM veto.
         directed = followup and (
-            '<quoted_message sender="Bot">' in quote_context or
+            ('<quoted_message sender="Bot">' in quote_context or '<explicit_quote>机器人：' in quote_context) or
             (recent[-1][1] == room.get('reply_to') and bool(re.search(
                 r'我(?:刚才|最初|之前).*(?:问|引用).*(?:什么|啥|哪)|(?:刚才|最初).*(?:问题|引用).*(?:什么|啥|哪)', body)))
         ) and not re.search(r'别(?:回|说)|不用回|不要回', body)

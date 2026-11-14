@@ -1,6 +1,4 @@
 """Time-limited confirmation for commands with side effects."""
-import hmac
-import secrets
 import time
 
 
@@ -10,31 +8,18 @@ class PendingActions:
         self.clock, self.pending = clock, {}
 
     def issue(self, actor, scope, operation, arguments):
-        code = secrets.token_hex(4)
-        self.pending[(str(actor), scope)] = (code, operation, tuple(arguments), self.clock()+90)
-        return code
+        self.pending[actor] = (scope, operation, tuple(arguments), self.clock() + 90)
 
     def peek(self, actor, scope):
-        key=(str(actor),scope)
-        item=self.pending.get(key)
+        item = self.pending.get(actor)
         if item and self.clock() >= item[3]:
-            self.pending.pop(key)
+            self.pending.pop(actor)
             return None
-        return item
+        return item if item and item[0] == scope else None
 
     def consume_latest(self, actor, scope):
-        item=self.pending.get((str(actor),scope))
-        return self.consume(actor,scope,item[0]) if item else None
-
-    def consume(self, actor, scope, code):
-        key = (str(actor), scope)
-        item = self.pending.get(key)
-        if not item:
+        item = self.peek(actor, scope)
+        if item is None:
             return None
-        if self.clock() >= item[3]:
-            self.pending.pop(key, None)
-            return None
-        if not hmac.compare_digest(item[0], str(code)):
-            return None
-        self.pending.pop(key)
+        self.pending.pop(actor)
         return item[1], item[2]
