@@ -8,6 +8,7 @@ if __package__ in (None, ''):
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 sys.dont_write_bytecode=True
@@ -27,11 +28,17 @@ os.chdir(instance)
 sys.path[:0]=[str(release/'astrbot'),str(release/'src'),str(Path(__file__).resolve().parents[1]/'src')]
 key=instance/'private/deepseek-key.txt'
 if key.exists():os.environ['DEEPSEEK_API_KEY']=key.read_text().strip()
+from fat_fish.adapters.astrbot_communication import filter_native_lark_chat_log
 from fat_fish.core.local_credentials import install_capture,load_password
 install_capture(instance)
+logging.getLogger('astrbot').addFilter(filter_native_lark_chat_log)
 if (instance/'private/dashboard-password.txt').exists():load_password(instance)
 
 async def run():
+    # The pinned Lark SDK captures an asyncio loop when AstrBot imports it.
+    # Import the host on the same running loop that owns the adapter.
+    import main
+
     running=instance/'private/RUNNING'
     stop=instance/'private/STOP'
     if stop.exists():stop.unlink()
@@ -68,5 +75,4 @@ with exclusive(instance):
     os.environ.pop('PYTHONPYCACHEPREFIX',None)
     sys.dont_write_bytecode=False
     os.environ.pop('PYTHONDONTWRITEBYTECODE',None)
-    import main
     asyncio.run(run())

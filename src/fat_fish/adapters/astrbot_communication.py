@@ -11,6 +11,12 @@ ONEBOT_NAME = "aiocqhttp"
 ADAPTER_ID = "astrbot"
 
 
+def filter_native_lark_chat_log(record):
+    """Suppress the native event outline, which includes private commands and IDs."""
+    return not (getattr(record, "category", None) == "user_chat"
+                and getattr(record, "platform_type", None) == "lark")
+
+
 @contextmanager
 def guard_lark_stream(event, check_submission):
     """Guard the submission primitives in the pinned AstrBot CardKit adapter."""
@@ -95,8 +101,15 @@ def convert(event):
     legacy = event.get_platform_name() == ONEBOT_NAME
     mentions, reply, media, quoted_sender = _components(event, legacy)
     timestamp = float(getattr(event.message_obj, "timestamp", time.time()))
+    text = event.message_str
+    if provider.platform == "lark" and mentions:
+        parts = event.get_messages()
+        if all(type(part).__name__ in {"Plain", "At"} for part in parts):
+            command = "".join(part.text for part in parts if type(part).__name__ == "Plain").strip()
+            if command.startswith(("/blacklist ", "/role moderator-add", "/role moderator-remove")):
+                text = command
     return MessageEvent(conversation, sender, _id(event.message_obj.message_id),
-                        timestamp, event.message_str, mentions, reply, media,
+                        timestamp, text, mentions, reply, media,
                         quoted_sender=quoted_sender, adapter_id=ADAPTER_ID)
 
 
@@ -136,7 +149,12 @@ class AstrBotCommunication:
     async def healthy(self):
         adapter = self.context.platform_instance()
         platform = self.native_platform or self.address.platform
-        return adapter is not None and adapter.meta().name == platform
+        if adapter is None or adapter.meta().name != platform:
+            return False
+        if platform == "lark":
+            # AstrBot may put a display name in events until it fetches the real bot ID.
+            return getattr(adapter, "bot_open_id", None) == self.bot
+        return True
 
     async def verify_account(self, message):
         """Accept a proof only from the authenticated direct-message adapter ingress."""
