@@ -962,7 +962,7 @@ class ChatMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已保存", event.sent[0])
         help_event = NativeEvent("synthetic", "office-2", sender="verified", ident="help", text="/help memory")
         await self.gateway.run(help_event, self.unexpected)
-        self.assertIn("/memory archive query", help_event.sent[0])
+        self.assertIn("/memory archive [关键词] — 查询记忆，包含已归档内容", help_event.sent[0])
         other = NativeEvent(sender=self.lark_user.subject, ident="mock-recall", text="潮汐计")
         request = SimpleNamespace(prompt=other.message_str, system_prompt="")
 
@@ -990,10 +990,12 @@ class ChatMemoryTests(unittest.IsolatedAsyncioTestCase):
         async def tokens():
             yield "hello"
 
-        from fat_fish.adapters.astrbot_communication import guard_lark_stream
-        self.runtime.connections[self.lark].provider.guard_stream = guard_lark_stream
+        from fat_fish.adapters.lark_communication import guard_stream
+        self.runtime.connections[self.lark].provider.guard_stream = guard_stream
         event._create_streaming_card = create
         event._send_card_message = send_card
+        event._update_streaming_text = AsyncMock()
+        event._close_streaming_mode = AsyncMock()
         event.send_streaming = stream
         async def downstream():
             await event.send_streaming(tokens())
@@ -1001,7 +1003,7 @@ class ChatMemoryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await self.gateway.run(event, downstream)
         self.assertEqual(submitted_cards, [])
-        self.assertEqual(self.runtime.seen.delivery("ingress", convert(event).event_id), "unknown")
+        self.assertIsNone(self.runtime.seen.delivery("ingress", convert(event).event_id))
         self.assertIs(event._send_card_message, send_card)
 
     async def test_ingress_retries_before_submit_and_preserves_uncertainty(self):

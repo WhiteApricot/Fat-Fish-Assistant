@@ -42,7 +42,7 @@ class GroupMedia:
             self.speech.pop(key,None)
             self.pending.pop(key,None)
 
-    async def transcribe(self,event,epoch,context,allowed,*,room=None):
+    async def transcribe(self,event,epoch,context,allowed,*,room=None,transcriber=None):
         """Make authorized voice visible before smart decisions and memory capture."""
         from astrbot.api.message_components import Plain
         key=(room or str(event.get_group_id()),epoch,str(event.get_sender_id()))
@@ -71,8 +71,11 @@ class GroupMedia:
                 text=cached[2]
             else:
                 try:
-                    path=await record.convert_to_file_path()
-                    async with asyncio.timeout(25):text=await provider.get_text(audio_url=path)
+                    if transcriber is None:
+                        path=await record.convert_to_file_path()
+                        async with asyncio.timeout(25):text=await provider.get_text(audio_url=path)
+                    else:
+                        text=await transcriber(record,provider,allowed)
                 except Exception:
                     continue
             if not allowed():raise asyncio.CancelledError()

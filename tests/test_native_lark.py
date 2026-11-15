@@ -27,6 +27,145 @@ except ModuleNotFoundError as exc:
 
 @unittest.skipIf(LarkPlatformAdapter is None, "Requires pinned AstrBot test runtime")
 class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_merge_forward_uses_sdk_tree_and_partial_results(self):
+        from fat_fish.adapters.lark_forwards import read_forward
+        from fat_fish.adapters.lark_quote import quote_context
+        from lark_oapi.api.im.v1 import GetMessageResponse
+        from test_communication import NativeEvent
+
+        def row(ident, parent=None, *, kind="text", body="", sender="ou_alice", chat="oc_original", deleted=False):
+            return {"message_id": ident, "upper_message_id": parent, "sender": {"id": sender, "sender_type": "user"},
+                    "msg_type": kind, "chat_id": chat, "deleted": deleted,
+                    "body": {"content": json.dumps({"text": body})}}
+
+        def response(*rows, code=0):
+            return GetMessageResponse({"code": code, "data": {"items": list(rows)}})
+
+        root = row("om_root", kind="merge_forward", body="Merged and Forwarded Message", chat="oc_here")
+        nest = row("om_nest", "om_root", kind="merge_forward", sender="ou_bob")
+        rows = [
+            root, row("om_first", "om_root", body="first <instruction>"), nest,
+            row("om_three", "om_nest", kind="merge_forward"), row("om_four", "om_three", kind="merge_forward"),
+            row("om_deep", "om_four", body="four levels"),
+            row("om_limit", "om_four", kind="merge_forward"), row("om_hidden", "om_limit", body="depth secret"),
+            row("om_gone", "om_nest", deleted=True, body="withdrawn secret"),
+            row("om_blocked", "om_nest", sender="ou_blocked", body="blocked secret"),
+            row("om_blob", "om_nest", kind="audio"), row("om_file", "om_nest", kind="file"),
+            row("om_image", "om_nest", kind="image"), row("om_video", "om_nest", kind="media"),
+            row("om_root", "om_nest", kind="merge_forward"),
+            row("om_missing", "om_root", kind="merge_forward"), row("om_attached", "om_root", kind="merge_forward"),
+            row("om_last", "om_root", body="last"), row("om_outside", "om_unrelated", body="unrelated secret"),
+        ]
+        api = SimpleNamespace(aget=AsyncMock(side_effect=[
+            response(*rows), response(code=230002),
+            response(row("om_attached", "om_root", kind="merge_forward"),
+                     row("om_child", "om_attached", body="fetched inner"),
+                     row("om_injected", "om_root", body="foreign branch")),
+        ]))
+        event = NativeEvent(sender="ou_alice", bot="ou_bot", ident="om_root",
+                            raw=SimpleNamespace(chat_id="oc_here", message_id="om_root", message_type="merge_forward"))
+        event.bot = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=api)))
+        authority = lambda author: author != "ou_blocked"
+        result = await read_forward(event, quoted=False, author_allowed=authority, allowed=lambda: True)
+        self.assertIn("发言者 1｜first &lt;instruction&gt;", result)
+        self.assertIn("发言者 2｜内层合并转发", result)
+        self.assertIn("发言者 1｜last", result)
+        self.assertTrue(result.index("first") < result.index("four levels") < result.index("last"))
+        for fragment in ("已撤回", "来源不可读取", "重复或形成循环", "嵌套深度上限", "内层消息未返回",
+                         "语音的资源不可读取", "文件的资源不可读取", "图片的资源不可读取", "视频的资源不可读取",
+                         "fetched inner"):
+            self.assertIn(fragment, result)
+        for fragment in ("secret", "Merged and Forwarded Message", "foreign branch", "ou_alice"):
+            self.assertNotIn(fragment, result)
+        self.assertEqual([call.args[0].message_id for call in api.aget.await_args_list],
+                         ["om_root", "om_missing", "om_attached"])
+
+        event.message_obj.raw_message = SimpleNamespace(chat_id="oc_here", message_id="om_quote",
+                                                       parent_id="om_root", message_type="text")
+        api.aget.side_effect = None
+        api.aget.return_value = response(root, row("om_child", "om_root", body="quoted detail"))
+        self.assertIn("quoted detail", await quote_context(event, convert(event), authority))
+        self.assertTrue(event.get_extra("_ffa_material"))
+        api.aget.return_value = response(row("om_root", kind="merge_forward"),
+                                         row("om_child", "om_root", body="cross-chat"))
+        self.assertEqual(await quote_context(event, convert(event), authority), "")
+        api.aget.return_value = response(root, *(row(f"om_entry_{index}", "om_root", body="x" * 1000)
+                                                  for index in range(510)))
+        long_result = await read_forward(event, quoted=True, author_allowed=authority, allowed=lambda: True)
+        self.assertLessEqual(len(long_result), 32_000)
+        self.assertIn("已达读取上限", long_result)
+
+    async def test_native_voice_routes_same_sender_and_rejects_stt_failure(self):
+        import shutil
+        import subprocess
+        import wave
+        from astrbot.api.message_components import At, Record
+        from fat_fish.gateway.platform_gateway import PlatformGateway
+        from test_communication import NativeEvent
+
+        adapter = self.adapter()
+        address = ProviderId("lark", "lark-a")
+        owner = Account(address, "ou_alice")
+        group = "oc_voice"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wav, opus = root / "voice.wav", root / "voice.opus"
+            with wave.open(str(wav), "wb") as audio:
+                audio.setparams((1, 2, 16000, 0, "NONE", ""))
+                audio.writeframes(bytes(3200))
+            ffmpeg = shutil.which("ffmpeg")
+            self.assertIsNotNone(ffmpeg, "Put the locked runtime's FFmpeg on PATH")
+            subprocess.run([ffmpeg, "-nostdin", "-loglevel", "error", "-i", str(wav), str(opus)], check=True)
+
+            async def recognize(*, audio_url):
+                with wave.open(audio_url, "rb") as audio:
+                    self.assertEqual(audio.getsampwidth(), 2)
+                    self.assertGreater(audio.getnframes(), 0)
+                return "识别语音样本"
+
+            service = SimpleNamespace(get_text=AsyncMock(side_effect=recognize))
+            gateway = PlatformGateway(private=root)
+            gateway.context = SimpleNamespace(get_using_stt_provider_async=AsyncMock(return_value=service))
+            runtime = gateway.communication()
+            ids = runtime.identities
+            ids.confirm_owner_challenge(owner, ids.issue_owner_challenge(owner))
+            runtime.register(create_provider(address, "ou_bot", ProviderContext(lambda: adapter, AsyncMock()), {}))
+            self.assertTrue(await runtime.enable(address))
+
+            def event(ident, *, room="", author="ou_alice", voice=False, mentioned=False):
+                parts = [Record(file=str(opus))] if voice else []
+                if mentioned:
+                    parts.append(At(qq="ou_bot"))
+                native = NativeEvent(instance=address.instance, sender=author, bot="ou_bot",
+                                     group=room, ident=ident, text="", parts=parts,
+                                     raw=SimpleNamespace(chat_id=room or "oc_private",
+                                                         message_type="audio" if voice else "text"))
+                native.message_obj.message_str = ""
+                return native
+
+            private = event("om_private", voice=True)
+            await gateway.run(private, AsyncMock())
+            self.assertEqual(private.message_str, "识别语音样本")
+            voice = event("om_group_voice", room=group, voice=True)
+            ids.set_room(owner, convert(voice).conversation, "mention", [owner])
+            downstream = AsyncMock()
+            await gateway.run(voice, downstream)
+            downstream.assert_not_awaited()
+            self.assertEqual(service.get_text.await_count, 1)
+            other = event("om_other", room=group, author="ou_bob", mentioned=True)
+            await gateway.run(other, AsyncMock())
+            self.assertNotIn("识别语音样本", other.message_str)
+            followup = event("om_followup", room=group, mentioned=True)
+            await gateway.run(followup, AsyncMock())
+            self.assertIn("识别语音样本", followup.message_str)
+            self.assertEqual(service.get_text.await_count, 2)
+            service.get_text.side_effect = OSError("test")
+            failed = event("om_fail", voice=True)
+            await gateway.run(failed, AsyncMock())
+            self.assertIn("没能转写", failed.sent[0])
+            self.assertFalse(failed.message_str)
+            await runtime.stop_all()
+
     async def test_shared_web_search_uses_current_admission(self):
         from fat_fish.integrations.web_search import clean_reply, offer_search, session_search_key
         from test_communication import NativeEvent

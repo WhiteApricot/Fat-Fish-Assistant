@@ -3,6 +3,7 @@ import asyncio
 import json
 
 from fat_fish.gateway.quote_context import QUOTE_DEPTH, excerpt, with_neighbors
+from fat_fish.adapters.lark_forwards import get_items, read_forward
 
 
 def _label(row, bot):
@@ -24,8 +25,8 @@ def _text(row):
     return ""
 
 
-async def quote_context(event, message, author_allowed):
-    from lark_oapi.api.im.v1 import GetMessageRequest, ListMessageRequest
+async def quote_context(event, message, author_allowed, allowed=lambda: True):
+    from lark_oapi.api.im.v1 import ListMessageRequest
 
     chat = getattr(event.message_obj.raw_message, "chat_id", None)
     if not isinstance(chat, str) or not chat.startswith("oc_"):
@@ -35,22 +36,21 @@ async def quote_context(event, message, author_allowed):
     except AttributeError:
         return ""
 
-    async def fetch(ident, timeout):
-        try:
-            request = GetMessageRequest.builder().message_id(ident).build()
-            response = await asyncio.wait_for(api.aget(request), timeout)
-            if response.success() and response.data:
-                return next((row for row in response.data.items or ()
-                             if row.message_id == ident and row.chat_id == chat and row.sender
-                             and getattr(row, "deleted", False) is not True
-                             and row.sender.id and author_allowed(row.sender.id)), None)
-        except (OSError, RuntimeError, ValueError, AttributeError, TimeoutError):
-            pass
-        return None
+    def verified(rows, ident):
+        return next((row for row in rows if row.message_id == ident and row.chat_id == chat and row.sender
+                     and getattr(row, "deleted", False) is not True
+                     and row.sender.id and author_allowed(row.sender.id)), None)
 
-    parent = await fetch(message.reply_to, 3)
+    async def fetch(ident, timeout):
+        return verified(await get_items(api, ident, timeout), ident)
+
+    rows = await get_items(api, message.reply_to, 3)
+    parent = verified(rows, message.reply_to)
     if parent is None:
         return ""
+    if parent.msg_type == "merge_forward":
+        event.set_extra("_ffa_material", True)
+        return await read_forward(event, quoted=True, author_allowed=author_allowed, allowed=allowed, items=rows)
     native = next((part for part in event.get_messages()
                    if type(part).__name__ == "Reply" and str(part.id) == message.reply_to), None)
     content = _text(parent) or getattr(native, "message_str", "") or "[非文字消息]"

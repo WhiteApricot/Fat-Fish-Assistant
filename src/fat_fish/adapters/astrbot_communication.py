@@ -167,7 +167,7 @@ class AstrBotCommunication:
             return
         from fat_fish.adapters.lark_quote import quote_context
 
-        quote = await quote_context(event, message, author_allowed)
+        quote = await quote_context(event, message, author_allowed, allowed)
         if not allowed():
             raise PermissionError("Quote authorization revoked")
         if not quote:

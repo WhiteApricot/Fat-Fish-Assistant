@@ -1,14 +1,18 @@
-"""Lark-specific outbound capabilities over the pinned AstrBot adapter."""
+"""Feishu capabilities over the pinned AstrBot Lark adapter."""
 import asyncio
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import random
 import re
 import time
 from uuid import uuid4
 
 from fat_fish.adapters.astrbot_communication import AstrBotCommunication
+from fat_fish.adapters.lark_forwards import message_type, read_forward
+from fat_fish.adapters.lark_latency import attach_native_ingress, is_greeting, submitted, trace
 from fat_fish.adapters.lark_retraction import LarkRetractions
+from fat_fish.adapters.lark_voice import VOICE_UNAVAILABLE, transcribe
 from fat_fish.communication.model import Capability, ChatKind, MessageRetraction, NotSubmitted
 
 
@@ -33,10 +37,11 @@ def guard_stream(event, authorize):
     async def checked_send(*args, **kwargs):
         nonlocal stale
         authorize()
-        if not await send(*args, **kwargs):
-            # The native fallback sends a second IM message. The first submission
-            # may already be visible, so only card creation can trigger fallback.
-            raise ConnectionError("CardKit message submission failed")
+        with submitted(event, streaming=True):
+            if not await send(*args, **kwargs):
+                # The native fallback sends a second IM message. The first submission
+                # may already be visible, so only card creation can trigger fallback.
+                raise ConnectionError("CardKit message submission failed")
         stale = False
         return True
 
@@ -84,10 +89,106 @@ class LarkCommunication(AstrBotCommunication):
         Capability.MEDIA, Capability.IMAGE, Capability.FILE, Capability.RETRACT,
     }
     guard_stream = staticmethod(guard_stream)
+    transcribe_group_voice = staticmethod(transcribe)
+    group_voice_error = VOICE_UNAVAILABLE
+    text_batch_window = 2.5
+    pace_stream = False
+
+    @staticmethod
+    def batch_arrival(event, when):
+        event.set_extra("_ffa_lark_batch_latest", when)
+
+    @staticmethod
+    def skip_intent(message):
+        return not (message.media or message.reply_to) and is_greeting(message.text)
+
+    def reply_pacing(self, event, _message):
+        async def pace(sequence):
+            latest = event.get_extra("_ffa_lark_batch_latest")
+            if (sequence != 1 or latest is None or event.get_extra("_ffa_reply_is_command", False)
+                    or event.get_extra("_ffa_web_material", False)
+                    or event.get_extra("_ffa_group_media_attached", False)):
+                return
+            delay = latest + random.uniform(4, 6.5) - asyncio.get_running_loop().time()
+            if delay > 0:
+                timeline = trace(event)
+                if timeline is not None:
+                    timeline.mark("pace_start")
+                await asyncio.sleep(delay)
+                if timeline is not None:
+                    timeline.mark("pace_end")
+
+        return pace
+
+    async def reply_native(self, event, target, result, original_send):
+        with submitted(event):
+            return await super().reply_native(event, target, result, original_send)
+
+    @staticmethod
+    def cache_unmentioned_voice(event, message):
+        if (message_type(event) != "audio" or message.conversation.kind is not ChatKind.GROUP
+                or message.conversation.bot in message.mentions):
+            return False
+        LarkCommunication._voice_record(event)
+        return True
+
+    @staticmethod
+    def _voice_record(event):
+        from astrbot.api.message_components import Record
+
+        parts = event.get_messages()
+        for part in parts:
+            if type(part).__name__ == "Record":
+                return part
+        record = Record(file=None)
+        parts.append(record)
+        return record
+
+    async def prepare_private_voice(self, event, allowed, context):
+        if message_type(event) != "audio":
+            return
+        from astrbot.api.message_components import Plain
+        from fat_fish.gateway.media_ingress import UnsupportedMedia
+
+        lookup = getattr(context, "get_using_stt_provider_async", None)
+        provider = await lookup(event.unified_msg_origin) if lookup else None
+        record = self._voice_record(event)
+        text = await transcribe(record, provider, allowed) if provider is not None else ""
+        if not allowed():
+            raise PermissionError("Voice authorization revoked")
+        if not text:
+            raise UnsupportedMedia(VOICE_UNAVAILABLE)
+        event.message_str = event.message_obj.message_str = text
+        parts = event.get_messages()
+        parts[:] = [Plain(text) if part is record else part for part in parts]
+
+    @staticmethod
+    def is_external_material(event):
+        return message_type(event) == "merge_forward"
+
+    async def prepare_media(self, event, message, allowed, author_allowed):
+        if not self.is_external_material(event):
+            await super().prepare_media(event, message, allowed, author_allowed)
+            if message_type(event) == "audio":
+                self._voice_record(event)
+            return
+
+        from astrbot.api.message_components import Plain
+        from fat_fish.gateway.media_ingress import UnsupportedMedia
+
+        material = await read_forward(event, quoted=False, author_allowed=author_allowed, allowed=allowed)
+        if not material:
+            raise UnsupportedMedia("这条飞书合并转发的正文暂时无法读取。")
+        event.message_str = "请概括此合并转发的内容。\n" + material
+        event.message_obj.message_str = event.message_str
+        parts = event.get_messages()
+        parts[:] = [part for part in parts if type(part).__name__ == "At"] + [Plain(event.message_str)]
 
     def __init__(self, address, bot, context):
         super().__init__(address, bot, context)
         self._next_bot_probe = 0
+        self._ingress_adapter = None
+        self._detach_ingress = None
         self.retractions = (LarkRetractions(address, bot, context.private_dir / "ffa-lark-retractions.sqlite3",
                                             context.retract_native)
                             if context.private_dir is not None and context.retract_native is not None else None)
@@ -103,10 +204,19 @@ class LarkCommunication(AstrBotCommunication):
             async with asyncio.timeout(5):
                 await refresh()
         await super().start()
+        if adapter is not self._ingress_adapter:
+            if self._detach_ingress is not None:
+                self._detach_ingress()
+            self._detach_ingress = attach_native_ingress(adapter, self.context.private_dir)
+            self._ingress_adapter = adapter
         if self.retractions is not None:
             self.retractions.attach(self.context.platform_instance())
 
     async def stop(self):
+        if self._detach_ingress is not None:
+            self._detach_ingress()
+            self._detach_ingress = None
+            self._ingress_adapter = None
         if self.retractions is not None:
             self.retractions.detach()
         await super().stop()

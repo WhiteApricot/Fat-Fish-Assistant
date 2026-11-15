@@ -793,6 +793,9 @@ class PlatformGateway:
             event.stop_event()
             return None
         admission = None
+        timeline = event.get_extra("_ffa_lark_latency", None)
+        if timeline is not None:
+            timeline.mark("T2")
         try:
             message = convert(event)
             runtime = self.communication()
@@ -810,6 +813,28 @@ class PlatformGateway:
                     account = await runtime.verify_account(message)
                     if account is not None:
                         await asyncio.to_thread(runtime.identities.observe, account)
+            if runtime.accepts(message):
+                provider = runtime.connections[message.conversation.provider].provider
+                cache_voice = getattr(provider, "cache_unmentioned_voice", None)
+                if cache_voice and cache_voice(event, message):
+                    room = message.conversation
+                    if (runtime.permissions.conversation(message.sender, room)
+                            and runtime.seen.begin_delivery("ingress", message.event_id)):
+                        try:
+                            provider.observe(room, event.unified_msg_origin)
+                            if provider.track_inbound(event, message):
+                                stamp = runtime.identities.room_membership_signature(room)
+                                if runtime.permissions.conversation(message.sender, room):
+                                    self.group_media.observe(event, stamp, room=room.storage_key, mentioned=False)
+                        except BaseException:
+                            runtime.finish_receive(message, "retryable")
+                            raise
+                        runtime.finish_receive(message, "completed")
+                    event.stop_event()
+                    if timeline is not None:
+                        timeline.category = "voice"
+                        timeline.log()
+                    return None
             admission = runtime.admit(message)
             if admission is not None:
                 slot = runtime.connections[message.conversation.provider]
@@ -826,7 +851,11 @@ class PlatformGateway:
             admission = None
         if admission is None:
             event.stop_event()
+            if timeline is not None:
+                timeline.log()
             return None
+        if timeline is not None:
+            timeline.mark("T3")
 
         event.set_extra("_ffa_message_event", message)
         event.set_extra("_ffa_reply_is_command", message.text.lstrip().startswith("/"))
@@ -834,6 +863,14 @@ class PlatformGateway:
             event.set_extra("_ffa_reply_window", (time.monotonic(), not message.text.strip()))
         event.set_extra("_ffa_platform_admission", admission)
         slot = runtime.connections[message.conversation.provider]
+        is_material = getattr(slot.provider, "is_external_material", None)
+        if is_material and is_material(event):
+            event.set_extra("_ffa_material", True)
+        if timeline is not None:
+            if message.text.lstrip().startswith("/"):
+                timeline.category = "B"
+            elif message.reply_to or event.get_extra("_ffa_material"):
+                timeline.category = "F"
         receipt_key = admission.principal_id, message.conversation.storage_key
         original_send = event.send
         original_stream = getattr(event, "send_streaming", None)
@@ -893,7 +930,7 @@ class PlatformGateway:
         async def checked_stream(generator, *args, **kwargs):
             nonlocal sequence
             sequence += 1
-            if pace:
+            if pace and getattr(slot.provider, "pace_stream", True):
                 await pace(sequence)
 
             async def send(authorize):
@@ -911,9 +948,11 @@ class PlatformGateway:
                     nonlocal preview
                     async for part in generator:
                         check_submission(not guard)
+                        text = part if isinstance(part, str) else (
+                            part.get_plain_text() if hasattr(part, "get_plain_text") else "")
+                        if timeline is not None and text.strip():
+                            timeline.mark("T7")
                         if len(preview) < 1500:
-                            text = part if isinstance(part, str) else (
-                                part.get_plain_text() if hasattr(part, "get_plain_text") else "")
                             preview += text[:1500 - len(preview)]
                         yield part
 
@@ -936,7 +975,7 @@ class PlatformGateway:
                 return None
             batch_key = (message.conversation.storage_key, message.sender.storage_key, admission.principal_id)
             text = message.text.strip()
-            if text.startswith("/") or message.media or message.reply_to:
+            if text.startswith("/") or message.media or message.reply_to or event.get_extra("_ffa_material"):
                 self.text_batch.flush(batch_key)
             elif text and getattr(self.context, "get_registered_star", None):
                 # Keep the existing native plugin's private QQ handling for media and in-flight replies.
@@ -944,7 +983,11 @@ class PlatformGateway:
                 if message.conversation.kind is ChatKind.GROUP or message.conversation.provider.platform == "lark":
                     from astrbot.api.message_components import Plain
 
-                    merged = await self.text_batch.collect(batch_key, text)
+                    batch_arrival = getattr(slot.provider, "batch_arrival", None)
+                    merged = await self.text_batch.collect(
+                        batch_key, text, window=getattr(slot.provider, "text_batch_window", None),
+                        on_arrival=(lambda when: batch_arrival(event, when)) if batch_arrival else None,
+                    )
                     if merged is None or not allowed():
                         event.stop_event()
                         completed = True
@@ -957,18 +1000,29 @@ class PlatformGateway:
                         event.message_obj.message = [Plain(merged)] + [
                             part for part in event.get_messages() if type(part).__name__ == "At"]
                         event.set_extra("_ffa_message_event", message)
+            if timeline is not None:
+                timeline.mark("T4")
             pending = self.pending.peek((admission.principal_id, message.sender.storage_key),
                                         message.conversation.storage_key)
             private = message.conversation.kind is ChatKind.PRIVATE
             natural = None
             config = self.chat_settings.read()
             natural_scope = admission.principal_id if private else message.conversation.storage_key
-            if not message.text.lstrip().startswith("/") and feature_enabled(config, "naturalcommand", natural_scope):
+            skip_intent = getattr(slot.provider, "skip_intent", None)
+            greeting = bool(skip_intent and skip_intent(message))
+            if timeline is not None and greeting:
+                timeline.category = "A"
+            if (not greeting and not event.get_extra("_ffa_material") and not message.text.lstrip().startswith("/")
+                    and feature_enabled(config, "naturalcommand", natural_scope)):
                 natural = await self.natural_language.classify(
                     self.context, event, message, admission, runtime.permissions, config,
                     recent=self._recent_commands(receipt_key), pending=pending[1] if pending else None,
                     reminders=self.reminders,
                 )
+                if timeline is not None and timeline.category == "D" and not (message.reply_to or message.media):
+                    timeline.category = "C"
+            if timeline is not None:
+                timeline.mark("T5")
             if not allowed():
                 event.stop_event()
                 completed = True
@@ -1086,7 +1140,11 @@ class PlatformGateway:
                         await event.send(event.plain_result(segment))
                 completed = True
                 return None
+            if timeline is not None:
+                timeline.mark("memory_start")
             await self.memory_bridge.prepare(event)
+            if timeline is not None:
+                timeline.mark("memory_end")
             media = getattr(slot.provider, "prepare_media", None)
             def author_allowed(subject):
                 if subject == message.conversation.bot:
@@ -1099,8 +1157,13 @@ class PlatformGateway:
                         and not runtime.identities.is_room_blocked(message.conversation, account))
 
             try:
+                if timeline is not None:
+                    timeline.mark("media_start")
                 if media is not None:
                     await media(event, message, allowed, author_allowed)
+                private_voice = getattr(slot.provider, "prepare_private_voice", None)
+                if private and private_voice is not None:
+                    await private_voice(event, allowed, self.context)
                 if not private:
                     room = message.conversation.storage_key
                     epoch = await asyncio.to_thread(runtime.identities.room_membership_signature, message.conversation)
@@ -1112,9 +1175,17 @@ class PlatformGateway:
                     self.group_media.observe(event, epoch, room=room,
                                              mentioned=message.conversation.bot in message.mentions)
                     if getattr(self.context, "get_using_stt_provider_async", None):
-                        await self.group_media.transcribe(event, epoch, self.context, media_allowed, room=room)
+                        transcriber = getattr(slot.provider, "transcribe_group_voice", None)
+                        if transcriber is None:
+                            await self.group_media.transcribe(event, epoch, self.context, media_allowed, room=room)
+                        else:
+                            await self.group_media.transcribe(event, epoch, self.context, media_allowed,
+                                                             room=room, transcriber=transcriber)
                     if not media_allowed():
                         raise PermissionError("Group media authorization changed")
+                    voice_error = getattr(slot.provider, "group_voice_error", None)
+                    if voice_error and any(type(part).__name__ == "Record" for part in event.get_messages()):
+                        raise UnsupportedMedia(voice_error)
                 if message.media or event.get_messages():
                     await prepare_media(event, allowed, forward_reader=getattr(self, "forward_reader", None),
                                         author_allowed=author_allowed,
@@ -1129,6 +1200,9 @@ class PlatformGateway:
                 event.stop_event()
                 completed = True
                 return None
+            finally:
+                if timeline is not None:
+                    timeline.mark("media_end")
             if not allowed() or not await self._participate(message, admission, event):
                 event.stop_event()
                 completed = True
@@ -1174,3 +1248,5 @@ class PlatformGateway:
             state = ("completed" if completed else "unknown"
                      if submitted or event.get_extra("_ffa_mutating_tool_started") else "retryable")
             runtime.finish_receive(message, state)
+            if timeline is not None:
+                timeline.log()

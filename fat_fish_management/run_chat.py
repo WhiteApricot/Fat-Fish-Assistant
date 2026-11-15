@@ -24,6 +24,14 @@ release=Path(json.loads((instance/'instance.json').read_text())['release'])
 os.environ.update(ASTRBOT_ROOT=str(instance),FEIYU_RUNTIME_ROOT=str(instance),FEIYU_SOURCE_ROOT=str(release/'src'),FEIYU_PERSONA_ROOT=str(instance/'persona'))
 os.environ.update(FFA_RUNTIME_ROOT=str(instance),FFA_SOURCE_ROOT=str(release/'src'),FFA_PERSONA_ROOT=str(instance/'persona'))
 os.environ['PATH']=str(instance/'bin')+os.pathsep+os.environ.get('PATH','')
+# The native OpenAI client honors the system proxy, including on Windows.
+# Managed local models must be reached directly through loopback.
+exclusions = os.environ.get('no_proxy', os.environ.get('NO_PROXY', '')).split(',')
+exclusions = [host.strip() for host in exclusions if host.strip()]
+for host in ('127.0.0.1', 'localhost'):
+    if host not in exclusions:
+        exclusions.append(host)
+os.environ.update(no_proxy=','.join(exclusions), NO_PROXY=','.join(exclusions))
 os.chdir(instance)
 sys.path[:0]=[str(release/'astrbot'),str(release/'src'),str(Path(__file__).resolve().parents[1]/'src')]
 key=instance/'private/deepseek-key.txt'

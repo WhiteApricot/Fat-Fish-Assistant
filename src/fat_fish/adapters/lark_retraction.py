@@ -95,13 +95,12 @@ class LarkRetractions:
 
     async def reconcile(self, event, message, *, force=False):
         """Recover missed callbacks from explicitly deleted rows in this native chat."""
-        from lark_oapi.api.im.v1 import ListMessageRequest
-
         chat = getattr(getattr(event.message_obj, "raw_message", None), "chat_id", None)
         if self.dispatcher is None or self.message_key(chat, message.message_id) is None:
             return
         if message.conversation.kind is ChatKind.GROUP and chat != message.conversation.peer:
             return
+        from lark_oapi.api.im.v1 import ListMessageRequest
         now = time.monotonic()
         if not force and now - self.history_checks.get(chat, -30) < 30:
             return

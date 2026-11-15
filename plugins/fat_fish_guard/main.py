@@ -155,6 +155,9 @@ class FatFishGuard(Star):
     async def mark_web_material(self,event,tool,_args):
         if tool.name in {'web_search_deepseek','deepseek_fetch_web_page'}:
             event.set_extra('_ffa_web_material',True)
+            timeline = event.get_extra("_ffa_lark_latency")
+            if timeline is not None and timeline.category != "G":
+                timeline.category = "E"
             from fat_fish.integrations.web_chat import start_web_progress
             start_web_progress(event,(_args or {}).get('progress_message'))
             # A read-only lookup may be cancelled when the user adds context.
@@ -175,6 +178,9 @@ class FatFishGuard(Star):
         from astrbot.api.event import MessageChain
         text=response.completion_text or ''
         clean=clean_reply(text)
+        timeline = event.get_extra("_ffa_lark_latency")
+        if timeline is not None and clean.strip():
+            timeline.mark("T7")
         if response.result_chain is not None:clean_message(response.result_chain)
         if text.strip() and not clean and not getattr(response.result_chain,'chain',None):
             from fat_fish.persona.private_persona import apply_affix
@@ -193,5 +199,8 @@ class FatFishGuard(Star):
     @filter.on_agent_begin(priority=-99999)
     async def track_chat_request(self,event,run_context):
         if event.get_extra('_ffa_platform_admission') is not None:
+            timeline = event.get_extra("_ffa_lark_latency")
+            if timeline is not None:
+                timeline.mark("T6")
             event.set_extra('_ffa_agent_running',True)
             event.set_extra('_ffa_agent_finished',False)

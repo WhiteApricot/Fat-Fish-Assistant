@@ -155,6 +155,27 @@ def create_test_provider(address, bot, context, config):
 
 
 class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lark_batch_restarts_from_last_message_and_keeps_intent_commands(self):
+        from fat_fish.adapters.lark_communication import LarkCommunication
+        from fat_fish.gateway.text_batch import TextBatch
+
+        event = NativeEvent()
+        arrivals = Mock()
+        batch = TextBatch(window=60)
+        first = asyncio.create_task(batch.collect("room-and-sender", "第一句", window=30, on_arrival=arrivals))
+        await asyncio.sleep(0)
+        original_timer = batch.pending["room-and-sender"].timer
+        self.assertIsNone(await batch.collect("room-and-sender", "第二句", window=30))
+        self.assertTrue(original_timer.cancelled())
+        self.assertEqual(arrivals.call_count, 2)
+        batch.flush("room-and-sender")
+        self.assertEqual(await first, "第一句\n第二句")
+
+        self.assertTrue(LarkCommunication.skip_intent(convert(event)))
+        for text in ("你好，提醒我明天开会", "谢谢，确认", "你好\n切换人格"):
+            event.message_str = text
+            self.assertFalse(LarkCommunication.skip_intent(convert(event)))
+
     async def asyncSetUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
