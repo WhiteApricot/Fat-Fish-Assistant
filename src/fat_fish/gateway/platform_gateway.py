@@ -14,7 +14,6 @@ from contextlib import nullcontext
 
 from fat_fish.adapters.astrbot_communication import convert
 from fat_fish.adapters.group_media import GroupMedia
-from fat_fish.integrations.web_chat import WEB_PROGRESS_TYPE
 from fat_fish.communication.model import Account, Capability, ChatKind, Conversation, MessageRetraction, ProviderId
 from fat_fish.communication.registry import ProviderContext, ProviderRegistry
 from fat_fish.communication.runtime import CommunicationRuntime
@@ -23,20 +22,47 @@ from fat_fish.memory.experience import contains_secret, sensitive_information
 from fat_fish.participation.participation import DEFAULT_COOLDOWN, Participation
 from fat_fish.persona.chat_settings import ChatSettings, feature_enabled
 from fat_fish.persona.persona_settings import effective_notes
-from fat_fish.persona.persona_reply import render, reply_segments
+from fat_fish.persona.persona_reply import render
 from fat_fish.commands.confirmation import PendingActions
-from fat_fish.commands.intents import ROUTES
-from fat_fish.commands.natural_language import NaturalLanguageManager
+from fat_fish.commands.agent_tool import ManagementTurn
 from fat_fish.commands.command_help import platform_help
-from fat_fish.commands.registry import Command, CommandRegistry
+from fat_fish.commands.registry import ROUTES, Command, CommandRegistry
 from fat_fish.reminders.dispatch import ReminderAccess
 from fat_fish.memory.gateway_bridge import GatewayMemory
 from fat_fish.gateway.media_ingress import UnsupportedMedia, prepare_media
 from fat_fish.gateway.text_batch import TextBatch
+from fat_fish.gateway.reply_schedule import ReplySchedule, WEB_PROGRESS_TYPE
 
 
 IDENTITY_REQUEST = re.compile(r"^/(owner|invite|link|unlink)(?:\s|$)", re.I)
 logger = logging.getLogger(__name__)
+
+
+class _ManagementEvent:
+    """Expose a command view to existing handlers during a natural-language turn."""
+    def __init__(self, event, message):
+        self._event = event
+        self.message_str = message.text
+        self._extras = {"_ffa_message_event": message, "_ffa_natural": True}
+        self.replies = []
+
+    def __getattr__(self, name):
+        return getattr(self._event, name)
+
+    def set_extra(self, key, value):
+        self._extras[key] = value
+
+    def get_extra(self, key, default=None):
+        if key in self._extras:
+            return self._extras[key]
+        return self._event.get_extra(key, default)
+
+    def stop_event(self):
+        pass
+
+    async def send(self, result):
+        text = result.get_plain_text() if hasattr(result, "get_plain_text") else result
+        self.replies.append(text.removeprefix("【系统】"))
 
 
 class PlatformGateway:
@@ -65,7 +91,6 @@ class PlatformGateway:
             "whitelist": self._room_command,
             "new": self._new_command,
             "history": self._history_command,
-            "clarify": self._clarify_command,
             "help": self._help_command,
             "groupmode": self._group_mode_command,
             "undo": self._undo_command,
@@ -73,7 +98,6 @@ class PlatformGateway:
             "memory": self._memory_command,
             "groupmemory": self._memory_command,
         })
-        self.natural_language = NaturalLanguageManager(self.commands)
         self._room_signatures = {}
         self._command_receipts = OrderedDict()
         self._reminder_undo = OrderedDict()
@@ -211,13 +235,11 @@ class PlatformGateway:
             reply = "用法：/history [all]"
         return reply or "当前会话没有可查询的近期指令回执"
 
-    async def _clarify_command(self, runtime, message, admission, words, event):
-        return "请明确要执行的操作、目标和范围。"
-
     async def _help_command(self, runtime, message, admission, words, event):
+        config = await asyncio.to_thread(self.chat_settings.read)
         return platform_help(message.conversation.kind is ChatKind.PRIVATE, admission, words[1:],
                              reminders=self.reminders is not None, registry=self.commands,
-                             global_features=self.chat_settings.read().get("global_features"))
+                             global_features=config.get("global_features"))
 
     async def _group_mode_command(self, runtime, message, admission, words, event):
         if message.conversation.kind is not ChatKind.GROUP or not runtime.permissions.can_moderate(admission):
@@ -288,39 +310,7 @@ class PlatformGateway:
             return "当前未启用提醒服务。"
         access = ReminderAccess(runtime, message.conversation)
         args = words[1:]
-        operation = args[0] if args else ""
         structured = event.get_extra("_ffa_natural", False)
-        if operation in {"add", "addto"} and not structured:
-            from fat_fish.commands.intents import IntentUnavailable, classify
-
-            first_content = 2 if operation == "addto" else 1
-            raw = message.text.strip().split(maxsplit=first_content + 1)
-            request = raw[first_content + 1] if len(raw) > first_content + 1 else ""
-            if not request:
-                return "请提供提醒的时间和事项。"
-            if operation == "addto" and (message.conversation.kind is not ChatKind.GROUP
-                    or not runtime.permissions.can_moderate(admission)):
-                return "只有本群管理员可以为其他成员创建提醒。"
-            try:
-                parsed = await classify(self.context, event, message.text, "", (), recent=(), pending=None,
-                                        reminders=(), reminder_creation=True)
-            except IntentUnavailable:
-                return "暂时无法使用模型解析提醒，请稍后重试。"
-            if not parsed or parsed[0] != "reminder":
-                return "请明确提醒的时间和事项。"
-            values = parsed[1]
-            if values[:1] == ["add-exact"] and len(values) == 4:
-                args = [operation + "-exact", *args[1:first_content], *values[1:]]
-            elif (values[:1] == ["add"] and len(values) in {3, 4} and values[1] in request
-                    and (len(values) == 3 or values[2] == "once" or values[2] in request)):
-                args = [*args[:first_content], *values[1:]]
-            else:
-                return "请明确提醒的时间和事项。"
-            structured = True
-            event.set_extra("_ffa_reminder_natural", True)
-            current = runtime.authorize(message)
-            if current is None or current.principal_id != admission.principal_id:
-                return "当前权限不足，未执行。"
         try:
             reply = await asyncio.to_thread(self.reminders.command, event, args, access, structured=structured)
         except ValueError:
@@ -333,6 +323,102 @@ class PlatformGateway:
                 self._reminder_undo.popitem(last=False)
         return reply
 
+    async def _dispatch_command(self, runtime, message, admission, command, event, allowed, *, pending=None):
+        actor = (admission.principal_id, message.sender.storage_key)
+        scope = message.conversation.storage_key
+        name = "confirm" if command.name == "comfirm" else command.name
+        args = list(command.args)
+        if name in {"memory", "groupmemory"} and args in (["confirm"], ["cancel"]):
+            item = self.pending.peek(actor, scope)
+            if item and item[1] == "reset-memory":
+                name, args = args[0], []
+        if name in {"confirm", "cancel"} and isinstance(event, _ManagementEvent):
+            if pending is None or self.pending.peek(actor, scope) != pending:
+                return "待确认操作已变化，请重新核对。"
+        if name == "undo":
+            persona_names = {"persona", "globalpersona", "privatepersona", "grouppersona"}
+            if not args:
+                recent_persona, recent_setting = await asyncio.gather(
+                    asyncio.to_thread(self.chat_settings.latest_persona_undo, admission.principal_id, scope),
+                    asyncio.to_thread(self.chat_settings.latest_preference_undo, admission.principal_id, scope),
+                )
+                reminder = self._reminder_undo.get((message.sender.storage_key, scope))
+                recent_reminder = (reminder[0] - 1800, "reminder") if reminder and reminder[0] > time.monotonic() else None
+                latest = max(filter(None, (recent_persona, recent_setting, recent_reminder)), default=None)
+                if latest and latest in (recent_persona, recent_setting):
+                    args = [latest[1]]
+            if len(args) == 1 and args[0] in persona_names:
+                name, args = args[0], ["undo"]
+        words = ["/" + name, *args]
+        if isinstance(event, _ManagementEvent) or (name, tuple(args)) != (command.name, command.args):
+            message = replace(message, text=" ".join(words))
+            event.message_str = message.text
+            event.set_extra("_ffa_message_event", message)
+        try:
+            current = await asyncio.to_thread(runtime.authorize, message)
+            if current is None or current.principal_id != admission.principal_id:
+                return "当前会话权限不足。"
+            if args == ["help"]:
+                return await self._help_command(runtime, message, current, ["/help", name], event)
+            return await self.commands.dispatch(Command(name, tuple(args)), current, allowed,
+                                                builtin_args=(runtime, message, current, words, event))
+        except PermissionError:
+            return "当前会话权限不足。"
+        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+            logger.warning("FFA management command failed (%s)", type(exc).__name__)
+            return "指令执行失败，无法确认结果。"
+
+    async def _send_command_receipt(self, event, command, receipt, *, management=False):
+        split = command.name in {"remind", "reminder"} and command.args[-1:] != ("help",)
+        for line in receipt.splitlines() if split else (receipt,):
+            if not line.strip():
+                continue
+            result = event.plain_result("【系统】" + line)
+            if management:
+                event.set_extra("_ffa_management_receipt_result", result)
+            try:
+                await event.send(result)
+            finally:
+                if management:
+                    event.set_extra("_ffa_management_receipt_result", None)
+
+    def _bind_management(self, runtime, message, admission, event, allowed, explicit_reminder, pending):
+        room = message.conversation
+        private = room.kind is ChatKind.PRIVATE
+        if not private and room.bot not in message.mentions:
+            return
+        scope = admission.principal_id if private else room.storage_key
+        receipt_key = admission.principal_id, room.storage_key
+
+        async def execute(command, *, visible=True):
+            selected = command
+            if command.name == "memory" and command.args[:1] == ("remember",):
+                from fat_fish.memory.service import normalize
+
+                body = command.args[1]
+                key = hashlib.sha256(normalize(body).encode()).hexdigest()[:20]
+                selected = Command(command.name, ("remember", f"note-{key} {body}"))
+            if command.name in {"confirm", "cancel"} and pending is None:
+                receipt = "当前消息发出时没有待确认的操作。"
+            else:
+                command_event = _ManagementEvent(event, message)
+                command_event.set_extra("_ffa_expected_pending", pending)
+                reply = await self._dispatch_command(runtime, message, admission, selected, command_event, allowed,
+                                                     pending=pending)
+                receipt = "\n".join(filter(None, (*command_event.replies, reply))) or "程序没有返回可确认的执行结果。"
+            if not visible:
+                return receipt[:4000]
+            self._record_command(receipt_key, ["/" + command.name, *command.args], receipt)
+            event.set_extra("_ffa_management_done", True)
+            await self._send_command_receipt(event, command, receipt, management=True)
+            return receipt
+
+        event.set_extra("_ffa_management_turn", ManagementTurn(
+            event, self.commands, message, allowed,
+            lambda: feature_enabled(self.chat_settings.read(), "naturalcommand", scope),
+            execute, explicit_reminder=explicit_reminder,
+        ))
+
     async def _memory_command(self, runtime, message, admission, words, event):
         if words[:2] == ["/memory", "reset"] or (
                 message.conversation.kind is ChatKind.GROUP and words[:2] == ["/groupmemory", "reset"]):
@@ -341,7 +427,9 @@ class PlatformGateway:
             except PermissionError:
                 return "当前范围未启用记忆或权限不足。"
         if not await self.memory_bridge.handle_preference(event):
-            await self.memory_bridge.prepare(event)
+            if (not event.get_extra("_ffa_memory_receipt")
+                    or words[1:2] in (["search"], ["archive"], ["history"], ["card"], ["card-archive"])):
+                await self.memory_bridge.prepare(event)
             await self.memory_bridge.handle_command(event)
         return None
 
@@ -405,6 +493,10 @@ class PlatformGateway:
             return title + "：" + ("、".join(account.subject for account in accounts) or "暂无")
         scope = message.conversation.storage_key
         actor = (admission.principal_id, message.sender.storage_key)
+        if command in {"/confirm", "/cancel"} and isinstance(event, _ManagementEvent):
+            expected = event.get_extra("_ffa_expected_pending")
+            if expected is None or self.pending.peek(actor, scope) != expected:
+                return "待确认操作已变化，请重新核对。"
         if command == "/role":
             if not args:
                 return f"当前角色：{Role(admission.role).label}。"
@@ -793,6 +885,7 @@ class PlatformGateway:
             event.stop_event()
             return None
         admission = None
+        arrived = asyncio.get_running_loop().time()
         timeline = event.get_extra("_ffa_lark_latency", None)
         if timeline is not None:
             timeline.mark("T2")
@@ -835,20 +928,24 @@ class PlatformGateway:
                         timeline.category = "voice"
                         timeline.log()
                     return None
-            admission = runtime.admit(message)
+            admission = await runtime.admit_async(message)
             if admission is not None:
                 slot = runtime.connections[message.conversation.provider]
                 observe = getattr(slot.provider, "observe", None)
                 if observe is not None:
                     observe(message.conversation, event.unified_msg_origin)
                 track = getattr(slot.provider, "track_inbound", None)
-                if track is not None and not track(event, message):
-                    runtime.finish_receive(message, "completed")
+                if track is not None and not await asyncio.to_thread(track, event, message):
+                    await asyncio.to_thread(runtime.finish_receive, message, "completed")
                     admission = None
         except (AttributeError, KeyError, OSError, TypeError, ValueError, sqlite3.Error):
             if admission is not None:
-                runtime.finish_receive(message, "retryable")
+                await asyncio.to_thread(runtime.finish_receive, message, "retryable")
             admission = None
+        except asyncio.CancelledError:
+            if admission is not None:
+                await asyncio.to_thread(runtime.finish_receive, message, "retryable")
+            raise
         if admission is None:
             event.stop_event()
             if timeline is not None:
@@ -859,8 +956,7 @@ class PlatformGateway:
 
         event.set_extra("_ffa_message_event", message)
         event.set_extra("_ffa_reply_is_command", message.text.lstrip().startswith("/"))
-        if message.media:
-            event.set_extra("_ffa_reply_window", (time.monotonic(), not message.text.strip()))
+        event.set_extra("_ffa_latest_arrival", arrived)
         event.set_extra("_ffa_platform_admission", admission)
         slot = runtime.connections[message.conversation.provider]
         is_material = getattr(slot.provider, "is_external_material", None)
@@ -872,6 +968,8 @@ class PlatformGateway:
             elif message.reply_to or event.get_extra("_ffa_material"):
                 timeline.category = "F"
         receipt_key = admission.principal_id, message.conversation.storage_key
+        pending = self.pending.peek((admission.principal_id, message.sender.storage_key),
+                                    message.conversation.storage_key)
         original_send = event.send
         original_stream = getattr(event, "send_streaming", None)
 
@@ -884,19 +982,36 @@ class PlatformGateway:
         submitted = False
         completed = False
         sequence = 0
-        pacing = getattr(slot.provider, "reply_pacing", None)
-        pace = pacing(event, message) if pacing else None
+        schedule = (ReplySchedule(arrived) if getattr(self.context, "get_registered_star", None)
+                    and not event.get_extra("_ffa_reply_is_command") else None)
+
+        def batch_arrival(when):
+            event.set_extra("_ffa_latest_arrival", when)
+            if schedule is not None:
+                schedule.update(when)
+
+        async def before_reply():
+            if schedule is not None:
+                if timeline is not None:
+                    timeline.mark("pace_start")
+                await schedule.wait()
+                if timeline is not None:
+                    timeline.mark("pace_end")
+
+        event.set_extra("_ffa_wait_reply", before_reply)
 
         async def checked_send(result):
             nonlocal sequence
-            sequence += 1
-            if pace:
-                await pace(sequence)
-
+            progress = getattr(result, "type", None) == WEB_PROGRESS_TYPE
+            receipt = result is event.get_extra("_ffa_management_receipt_result")
+            if event.get_extra("_ffa_management_done") and not (progress or receipt or event.get_extra("_ffa_web_material")):
+                return None
+            if not progress and not receipt:
+                await before_reply()
             if event.get_extra("_ffa_reply_superseded", False):
                 return None
+            sequence += 1
 
-            from fat_fish.adapters.qq_reply_delay import WEB_PROGRESS_TYPE
             from fat_fish.integrations.web_search import clean_message, is_intermediate_message
 
             if hasattr(result, "chain") and getattr(result, "type", None) != WEB_PROGRESS_TYPE:
@@ -920,9 +1035,10 @@ class PlatformGateway:
                     words = message.text.strip().split()
                     if words:
                         self._record_command(receipt_key, words, text.removeprefix("【系统】"))
-                await self.memory_bridge.sent(event, result)
-                self._record_group_reply(message, admission, event,
-                                         result.get_plain_text() if hasattr(result, "get_plain_text") else "")
+                if not (receipt or progress):
+                    await self.memory_bridge.sent(event, result)
+                    self._record_group_reply(message, admission, event,
+                                             result.get_plain_text() if hasattr(result, "get_plain_text") else "")
                 return response
 
             return await runtime.reply(message, admission, sequence, send)
@@ -930,8 +1046,6 @@ class PlatformGateway:
         async def checked_stream(generator, *args, **kwargs):
             nonlocal sequence
             sequence += 1
-            if pace and getattr(slot.provider, "pace_stream", True):
-                await pace(sequence)
 
             async def send(authorize):
                 streamed = False
@@ -947,6 +1061,10 @@ class PlatformGateway:
                 async def guarded():
                     nonlocal preview
                     async for part in generator:
+                        if event.get_extra("_ffa_management_done") and not event.get_extra("_ffa_web_material"):
+                            continue
+                        if not guard and not streamed:
+                            await before_reply()
                         check_submission(not guard)
                         text = part if isinstance(part, str) else (
                             part.get_plain_text() if hasattr(part, "get_plain_text") else "")
@@ -969,7 +1087,7 @@ class PlatformGateway:
         if original_stream is not None:
             event.send_streaming = checked_stream
         try:
-            if not allowed():
+            if not await asyncio.to_thread(allowed):
                 event.stop_event()
                 completed = True
                 return None
@@ -977,80 +1095,28 @@ class PlatformGateway:
             text = message.text.strip()
             if text.startswith("/") or message.media or message.reply_to or event.get_extra("_ffa_material"):
                 self.text_batch.flush(batch_key)
-            elif text and getattr(self.context, "get_registered_star", None):
-                # Keep the existing native plugin's private QQ handling for media and in-flight replies.
-                # Group text and Lark text must be combined before the intent model sees the message.
-                if message.conversation.kind is ChatKind.GROUP or message.conversation.provider.platform == "lark":
-                    from astrbot.api.message_components import Plain
+            elif text and schedule is not None:
+                from astrbot.api.message_components import Plain
 
-                    batch_arrival = getattr(slot.provider, "batch_arrival", None)
-                    merged = await self.text_batch.collect(
-                        batch_key, text, window=getattr(slot.provider, "text_batch_window", None),
-                        on_arrival=(lambda when: batch_arrival(event, when)) if batch_arrival else None,
-                    )
-                    if merged is None or not allowed():
-                        event.stop_event()
-                        completed = True
-                        return None
-                    event.set_extra("_ffa_text_batch_complete", True)
-                    if merged != text:
-                        message = replace(message, text=merged)
-                        event.message_str = merged
-                        event.message_obj.message_str = merged
-                        event.message_obj.message = [Plain(merged)] + [
-                            part for part in event.get_messages() if type(part).__name__ == "At"]
-                        event.set_extra("_ffa_message_event", message)
+                merged = await self.text_batch.collect(batch_key, text, on_arrival=batch_arrival)
+                if merged is None or not await asyncio.to_thread(allowed):
+                    event.stop_event()
+                    completed = True
+                    return None
+                if merged != text:
+                    message = replace(message, text=merged)
+                    event.message_str = merged
+                    event.message_obj.message_str = merged
+                    event.message_obj.message = [Plain(merged)] + [
+                        part for part in event.get_messages() if type(part).__name__ == "At"]
+                    event.set_extra("_ffa_message_event", message)
             if timeline is not None:
                 timeline.mark("T4")
-            pending = self.pending.peek((admission.principal_id, message.sender.storage_key),
-                                        message.conversation.storage_key)
             private = message.conversation.kind is ChatKind.PRIVATE
-            natural = None
-            config = self.chat_settings.read()
-            natural_scope = admission.principal_id if private else message.conversation.storage_key
-            skip_intent = getattr(slot.provider, "skip_intent", None)
-            greeting = bool(skip_intent and skip_intent(message))
-            if timeline is not None and greeting:
-                timeline.category = "A"
-            if (not greeting and not event.get_extra("_ffa_material") and not message.text.lstrip().startswith("/")
-                    and feature_enabled(config, "naturalcommand", natural_scope)):
-                natural = await self.natural_language.classify(
-                    self.context, event, message, admission, runtime.permissions, config,
-                    recent=self._recent_commands(receipt_key), pending=pending[1] if pending else None,
-                    reminders=self.reminders,
-                )
-                if timeline is not None and timeline.category == "D" and not (message.reply_to or message.media):
-                    timeline.category = "C"
-            if timeline is not None:
-                timeline.mark("T5")
-            if not allowed():
+            if not await asyncio.to_thread(allowed):
                 event.stop_event()
                 completed = True
                 return None
-            natural_words = None
-            if natural and natural[0] != "clarify":
-                name, args = natural
-                if name == "memory" and len(args) == 2 and args[0] == "remember":
-                    from fat_fish.memory.service import normalize
-
-                    body = args[1]
-                    key = hashlib.sha256(normalize(body).encode()).hexdigest()[:20]
-                    args = ["remember", f"note-{key} {body}"]
-                if name in {"confirm", "cancel"}:
-                    current = self.pending.peek((admission.principal_id, message.sender.storage_key),
-                                                message.conversation.storage_key)
-                    if current != pending:
-                        event.stop_event()
-                        await event.send(event.plain_result("【系统】待确认操作已变化，请重新核对。"))
-                        completed = True
-                        return None
-                natural_words = ["/" + name, *args]
-                text = " ".join(natural_words)
-                message = replace(message, text=text)
-                event.message_str = text
-                event.set_extra("_ffa_natural", True)
-                event.set_extra("_ffa_message_event", message)
-                event.set_extra("_ffa_reply_is_command", True)
             if message.quoted_sender:
                 author = Account(message.conversation.provider, message.quoted_sender)
                 if (runtime.identities.resolve_principal(author)[1] == Role.BLOCKED
@@ -1058,88 +1124,29 @@ class PlatformGateway:
                     event.stop_event()
                     completed = True
                     return None
-            words = natural_words or message.text.strip().split()
-            undo_key = message.sender.storage_key, message.conversation.storage_key
-            if words:
-                words[0] = words[0].lower()
-                if words[0] == "/comfirm":
-                    words[0] = "/confirm"
-                if words == ["/confirm"] and self.pending.peek(
-                        (admission.principal_id, message.sender.storage_key), message.conversation.storage_key) != pending:
+            words = message.text.strip().split()
+            explicit_reminder = ()
+            if words and words[0].lower() in {"/remind", "/reminder"} and words[1:2] in (["add"], ["addto"]):
+                prefix_size = 3 if words[1] == "addto" else 2
+                if len(words) <= prefix_size:
                     event.stop_event()
-                    await event.send(event.plain_result("【系统】待确认操作已变化，请重新核对。"))
+                    await event.send(event.plain_result("【系统】请提供提醒的时间和事项。"))
                     completed = True
                     return None
-                if words in (["/memory", "cancel"], ["/groupmemory", "cancel"],
-                             ["/memory", "confirm"]):
-                    if pending and pending[1] == "reset-memory":
-                        words = ["/cancel"] if words[1] == "cancel" else ["/confirm"]
-                if words[0] == "/undo":
-                    persona_command = words[1] if words[1:] in (["persona"], ["globalpersona"],
-                                                                ["privatepersona"], ["grouppersona"]) else None
-                    if len(words) == 1:
-                        recent_persona = self.chat_settings.latest_persona_undo(admission.principal_id, undo_key[1])
-                        recent_setting = self.chat_settings.latest_preference_undo(admission.principal_id, undo_key[1])
-                        reminder = self._reminder_undo.get(undo_key)
-                        recent_reminder = (reminder[0] - 1800, "reminder") if reminder and reminder[0] > time.monotonic() else None
-                        latest = max(filter(None, (recent_persona, recent_setting, recent_reminder)), default=None)
-                        if latest and latest == recent_persona:
-                            persona_command = latest[1]
-                        elif latest and latest == recent_setting:
-                            words = ["/undo", latest[1]]
-                    if persona_command:
-                        words = ["/" + persona_command, "undo"]
-                        message = replace(message, text=" ".join(words))
-                        event.message_str = message.text
-                        event.set_extra("_ffa_message_event", message)
-
-            async def command_reply(reply):
-                name = words[0] if words else ""
-                lines = reply.splitlines() if name in {"/remind", "/reminder"} and words[-1] != "help" else (reply,)
-                for line in lines:
-                    if line.strip():
-                        await event.send(event.plain_result("【系统】" + line))
-
-            submenu = words and words[0].startswith("/") and words[1:] == ["help"]
-            if submenu or words and words[0].startswith("/") and self.commands.find(words[0][1:]) is not None:
-                event.stop_event()
-                try:
-                    command = Command(words[0][1:], tuple(words[1:]))
-                    current = runtime.authorize(message)
-                    if submenu and current is not None and allowed():
-                        reply = await self._help_command(runtime, message, current, ["/help", command.name], event)
-                    else:
-                        reply = await self.commands.dispatch(
-                            command, current, allowed, builtin_args=(runtime, message, current, words, event))
-                except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
-                    logger.warning("FFA management command failed (%s)", type(exc).__name__)
-                    reply = "指令执行失败，不能确认是否完整生效；请检查本机日志后再试"
-                if reply is not None:
-                    await command_reply(reply)
-                if (natural_words or event.get_extra("_ffa_reminder_natural")) and allowed():
-                    recent = self._recent_commands(receipt_key)
-                    outcome = reply or (recent[-1] if recent else "已返回系统回执")
-                    status = ("待确认" if "/confirm" in outcome else "已完成" if outcome.startswith("已")
-                              else "已返回结果")
-                    notes = effective_notes(self.chat_settings.read(), admission.principal_id,
-                                            "" if private else message.conversation.storage_key)
-                    trusted_receipt = recent[-1] if recent else status
-                    followup = await render(self.context, event.unified_msg_origin, event.get_platform_name(),
-                                            {"操作": words[0], "系统状态": status, "回执": trusted_receipt}, notes=notes,
-                                            instructions="用当前人格简短回应上一条系统回执。系统状态已经确定，不否定、重判或重复该结果，不执行新操作。")
-                    if followup and any(term in followup for term in ("失败", "没成", "改不了", "不能", "没法", "没改", "没执行")):
-                        followup = None
-                    if not followup and getattr(self.context, "persona_manager", None) is not None:
-                        from fat_fish.persona.private_persona import apply_affix
-
-                        followup = apply_affix({"待确认": "你核对好再确认就行。", "已完成": "好啦，我记住刚才的调整了。",
-                                                "已返回结果": "可以看看上面这条回执。"}[status], notes)
-                    for segment in reply_segments(followup or ""):
-                        if not allowed():
-                            break
-                        await event.send(event.plain_result(segment))
-                completed = True
-                return None
+                explicit_reminder = (words[1] + "-exact", *words[2:prefix_size])
+                event.set_extra("_ffa_canonical_wake", True)
+                event.is_wake = True
+                event.is_at_or_wake_command = True
+            if words and words[0].startswith("/") and not explicit_reminder:
+                name = words[0][1:].lower()
+                if self.commands.find(name) is not None or words[1:] == ["help"]:
+                    event.stop_event()
+                    command = Command(name, tuple(words[1:]))
+                    receipt = await self._dispatch_command(runtime, message, admission, command, event, allowed)
+                    if receipt:
+                        await self._send_command_receipt(event, command, receipt)
+                    completed = True
+                    return None
             if timeline is not None:
                 timeline.mark("memory_start")
             await self.memory_bridge.prepare(event)
@@ -1228,8 +1235,11 @@ class PlatformGateway:
                 event.stop_event()
                 completed = True
                 return None
-            self.chat_settings.prepare(event, message, admission)
+            await asyncio.to_thread(self.chat_settings.prepare, event, message, admission)
             event.set_extra("_ffa_recent_command_receipts", self._recent_commands(receipt_key))
+            self._bind_management(runtime, message, admission, event, allowed, explicit_reminder, pending)
+            if timeline is not None:
+                timeline.mark("ready")
             result = await downstream()
             completed = True
             return result
@@ -1242,11 +1252,12 @@ class PlatformGateway:
             raise
         finally:
             event.set_extra("_ffa_platform_authorize", None)
+            event.set_extra("_ffa_management_turn", None)
             event.send = original_send
             if original_stream is not None:
                 event.send_streaming = original_stream
             state = ("completed" if completed else "unknown"
                      if submitted or event.get_extra("_ffa_mutating_tool_started") else "retryable")
-            runtime.finish_receive(message, state)
+            await asyncio.to_thread(runtime.finish_receive, message, state)
             if timeline is not None:
                 timeline.log()

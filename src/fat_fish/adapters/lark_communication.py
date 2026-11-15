@@ -3,17 +3,17 @@ import asyncio
 from contextlib import contextmanager
 import json
 from pathlib import Path
-import random
 import re
 import time
 from uuid import uuid4
 
 from fat_fish.adapters.astrbot_communication import AstrBotCommunication
 from fat_fish.adapters.lark_forwards import message_type, read_forward
-from fat_fish.adapters.lark_latency import attach_native_ingress, is_greeting, submitted, trace
+from fat_fish.adapters.lark_latency import attach_native_ingress, submitted
 from fat_fish.adapters.lark_retraction import LarkRetractions
 from fat_fish.adapters.lark_voice import VOICE_UNAVAILABLE, transcribe
 from fat_fish.communication.model import Capability, ChatKind, MessageRetraction, NotSubmitted
+from fat_fish.gateway.reply_schedule import WEB_PROGRESS_TYPE
 
 
 @contextmanager
@@ -36,6 +36,9 @@ def guard_stream(event, authorize):
 
     async def checked_send(*args, **kwargs):
         nonlocal stale
+        wait = event.get_extra("_ffa_wait_reply")
+        if wait is not None:
+            await wait()
         authorize()
         with submitted(event, streaming=True):
             if not await send(*args, **kwargs):
@@ -91,37 +94,8 @@ class LarkCommunication(AstrBotCommunication):
     guard_stream = staticmethod(guard_stream)
     transcribe_group_voice = staticmethod(transcribe)
     group_voice_error = VOICE_UNAVAILABLE
-    text_batch_window = 2.5
-    pace_stream = False
-
-    @staticmethod
-    def batch_arrival(event, when):
-        event.set_extra("_ffa_lark_batch_latest", when)
-
-    @staticmethod
-    def skip_intent(message):
-        return not (message.media or message.reply_to) and is_greeting(message.text)
-
-    def reply_pacing(self, event, _message):
-        async def pace(sequence):
-            latest = event.get_extra("_ffa_lark_batch_latest")
-            if (sequence != 1 or latest is None or event.get_extra("_ffa_reply_is_command", False)
-                    or event.get_extra("_ffa_web_material", False)
-                    or event.get_extra("_ffa_group_media_attached", False)):
-                return
-            delay = latest + random.uniform(4, 6.5) - asyncio.get_running_loop().time()
-            if delay > 0:
-                timeline = trace(event)
-                if timeline is not None:
-                    timeline.mark("pace_start")
-                await asyncio.sleep(delay)
-                if timeline is not None:
-                    timeline.mark("pace_end")
-
-        return pace
-
     async def reply_native(self, event, target, result, original_send):
-        with submitted(event):
+        with submitted(event, progress=getattr(result, "type", None) == WEB_PROGRESS_TYPE):
             return await super().reply_native(event, target, result, original_send)
 
     @staticmethod

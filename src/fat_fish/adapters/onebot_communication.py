@@ -1,34 +1,9 @@
 """SnowLuma and OneBot capabilities exposed to the communication runtime."""
-import time
-
 from fat_fish.adapters.astrbot_communication import AstrBotCommunication, ONEBOT_NAME
-
-
-def provider_reply_delay(event, message):
-    """Apply the native OneBot pacing policy before the runtime claims a send."""
-    from random import uniform
-    from fat_fish.adapters.qq_reply_delay import (
-        PART_MAX_SECONDS, PART_MIN_SECONDS, new_reply_deadline, wait_before_reply,
-    )
-
-    started = time.monotonic()
-
-    async def pace(sequence):
-        if sequence == 1:
-            latest, media_only = event.get_extra("_ffa_reply_window",
-                                                 (started, bool(message.media and not message.text.strip())))
-            deadline = new_reply_deadline(command=event.get_extra("_ffa_reply_is_command", False),
-                                          media=media_only, started=latest)
-        else:
-            deadline = time.monotonic() + uniform(PART_MIN_SECONDS, PART_MAX_SECONDS)
-        await wait_before_reply(deadline)
-
-    return pace
 
 
 class OneBotCommunication(AstrBotCommunication):
     native_platform = ONEBOT_NAME
-    reply_pacing = staticmethod(provider_reply_delay)
 
     async def group_members(self, event, message):
         from fat_fish.adapters.group_platform import GroupPlatform

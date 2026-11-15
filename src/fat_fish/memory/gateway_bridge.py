@@ -39,7 +39,6 @@ LONG_TERM_STATEMENT = re.compile(
     r"^(?P<kind>我计划长期|我长期计划|我们约好|我们约定)(?P<body>[^。！？!?；;\n]{2,120})[。！!]?$"
 )
 UNRELIABLE = re.compile(r"不要.{0,8}记|别记|不用记|假设|假如|如果|比如|开玩笑|临时|[“”「」\"?？]|^/")
-EXPLICIT_NOTE = re.compile(r"^(?:请|麻烦)?(?:帮我)?记住[：:\s]+(.{2,150})$", re.S)
 VERIFIED_DEFAULTS = {
     "schema": 1, "enabled": True, "capture_text": True, "auto_extract": True,
     "reflect": True, "embedding_space": "local-bge",
@@ -201,14 +200,9 @@ class GatewayMemory:
                 if reconcile and access.verify():
                     await reconcile(event, message, force=lookup)
             event.set_extra("_ffa_memory_command", command)
-            proposed_note = None
             safe_input = (access.scope.kind == "private" and not command and not message.reply_to
                     and not message.media and not event.get_extra("_ffa_material")
                     and not contains_secret(message.text))
-            if safe_input:
-                match = EXPLICIT_NOTE.fullmatch(message.text.strip())
-                if match:
-                    proposed_note = match.group(1).strip()
             if (options.get("capture_text") and not command and not event.get_extra("_ffa_material")
                     and not sensitive_information(message.text)):
                 text = message.text[:1500] or text
@@ -222,11 +216,7 @@ class GatewayMemory:
                                              card_capture=(owner, direct) if not command else None)
             event.set_extra("_ffa_memory_access", access)
             event.set_extra("_ffa_memory_receipt", ref)
-            if proposed_note and (not sensitive_information(proposed_note) or options.get("allow_sensitive_explicit")):
-                fact_key = "note-" + hashlib.sha256(normalize(proposed_note).encode()).hexdigest()[:20]
-                await asyncio.to_thread(self.memory().put_fact, access, fact_key, proposed_note, 0.8, ref)
-                event.set_extra("_ffa_memory_saved", fact_key)
-            elif safe_input and options.get("auto_extract", True) and not sensitive_information(message.text):
+            if safe_input and options.get("auto_extract", True) and not sensitive_information(message.text):
                 candidate = self._extract(message.text)
                 if candidate:
                     category, subject, value, importance = candidate
@@ -235,11 +225,6 @@ class GatewayMemory:
             if (safe_input and options.get("reflect") and options.get("auto_extract", True)
                     and not UNRELIABLE.search(message.text) and not sensitive_information(message.text)):
                 self.reflection.observe(access, ref, message.text, message.timestamp)
-            if access.scope.kind == "private":
-                try:
-                    await asyncio.to_thread(self.memory().maintain, access)
-                except (OSError, sqlite3.Error) as exc:
-                    logger.warning("FFA memory maintenance deferred (%s)", type(exc).__name__)
             if options.get("embedding_space"):
                 await self._semantic_provider(access, options)
         except (*STORAGE_FAILURES, PermissionError, AttributeError, RuntimeError) as exc:
@@ -590,8 +575,7 @@ class GatewayMemory:
                 or contains_secret(value)):
             return False
         options = self.options()
-        if not options or (sensitive_information(value) and not (
-                options.get("allow_sensitive_explicit") and EXPLICIT_NOTE.fullmatch(message.text.strip()))):
+        if not options or sensitive_information(value):
             return False
         fact_key = "note-" + hashlib.sha256(normalized.encode()).hexdigest()[:20]
         if event.get_extra("_ffa_auto_fact"):

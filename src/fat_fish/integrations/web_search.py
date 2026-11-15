@@ -4,6 +4,7 @@ import logging
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from itertools import zip_longest
 from urllib.parse import urlsplit
@@ -120,7 +121,10 @@ def offer_search(event, request, settings, *, enabled=True, may_search, resolved
                 return json.dumps({'status': 'no_new_queries'})
             event.set_extra('_ffa_search_queries', queries)
             read_content = kwargs.get('read_content') is True
-            batches = await asyncio.gather(*(search(query, key, read_content=read_content) for query in new_queries))
+            from fat_fish.integrations.web_chat import notify_search_timeout, observe_search_timeouts
+            started = time.monotonic()
+            with observe_search_timeouts() as timeouts:
+                batches = await asyncio.gather(*(search(query, key, read_content=read_content) for query in new_queries))
             unique = {}
             for peers in zip_longest(*batches):
                 for row in peers:
@@ -128,6 +132,9 @@ def offer_search(event, request, settings, *, enabled=True, may_search, resolved
                         unique.setdefault(row['url'], row)
             rows = list(unique.values())
             _log.info('DeepSeek Search returned %d usable results', len(rows))
+            if timeouts:
+                await notify_search_timeout(event, continuing=bool(rows))
+            event.set_extra('_ffa_search_result_seen', True)
             if not rows:
                 return json.dumps({'status': 'insufficient'})
             for row in event.get_extra('_ffa_web_evidence', []):
@@ -138,11 +145,16 @@ def offer_search(event, request, settings, *, enabled=True, may_search, resolved
             if kwargs.get('include_sources') is True:
                 event.set_extra('_ffa_web_include_sources', True)
             from fat_fish.integrations.web_answer_review import review_web_evidence
-            result = await review_web_evidence(
-                context.context.context, event, evidence, key,
-                question=kwargs.get('research_question') or event.message_str,
-                claim=kwargs.get('claim_to_check'), may_search=may_search,
-            )
+            try:
+                result = await review_web_evidence(
+                    context.context.context, event, evidence, key,
+                    question=kwargs.get('research_question') or event.message_str,
+                    claim=kwargs.get('claim_to_check'), may_search=may_search,
+                )
+            finally:
+                timeline = event.get_extra("_ffa_lark_latency")
+                if timeline is not None:
+                    timeline.add_tool_time(started)
             if result['status'] == 'insufficient':
                 result['search_leads'] = [
                     {field: row[field] for field in ('title', 'host', 'snippet') if field in row}
@@ -227,6 +239,9 @@ async def search(query, key, *, read_content=False, timeout=5):
         return results
     except Exception as exc:
         _log.warning('DeepSeek Search failed: %s', type(exc).__name__)
+        if isinstance(exc, TimeoutError):
+            from fat_fish.integrations.web_chat import note_search_timeout
+            note_search_timeout()
         return []
 
 

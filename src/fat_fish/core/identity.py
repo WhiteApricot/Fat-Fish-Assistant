@@ -38,6 +38,7 @@ class IdentityDirectory:
             if not self._ready:
                 with self._schema_lock:
                     if not self._ready:
+                        db.execute("PRAGMA journal_mode=WAL")
                         self._initialize(db)
                         db.commit()
                         self._ready = True

@@ -180,8 +180,12 @@ async def review_web_evidence(context, event, rows, key, *, question, claim, may
             event.set_extra('_ffa_web_review_retry_used', True)
             event.set_extra('_ffa_web_review_queries', [query.casefold() for query in extra])
             _log.info('Web answer review requested %d follow-up searches', len(extra))
-            batches = await asyncio.gather(*(search(query, key, read_content=True) for query in extra))
+            from fat_fish.integrations.web_chat import notify_search_timeout, observe_search_timeouts
+            with observe_search_timeouts() as timeouts:
+                batches = await asyncio.gather(*(search(query, key, read_content=True) for query in extra))
             followup = [row for batch in batches for row in batch]
+            if timeouts:
+                await notify_search_timeout(event, continuing=bool(followup))
             if followup:
                 updated = {row['url']: row for row in matched}
                 for row in (*followup, *rows):
@@ -191,6 +195,9 @@ async def review_web_evidence(context, event, rows, key, *, question, claim, may
                 findings, matched, _ = await _review(provider, question, draft, queries, claim, list(updated.values()))
     except Exception as exc:
         _log.warning('Web answer review unavailable: %s', type(exc).__name__)
+        if isinstance(exc, TimeoutError):
+            from fat_fish.integrations.web_chat import notify_search_timeout
+            await notify_search_timeout(event, continuing=False)
         return {'status': 'review_unavailable'}
     if not findings:
         _log.info('Web answer review could not verify findings from %d candidate pages', len(rows))

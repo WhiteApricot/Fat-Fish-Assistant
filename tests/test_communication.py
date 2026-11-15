@@ -155,26 +155,26 @@ def create_test_provider(address, bot, context, config):
 
 
 class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
-    async def test_lark_batch_restarts_from_last_message_and_keeps_intent_commands(self):
-        from fat_fish.adapters.lark_communication import LarkCommunication
+    async def test_batch_restarts_from_last_message_and_moves_shared_deadline(self):
+        from fat_fish.gateway.reply_schedule import ReplySchedule
         from fat_fish.gateway.text_batch import TextBatch
 
-        event = NativeEvent()
-        arrivals = Mock()
+        schedule = ReplySchedule(0, sample=lambda *_: 5)
+        arrivals = []
+        def arrived(when):
+            arrivals.append(when)
+            schedule.update(when)
+
         batch = TextBatch(window=60)
-        first = asyncio.create_task(batch.collect("room-and-sender", "第一句", window=30, on_arrival=arrivals))
+        first = asyncio.create_task(batch.collect("room-and-sender", "第一句", on_arrival=arrived))
         await asyncio.sleep(0)
-        original_timer = batch.pending["room-and-sender"].timer
-        self.assertIsNone(await batch.collect("room-and-sender", "第二句", window=30))
-        self.assertTrue(original_timer.cancelled())
-        self.assertEqual(arrivals.call_count, 2)
+        original = batch.pending["room-and-sender"].timer
+        self.assertIsNone(await batch.collect("room-and-sender", "第二句"))
+        self.assertTrue(original.cancelled())
+        self.assertEqual(len(arrivals), 2)
+        self.assertEqual(schedule.deadline, arrivals[-1] + 5)
         batch.flush("room-and-sender")
         self.assertEqual(await first, "第一句\n第二句")
-
-        self.assertTrue(LarkCommunication.skip_intent(convert(event)))
-        for text in ("你好，提醒我明天开会", "谢谢，确认", "你好\n切换人格"):
-            event.message_str = text
-            self.assertFalse(LarkCommunication.skip_intent(convert(event)))
 
     async def asyncSetUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -189,7 +189,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
             await self.runtime.enable(address)
         self.sequence = 0
 
-    async def event(self, account, text, *, group="", message_id=None, mentions=()):
+    async def event(self, account, text, *, group="", message_id=None, mentions=(), proposal=None):
         self.sequence += 1
         address = account.provider
         platform = "aiocqhttp" if address == QQ else address.platform
@@ -199,22 +199,22 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         async def downstream():
             access = event.get_extra("_ffa_memory_access")
             event.recalled = self.gateway.memory_bridge.memory().context(access, text) if access else ""
+            turn = event.get_extra("_ffa_management_turn")
+            if proposal is not None and turn is not None and turn.available():
+                event.tool_result = await turn.call(proposal[0], list(proposal[1:]))
             await event.send("response")
 
         await self.gateway.run(event, downstream)
         return event
 
-    async def test_command_receipts_reach_later_chat_and_natural_reply_follows_system(self):
+    async def test_command_receipts_reach_later_chat(self):
         owner = Account(self.providers[0], "31")
         self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
         await self.event(owner, "/personal 简短")
-        with patch.object(self.gateway.natural_language, "classify", new=unittest.mock.AsyncMock(
-                side_effect=[("personal", ["标准"]), None])):
-            with patch("fat_fish.gateway.platform_gateway.render", new=unittest.mock.AsyncMock(return_value="好啦。\n已经调整。")):
-                event = await self.event(owner, "把回复改回标准长度")
-                self.assertTrue(event.sent[0].startswith("【系统】"))
-                self.assertEqual(event.sent[1:], ["好啦。", "已经调整。"])
-            followup = await self.event(owner, "刚才改了什么")
+        event = await self.event(owner, "把回复改回标准长度", proposal=("personal", "标准"))
+        self.assertEqual(len(event.sent), 1)
+        self.assertTrue(event.sent[0].startswith("【系统】"))
+        followup = await self.event(owner, "刚才改了什么")
         receipts = followup.get_extra("_ffa_recent_command_receipts")
         self.assertEqual(len(receipts), 2)
         self.assertIn("简短", receipts[0])
@@ -243,18 +243,10 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         gateway = PlatformGateway(private=self.gateway.path.parent)
         gateway.runtime = self.runtime
         gateway.reminders = ReminderStore(self.gateway.path.with_name("reminders.sqlite3"))
-        model = SimpleNamespace(text_chat=unittest.mock.AsyncMock(side_effect=[
-            SimpleNamespace(completion_text='{"command":"reminder","args":["add","十五秒之后","去喝水"]}'),
-            SimpleNamespace(completion_text='{"command":"reminder","args":["add","十秒以后","交作业"]}'),
-        ]))
-        gateway.context = SimpleNamespace(get_using_provider_async=unittest.mock.AsyncMock(return_value=model))
         owner = Account(self.providers[0], "31")
         self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
         qq = Account(QQ, "32")
         await self.bind(owner, qq)
-
-        async def unexpected():
-            self.fail("Reminder command escaped to the model")
 
         natives = (
             NativeEvent("lark", owner.provider.instance, sender=owner.subject,
@@ -262,9 +254,15 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
             NativeEvent("aiocqhttp", qq.provider.instance, sender=qq.subject,
                         text="/remind add 十秒以后提醒我交作业"),
         )
-        for native, seconds in zip(natives, (15, 10)):
+        for native, seconds, body in zip(natives, (15, 10), ("去喝水", "交作业")):
             started = time.time()
-            await gateway.run(native, unexpected)
+            async def agent():
+                turn = native.get_extra("_ffa_management_turn")
+                self.assertTrue(turn.available())
+                value = await turn.call("reminder", ["add-exact", f"+{seconds}s", "once", body])
+                self.assertEqual(value["status"], "receipt")
+
+            await gateway.run(native, agent)
             self.assertIn("已创建提醒", native.sent[0])
             row = next(row for row in gateway.reminders.rows() if row["platform"] == native.instance)
             self.assertEqual(row["creator_principal"], self.ids.principal_id(owner))
@@ -276,7 +274,6 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         due = max(row["due"] for row in gateway.reminders.rows())
         for _ in range(2):
             await gateway.reminders.tick(dispatch.authorize, dispatch.send, now=due + 1)
-        self.assertEqual(model.text_chat.await_count, 2)
         for account, body in ((owner, "去喝水"), (qq, "交作业")):
             provider = self.runtime.connections[account.provider].provider
             self.assertEqual(len(provider.deliveries), 1)
@@ -297,7 +294,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.event(owner, "/memory cancel")).sent, ["【系统】已取消待确认操作。"])
         self.assertEqual((await self.event(owner, "/cancel")).sent, ["【系统】当前没有有效的待确认操作。"])
 
-    async def test_reminder_modes_when_chat_classification_is_disabled(self):
+    async def test_reminder_modes_when_natural_management_is_disabled(self):
         from fat_fish.reminders.reminders import ReminderStore
 
         self.gateway.chat_settings.save({"global_features": {"naturalcommand": False}})
@@ -306,27 +303,19 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
         qq = Account(QQ, "32")
         await self.bind(owner, qq)
-        model = SimpleNamespace(text_chat=unittest.mock.AsyncMock(side_effect=[
-            SimpleNamespace(completion_text='{"command":"reminder","args":["add","每天8点","每天","喝水"]}'),
-            SimpleNamespace(completion_text='{"command":"reminder","args":["add","30秒后","每隔十五分钟","喝水"]}'),
-        ]))
-        get_model = unittest.mock.AsyncMock(return_value=model)
-        self.gateway.context = SimpleNamespace(get_using_provider_async=get_model)
-        with patch.object(self.gateway.natural_language, "classify", new_callable=unittest.mock.AsyncMock) as classifier:
-            for account, prompt, cycle in (
-                (owner, "每天8点提醒我喝水", "每天"),
-                (qq, "30秒后开始提醒我喝水，之后每隔十五分钟提醒一次", "每隔900秒"),
-            ):
-                await self.event(account, "日常聊天")
-                exact = await self.event(account, "/remind add-exact +30s every:15m 喝水休息")
-                self.assertIn("每隔900秒", exact.sent[0])
-                invalid = await self.event(account, "/remind add-exact 明天 once 不应创建")
-                self.assertNotIn("已创建提醒", invalid.sent[0])
-                natural = await self.event(account, "/remind add " + prompt)
-                self.assertIn(cycle, natural.sent[0])
-            classifier.assert_not_awaited()
-        self.assertEqual(get_model.await_count, 2)
-        self.assertEqual(model.text_chat.await_count, 2)
+        for account, body, timing, rule in (
+            (owner, "明天早上8点后每天提醒喝水", "2038-11-29T08:00:00", "daily"),
+            (qq, "30秒后开始提醒喝水，之后每隔十五分钟", "+30s", "every:900s"),
+        ):
+            disabled = await self.event(account, body, proposal=("reminder", "add-exact", timing, rule, "喝水"))
+            self.assertEqual(disabled.sent, ["response"])
+            exact = await self.event(account, "/remind add-exact +30s every:15m 喝水休息")
+            self.assertIn("每隔900秒", exact.sent[0])
+            invalid = await self.event(account, "/remind add-exact 明天 once 不应创建")
+            self.assertNotIn("已创建提醒", invalid.sent[0])
+            natural = await self.event(account, "/remind add " + body,
+                                       proposal=("reminder", "add-exact", timing, rule, "喝水"))
+            self.assertIn("已创建提醒", natural.sent[0])
         rows = self.gateway.reminders.rows()
         self.assertEqual(len(rows), 4)
         self.assertEqual({json.loads(row["rule"])["kind"] for row in rows}, {"daily", "interval"})
@@ -342,25 +331,16 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.ids.set_room(owner, room, "mention")
         provider = self.runtime.connections[owner.provider].provider
         provider.capabilities |= {Capability.GROUP_MESSAGE}
-        model = SimpleNamespace(text_chat=unittest.mock.AsyncMock(side_effect=[
-            SimpleNamespace(completion_text='{"command":"reminder","args":["add-exact","+7380s","once","整理书包"]}'),
-            SimpleNamespace(completion_text='{"command":"reminder","args":["add-exact","+900s","once","喝水"]}'),
-        ]))
-        self.gateway.context = SimpleNamespace(get_using_provider_async=unittest.mock.AsyncMock(return_value=model))
-        prompts = [
-            "/remind add 等两小时零三分钟，提醒我整理书包",
-            "提醒我过一刻钟去喝水。",
-        ]
-        with patch("fat_fish.gateway.platform_gateway.render",
-                   new=unittest.mock.AsyncMock(return_value="收到。 我会提醒你。")):
-            for prompt in prompts:
-                event = await self.event(owner, prompt, group=room.peer, mentions=(room.bot,))
-                self.assertIn("已创建提醒", event.sent[0])
-                self.assertEqual(event.sent[1:], ["收到。", "我会提醒你。"])
-            self.assertEqual([json.loads(call.kwargs["prompt"])["message"]
-                              for call in model.text_chat.await_args_list], prompts)
-            displayed = await self.event(owner, "/remind list", group=room.peer, mentions=(room.bot,))
-            self.assertEqual(len(displayed.sent), 2)
+        proposals = (
+            ("/remind add 等两小时零三分钟，提醒我整理书包", "+7380s", "整理书包"),
+            ("提醒我过一刻钟去喝水。", "+900s", "喝水"),
+        )
+        for prompt, timing, body in proposals:
+            event = await self.event(owner, prompt, group=room.peer, mentions=(room.bot,),
+                                     proposal=("reminder", "add-exact", timing, "once", body))
+            self.assertIn("已创建提醒", event.sent[0])
+        displayed = await self.event(owner, "/remind list", group=room.peer, mentions=(room.bot,))
+        self.assertEqual(len(displayed.sent), 2)
         dispatch = ReminderDispatch(self.gateway.reminders, self.runtime,
                                     unittest.mock.AsyncMock(return_value="时间到了。\n记得去做。"))
         due = max(row["due"] for row in self.gateway.reminders.rows()) + 1
@@ -374,7 +354,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
         get_model = unittest.mock.AsyncMock()
         self.gateway.context = SimpleNamespace(get_using_provider_async=get_model)
-        result = await self.event(owner, "请帮我记住我喜欢蒸栗子。")
+        result = await self.event(owner, "请帮我记住我喜欢蒸栗子。", proposal=("memory", "remember", "我喜欢蒸栗子。"))
         self.assertTrue(result.sent[0].startswith("【系统】已保存"))
         self.assertIn("蒸栗子", (await self.event(owner, "/memory search 蒸栗子")).sent[0])
         get_model.assert_not_awaited()
@@ -590,23 +570,10 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
     async def test_main_structured_persona_intent_reaches_shared_handler(self):
         owner = Account(self.providers[0], "31")
         self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
-        requests = []
-
-        class Model:
-            async def text_chat(self, **request):
-                requests.append(request)
-                return SimpleNamespace(completion_text='{"command":"persona","args":["set","先说结论 再解释"]}')
-
-        async def resolve(_):
-            return Model()
-
-        self.gateway.context = SimpleNamespace(get_using_provider_async=resolve)
-        result = await self.event(owner, "把人格设为先说结论 再解释")
+        result = await self.event(owner, "把人格设为先说结论 再解释",
+                                  proposal=("persona", "set", "先说结论 再解释"))
         self.assertIn("已保存", result.sent[0])
         self.assertIn("先说结论 再解释", (await self.event(owner, "/persona list")).sent[0])
-        from fat_fish.commands.intents import GUIDANCE, PRIVATE_GROUP_GUIDANCE
-        self.assertEqual(requests[0]["system_prompt"], GUIDANCE + "\n" + PRIVATE_GROUP_GUIDANCE)
-        self.assertEqual(json.loads(requests[0]["prompt"])["persona_numbers"]["persona"], [])
         history = (await self.event(owner, "/history all")).sent[0]
         self.assertIn("persona set：", history)
         self.assertIn("persona list：", history)
@@ -622,17 +589,15 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         handler = AsyncMock(return_value="已执行扩展")
         self.gateway.commands.register("sample", routes={"show": {1}}, help="/sample show",
                                        authorize=self.runtime.permissions.is_global_admin, handle=handler)
-        provider = SimpleNamespace(text_chat=AsyncMock(return_value=SimpleNamespace(
-            completion_text='{"command":"sample","args":["show"]}')))
-        self.gateway.context = SimpleNamespace(get_using_provider_async=AsyncMock(return_value=provider))
         self.assertEqual((await self.event(owner, "/help sample")).sent, ["【系统】/sample show"])
-        self.assertEqual((await self.event(member, "请查询扩展状态")).sent, ["【系统】当前会话权限不足。"])
+        self.assertEqual((await self.event(member, "请查询扩展状态", proposal=("sample", "show"))).sent,
+                         ["【系统】当前会话权限不足。"])
         handler.assert_not_awaited()
-        self.assertEqual((await self.event(owner, "请查询扩展状态")).sent, ["【系统】已执行扩展"])
+        self.assertEqual((await self.event(owner, "请查询扩展状态", proposal=("sample", "show"))).sent,
+                         ["【系统】已执行扩展"])
         command, admission, _ = handler.await_args.args
         self.assertEqual((command.name, command.args), ("sample", ("show",)))
         self.assertEqual(admission.role, Role.OWNER)
-        self.assertIn('"sample"', provider.text_chat.await_args.kwargs["system_prompt"])
 
     async def test_natural_administration_changes_state_only_after_valid_confirmation(self):
         from unittest.mock import AsyncMock
@@ -641,14 +606,10 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
         self.ids.observe(member)
         self.ids.provision(owner, member, Role.MEMBER)
-        model = SimpleNamespace(text_chat=AsyncMock())
-        self.gateway.context = SimpleNamespace(get_using_provider_async=AsyncMock(return_value=model))
         room = Conversation(owner.provider, "900", ChatKind.GROUP, "123", "123")
 
         async def natural(account, text, command, *args):
-            model.text_chat.return_value = SimpleNamespace(completion_text=json.dumps(
-                {"command": command, "args": args}))
-            return (await self.event(account, text)).sent[0]
+            return (await self.event(account, text, proposal=(command, *args))).sent[0]
 
         self.assertIn("群开放范围", await natural(member, "开放群123", "whitelist", "add", "123"))
         self.assertIn("/confirm", await natural(owner, "开放群123", "whitelist", "add", "123"))
@@ -661,9 +622,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await natural(owner, "把那个群改一下", "clarify"), "response")
         self.assertIn("关闭", await natural(owner, "关闭自然语言管理", "naturalcommand", "off"))
         self.assertFalse(self.gateway.chat_settings.read()["naturalcommand"][self.ids.principal_id(owner)])
-        model.text_chat.reset_mock()
         self.assertEqual((await self.event(owner, "开放群456")).sent, ["response"])
-        model.text_chat.assert_not_awaited()
         self.assertIn("已撤销", (await self.event(owner, "/undo naturalcommand")).sent[0])
         self.assertNotIn(self.ids.principal_id(owner), self.gateway.chat_settings.read()["naturalcommand"])
         self.assertIn("whitelist", (await self.event(owner, "/help whitelist")).sent[0])
@@ -692,14 +651,12 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.ids.provision(owner, target, Role.MEMBER)
         room = Conversation(owner.provider, "900", ChatKind.GROUP, "123", "123")
         self.ids.set_room(owner, room, "mention", [owner])
-        provider = SimpleNamespace(text_chat=AsyncMock(side_effect=[
-            SimpleNamespace(completion_text='{"command":"role","args":["add","32","123"]}'),
-            SimpleNamespace(completion_text='{"command":"confirm","args":[]}'),
-        ]))
-        self.gateway.context = SimpleNamespace(get_using_provider_async=AsyncMock(return_value=provider))
-        self.assertIn("确认群管理员", (await self.event(owner, "把32设成群123的管理员")).sent[0])
+        started = await self.event(owner, "把账号 32 设成群 123 的管理员",
+                                   proposal=("role", "add", "32", "123"))
+        self.assertIn("确认群管理员", started.sent[0])
         self.assertFalse(self.ids.conversation_permissions(target, room)[-1])
-        self.assertIn("已授予 32", (await self.event(owner, "确定执行")).sent[0])
+        confirmed = await self.event(owner, "确定执行", proposal=("confirm",))
+        self.assertIn("已授予 32", confirmed.sent[0])
         self.assertTrue(self.ids.conversation_permissions(target, room)[-1])
         self.assertIn("32", (await self.event(owner, "/role list 123")).sent[0])
         self.assertIn("1 个群", (await self.event(owner, "/role remove 32 all")).sent[0])

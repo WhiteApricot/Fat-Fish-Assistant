@@ -27,6 +27,137 @@ except ModuleNotFoundError as exc:
 
 @unittest.skipIf(LarkPlatformAdapter is None, "Requires pinned AstrBot test runtime")
 class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_ingress_does_not_wait_for_optional_display_profile(self):
+        from fat_fish.adapters.lark_latency import attach_native_ingress
+
+        adapter = self.adapter()
+        signal = asyncio.Event()
+        finished = asyncio.Event()
+        raw = lark.im.v1.P2ImMessageReceiveV1({"event": {
+            "sender": {"sender_id": {"open_id": "ou_alice"}, "sender_type": "user"},
+            "message": {"message_id": "om_cold", "chat_id": "oc_test", "chat_type": "p2p",
+                        "create_time": "1771000000000", "message_type": "text",
+                        "content": json.dumps({"text": "/help"})},
+        }})
+
+        async def full_profile(_request):
+            await signal.wait()
+            finished.set()
+            return SimpleNamespace(success=lambda: True, data=SimpleNamespace(user=SimpleNamespace(name="Fixture")))
+
+        with patch.object(adapter.lark_api.contact.v3.user, "aget", side_effect=full_profile), \
+             patch("astrbot.core.platform.sources.lark.lark_adapter.sp.put_async", new=AsyncMock()):
+            restore = attach_native_ingress(adapter, None)
+            try:
+                await asyncio.wait_for(adapter.convert_msg(raw), 2)
+                self.assertEqual(adapter._user_name_cache["ou_alice"][0], "ou_alice")
+                self.assertFalse(finished.is_set())
+                signal.set()
+                await asyncio.wait_for(finished.wait(), 2)
+                self.assertEqual(adapter._user_name_cache["ou_alice"][0], "Fixture")
+            finally:
+                restore()
+
+    async def test_agent_capabilities_are_independent_at_native_tool_boundary(self):
+        from astrbot.core import astr_main_agent
+        from fat_fish.commands.agent_tool import ManagementTurn, install_native_tool_boundary, offer_management
+        from fat_fish.commands.registry import CommandRegistry
+        from fat_fish.integrations.web_search import offer_search
+        from test_communication import NativeEvent
+
+        for management, search in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(management=management, search=search):
+                event = NativeEvent(text="运行测试命令")
+                event.set_extra("_ffa_platform_admission", True)
+                registry = CommandRegistry()
+                registry.register("sample", routes={"show": {1}}, help="/sample show",
+                                  authorize=lambda _: True, handle=AsyncMock())
+                execute = AsyncMock(return_value="程序回执")
+                turn = ManagementTurn(event, registry, convert(event), lambda: True, lambda: management, execute)
+                event.set_extra("_ffa_management_turn", turn)
+                request = SimpleNamespace(func_tool=None, system_prompt="")
+                await offer_management(event, request)
+                offer_search(event, request, {}, enabled=search, may_search=lambda: search, resolved_key="fixture")
+                names = {tool.name for tool in request.func_tool.tools} if request.func_tool else set()
+                self.assertEqual(names, ({"ffa_manage"} if management else set()) |
+                                 ({"web_search_deepseek"} if search else set()))
+                if not management:
+                    continue
+                native = request.func_tool.get_tool("ffa_manage")
+                run = SimpleNamespace(context=SimpleNamespace(event=event))
+                original = astr_main_agent.MAIN_AGENT_HOOKS
+                with patch("astrbot.core.pipeline.context_utils.call_event_hook", new=AsyncMock()):
+                    restore = install_native_tool_boundary()
+                    try:
+                        await astr_main_agent.MAIN_AGENT_HOOKS.on_tool_start(run, native, {})
+                        with self.assertRaises(PermissionError):
+                            await astr_main_agent.MAIN_AGENT_HOOKS.on_tool_start(run, SimpleNamespace(name="ffa_manage"), {})
+                        bad = await native.call(run, command="sample", args={"show": True})
+                        self.assertEqual(json.loads(bad)["status"], "clarify")
+                        results = await asyncio.gather(*(native.call(run, command="sample", args=["show"])
+                                                         for _ in range(2)))
+                        self.assertEqual(results[0], results[1])
+                        execute.assert_awaited_once()
+                        event.set_extra("_ffa_search_result_seen", True)
+                        self.assertEqual(json.loads(await native.call(run, command="sample", args=["show"]))["status"],
+                                         "denied")
+                    finally:
+                        restore()
+                self.assertIs(astr_main_agent.MAIN_AGENT_HOOKS, original)
+
+    async def test_search_timeout_notice_and_review_keep_existing_pipeline(self):
+        from fat_fish.integrations.web_chat import note_search_timeout
+        from fat_fish.integrations.web_search import offer_search
+        from test_communication import NativeEvent
+
+        event = NativeEvent(text="核对公开产品文档")
+        event.set_extra("_ffa_platform_admission", True)
+        event.set_extra("_ffa_platform_authorize", lambda: True)
+        request = SimpleNamespace(func_tool=None, system_prompt="")
+        offer_search(event, request, {}, may_search=lambda: True, resolved_key="fixture")
+        search = request.func_tool.get_tool("web_search_deepseek")
+        run = SimpleNamespace(context=SimpleNamespace(event=event, context=None))
+
+        async def timed_out(*_args, **_kwargs):
+            note_search_timeout()
+            return []
+
+        with patch("fat_fish.integrations.web_search.search", side_effect=timed_out) as lookup:
+            for query in ("official source", "official guide"):
+                result = await search.call(run, query=query)
+                self.assertEqual(json.loads(result)["status"], "insufficient")
+            self.assertEqual(lookup.await_count, 2)
+        self.assertEqual(len(event.sent), 1)
+        self.assertIn("没能完成", event.sent[0].get_plain_text())
+
+    async def test_real_review_logic_checks_evidence_after_supplemental_search(self):
+        from fat_fish.integrations.web_answer_review import DRAFT_PROMPT, REVIEW_PROMPT, review_web_evidence
+        from test_communication import NativeEvent
+
+        event = NativeEvent(text="核对发行范围")
+        first = {"url": "https://example.org/initial", "host": "example.org", "snippet": "Initial announcement only."}
+        later = {"url": "https://example.org/catalog", "host": "example.org", "content": "The current release has three editions."}
+        def reply(text):
+            return SimpleNamespace(completion_text=text)
+
+        draft = reply("候选答案")
+        unusable = reply(json.dumps({"findings": "wrong", "references": [{"id": 1, "quote": "fabricated quote"}],
+                                     "queries": ["official catalog"]}))
+        verified = reply(json.dumps({"findings": "有三个版本", "references": [
+            {"id": 1, "quote": "The current release has three editions."}], "queries": []}))
+        provider = SimpleNamespace(text_chat=AsyncMock(side_effect=(draft, unusable, verified)))
+        context = SimpleNamespace(get_using_provider_async=AsyncMock(return_value=provider))
+        event.set_extra("_ffa_web_include_sources", True)
+        with patch("fat_fish.integrations.web_answer_review.search", new=AsyncMock(return_value=[later])) as search:
+            result = await review_web_evidence(context, event, [first], "fixture", question="发行多少个版本",
+                                               claim=None, may_search=lambda: True)
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["sources"][0]["url"], later["url"])
+        self.assertIn("三个版本", result["findings"])
+        search.assert_awaited_once_with("official catalog", "fixture", read_content=True)
+        self.assertEqual([call.kwargs["system_prompt"] for call in provider.text_chat.await_args_list],
+                         [DRAFT_PROMPT, REVIEW_PROMPT, REVIEW_PROMPT])
+
     async def test_merge_forward_uses_sdk_tree_and_partial_results(self):
         from fat_fish.adapters.lark_forwards import read_forward
         from fat_fish.adapters.lark_quote import quote_context

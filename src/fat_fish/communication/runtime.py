@@ -143,6 +143,15 @@ class CommunicationRuntime:
             return permission
         return None
 
+    async def admit_async(self, event):
+        claim = asyncio.create_task(asyncio.to_thread(self.admit, event))
+        try:
+            return await asyncio.shield(claim)
+        except asyncio.CancelledError:
+            if await claim:
+                await asyncio.to_thread(self.finish_receive, event, "retryable")
+            raise
+
     def finish_receive(self, event, state):
         return self.seen.finish_delivery("ingress", event.event_id, state)
 
@@ -200,8 +209,14 @@ class CommunicationRuntime:
         slot = self.connections[target.provider]
         scope = "reply:" + target.storage_key
         operation = event.event_id + ":" + str(sequence)
-        if not self.seen.begin_delivery(scope, operation):
-            return None
+        claim = asyncio.create_task(asyncio.to_thread(self.seen.begin_delivery, scope, operation))
+        try:
+            if not await asyncio.shield(claim):
+                return None
+        except asyncio.CancelledError:
+            if await claim:
+                await asyncio.to_thread(self.seen.finish_delivery, scope, operation, "retryable")
+            raise
         submitted = False
 
         def authorize(mark_submitted=True):
@@ -214,14 +229,14 @@ class CommunicationRuntime:
 
         try:
             if not check_on_submit:
-                authorize()
+                await asyncio.to_thread(authorize)
             result = await submit(authorize)
         except BaseException:
-            self.seen.finish_delivery(scope, operation, "unknown" if submitted else "retryable")
+            await asyncio.to_thread(self.seen.finish_delivery, scope, operation, "unknown" if submitted else "retryable")
             if submitted:
                 slot.state = "unhealthy"
             raise
-        self.seen.finish_delivery(scope, operation, "submitted" if submitted else "retryable")
+        await asyncio.to_thread(self.seen.finish_delivery, scope, operation, "submitted" if submitted else "retryable")
         return result
 
     async def send(self, actor: Account, target: Conversation, message: Outgoing, operation_id, *,

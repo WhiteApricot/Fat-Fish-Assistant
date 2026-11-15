@@ -145,104 +145,22 @@ class ForwardReader:
         return MARKER+'\n'+note+'\n'+json.dumps(entries,ensure_ascii=False),images
 
 def install_collector_bridge(collector, version):
-    """Start processing early and carry the latest input time to the send gate."""
-    import inspect
-    import time
-    from collections import OrderedDict
-    from contextvars import ContextVar
+    """Keep the pinned collector outside the unified Gateway scheduler."""
+    if version != "2.9.3":
+        raise RuntimeError("Unsupported native collector version")
+    if getattr(collector, "_ffa_predicate_original", None):
+        return
+    original = collector._is_private_message_event
 
-    if version != '2.9.3':
-        raise RuntimeError(f'合并转发需要固定版本 2.9.3 的消息收集插件，实际版本为 {version!r}')
-    if getattr(collector,'_ffa_wait_original',None):return
-    methods = {
-        '_calculate_wait_duration': (('text', 'session', 'has_image'), False),
-        '_is_private_message_event': (('event',), False),
-        '_finalize_merged': (('event', 'buffer', 'images'), True),
-    }
-    for name, (expected, asynchronous) in methods.items():
-        method = getattr(collector, name, None)
-        try:
-            parameters = inspect.signature(method).parameters
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError(f'合并转发无法识别消息收集接口 {name}') from exc
-        if (tuple(parameters) != expected
-                or any(parameter.kind != inspect.Parameter.POSITIONAL_OR_KEYWORD
-                       for parameter in parameters.values())
-                or inspect.iscoroutinefunction(method) != asynchronous
-                or (name == '_calculate_wait_duration'
-                    and (parameters['session'].default is not None
-                         or parameters['has_image'].default is not False))):
-            raise RuntimeError(f'合并转发检测到不兼容的消息收集接口 {name}')
-    original=collector._calculate_wait_duration
-    current=ContextVar('ffa_collector_event',default=None)
-    timing=OrderedDict()
-    markers=(MARKER,'[FFA_FILE_MATERIAL]')
-
-    def media_state(texts,images):
-        material=any(marker in part for part in texts for marker in markers)
-        companion=any(part.split(MARKER,1)[0].split(markers[1],1)[0].strip() for part in texts)
-        return bool(images or material),companion
-
-    def wait(text,session=None,has_image=False):
-        texts=[text or '',*(session or {}).get('buffer',[])]
-        media,companion=media_state(texts,has_image or (session or {}).get('images'))
-        duration,flush,reason=original(text,session,media)
-        event=current.get()
-        if event is not None:
-            uid=event.unified_msg_origin
-            supplemented=bool(companion or (session and len(session.get('items',()))>1)
-                              or event.get_extra('_ffa_collector_followup',False))
-            timing[uid]=(event.get_extra('_ffa_reply_started',time.monotonic()),supplemented)
-            timing.move_to_end(uid)
-            while len(timing)>512:timing.popitem(last=False)
-        # The existing inflight cancellation merges later messages while a
-        # draft is being prepared or is waiting for its send window.
-        return min(duration,0.8),flush,reason
-
-    collector._ffa_wait_original=original;collector._calculate_wait_duration=wait
-    predicate=collector._is_private_message_event
-    finalize=collector._finalize_merged
     def eligible(event):
-        if event.get_extra('_ffa_text_batch_complete', False):
-            return False
-        if not predicate(event):
-            if event.get_extra('_ffa_platform_admission') is None or event.get_extra('_ffa_reply_is_command',False):
-                return False
-            origin=event.unified_msg_origin
-            event.set_extra('_ffa_original_umo',origin)
-            event.unified_msg_origin=origin+'_ffa_collect_'+str(event.get_sender_id())
-        previous=getattr(collector,'inflight',{}).get(event.unified_msg_origin)
-        if (previous and not previous['task'].done()
-                and not previous['event'].get_extra('_ffa_tool_started',False)
-                and not previous['event'].get_extra('_ffa_reply_committing',False)):
-            event.set_extra('_ffa_collector_followup',True)
-        current.set(event)
-        return True
+        return event.get_extra("_ffa_platform_admission") is None and original(event)
 
-    async def finish(event,buffer,images):
-        latest,supplemented=timing.pop(event.unified_msg_origin,(event.get_extra('_ffa_reply_started',time.monotonic()),False))
-        media,companion=media_state(buffer,images)
-        event.set_extra('_ffa_reply_window',(latest,media and not (companion or supplemented)))
-        origin=event.get_extra('_ffa_original_umo','')
-        if origin:event.unified_msg_origin=origin
-        return await finalize(event,buffer,images)
+    collector._ffa_predicate_original = original
+    collector._is_private_message_event = eligible
 
-    collector._ffa_predicate_original=predicate;collector._ffa_finalize_original=finalize
-    collector._is_private_message_event=eligible;collector._finalize_merged=finish
 
 def remove_collector_bridge(collector):
-    for key,session in list(getattr(collector,'sessions',{}).items()):
-        if any(MARKER in x for x in session.get('buffer',[])):
-            collector.sessions.pop(key,None)
-            if session.get('timer_task'):session['timer_task'].cancel()
-            if session.get('flush_event'):session['flush_event'].set()
-            if session.get('done_event'):session['done_event'].set()
-    for key,turn in list(getattr(collector,'inflight',{}).items()):
-        if any(MARKER in x for x in turn.get('buffer',[])):
-            turn['event'].stop_event();turn['task'].cancel();collector.inflight.pop(key,None)
-    original=getattr(collector,'_ffa_wait_original',None)
-    if original:collector._calculate_wait_duration=original;del collector._ffa_wait_original
-    if hasattr(collector,'_ffa_predicate_original'):
-        collector._is_private_message_event=collector._ffa_predicate_original
-        collector._finalize_merged=collector._ffa_finalize_original
-        del collector._ffa_predicate_original;del collector._ffa_finalize_original
+    original = getattr(collector, "_ffa_predicate_original", None)
+    if original is not None:
+        collector._is_private_message_event = original
+        del collector._ffa_predicate_original

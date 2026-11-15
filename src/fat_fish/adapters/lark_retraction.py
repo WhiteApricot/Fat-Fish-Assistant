@@ -25,6 +25,7 @@ class LarkRetractions:
         self.verified = set()
         self.history_checks = OrderedDict()
         with closing(self.connect()) as db, db:
+            db.execute("PRAGMA journal_mode=WAL")
             db.execute("""CREATE TABLE IF NOT EXISTS lark_retractions (
                 id TEXT PRIMARY KEY, sender TEXT, kind TEXT, peer TEXT,
                 recalled INTEGER NOT NULL, observed REAL NOT NULL)""")

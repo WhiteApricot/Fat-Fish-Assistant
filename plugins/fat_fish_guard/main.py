@@ -4,10 +4,6 @@ from astrbot.api.star import Star
 from astrbot.api import logger
 from fat_fish.memory.experience import MemeCadence
 
-SILENT={"不用回复","这条不用回复","这条不用回","我先下线了不用回复"}
-def requests_silence(text):
-    return text.strip().rstrip("。！! ").replace("，","").replace(",","") in SILENT
-
 class FatFishGuard(Star):
     def __init__(self,context):
         super().__init__(context);self.context=context;self.meme_cadence=MemeCadence()
@@ -16,9 +12,11 @@ class FatFishGuard(Star):
 
     async def initialize(self):
         from astrbot.core.fat_fish_gateway import gateway
+        from fat_fish.commands.agent_tool import install_native_tool_boundary
 
         if gateway.context is None:
             gateway.context = self.context
+        self.restore_tool_boundary = install_native_tool_boundary()
         self.platform_gateway = gateway
         await self.platform_gateway.start_configured()
         self.memory_bridge = gateway.memory_bridge
@@ -28,6 +26,8 @@ class FatFishGuard(Star):
         )
 
     async def terminate(self):
+        if getattr(self, "restore_tool_boundary", None):
+            self.restore_tool_boundary()
         job = getattr(self, "memory_job", None)
         if job is not None:
             try:
@@ -48,11 +48,6 @@ class FatFishGuard(Star):
                 (p.__class__.__name__=='Reply' and has_audio(getattr(p,'chain',None) or [])) for p in parts)
         if has_audio(event.get_messages()):
             yield event.plain_result('这条语音没能识别。语音识别可能尚未安装或未成功启动，请在本机安装向导中启用或修复，或先发送文字。')
-            event.stop_event()
-
-    @filter.event_message_type(filter.EventMessageType.ALL,priority=10000)
-    async def guard(self,event:AstrMessageEvent):
-        if requests_silence(event.message_str.strip()):
             event.stop_event()
 
     @filter.on_llm_request(priority=99999)
@@ -119,7 +114,7 @@ class FatFishGuard(Star):
     async def enable_durable_memory(self,event,request):
         if event.get_extra('_ffa_platform_admission',None) is not None:
             allowed = event.get_extra('_ffa_platform_authorize')
-            if not allowed or not allowed():
+            if not allowed or not await asyncio.to_thread(allowed):
                 raise asyncio.CancelledError('Fat-Fish-Assistant platform access revoked')
             request.func_tool = None
             return
@@ -138,8 +133,13 @@ class FatFishGuard(Star):
         if admission is None:
             return
         allowed = event.get_extra('_ffa_platform_authorize')
-        if not allowed or not allowed():
+        if not allowed or not await asyncio.to_thread(allowed):
             raise asyncio.CancelledError('Fat-Fish-Assistant platform access revoked')
+        from fat_fish.commands.agent_tool import offer_management
+        await offer_management(event, request)
+        management = event.get_extra("_ffa_management_turn")
+        if management is not None and management.explicit_reminder:
+            return
         from fat_fish.integrations.web_search import offer_search, session_search_key
         settings = self.context.get_config(umo=event.unified_msg_origin).get('provider_settings', {})
         webresearch = event.get_extra('_ffa_webresearch')
@@ -163,7 +163,7 @@ class FatFishGuard(Star):
             # A read-only lookup may be cancelled when the user adds context.
             # Do not replay a turn that has already begun a state-changing tool.
             event.set_extra('_ffa_tool_started',event.get_extra('_ffa_mutating_tool_started',False))
-        else:
+        elif tool.name != "ffa_manage":
             event.set_extra('_ffa_mutating_tool_started',True)
 
     @filter.on_llm_response(priority=100000)
@@ -184,14 +184,9 @@ class FatFishGuard(Star):
         if response.result_chain is not None:clean_message(response.result_chain)
         if text.strip() and not clean and not getattr(response.result_chain,'chain',None):
             from fat_fish.persona.private_persona import apply_affix
-            from fat_fish.persona.persona_reply import render
 
             notes = event.get_extra('_ffa_persona_notes', '')
-            clean = await render(
-                self.context, event.unified_msg_origin, event.get_platform_name(),
-                {'已知结果': '没有取得可用回复，无法确认执行结果'}, notes=notes,
-                instructions='请用当前人格简短告知用户本次无法确认结果。不要声称执行了任何操作。')
-            clean = clean_reply(clean or '') or apply_affix('这次没拿到有效结果，麻烦再试一下。', notes)
+            clean = apply_affix('这次没拿到有效结果，麻烦再试一下。', notes)
             response.result_chain=MessageChain().message(clean)
         if response.result_chain is None:
             response.completion_text=clean
@@ -204,3 +199,17 @@ class FatFishGuard(Star):
                 timeline.mark("T6")
             event.set_extra('_ffa_agent_running',True)
             event.set_extra('_ffa_agent_finished',False)
+
+    @filter.on_agent_done(priority=-99999)
+    async def track_usage(self, event, run_context, response):
+        timeline = event.get_extra("_ffa_lark_latency")
+        if timeline is None:
+            return
+        timeline.mark("agent_finished")
+        from astrbot.core.pipeline.process_stage.follow_up import _ACTIVE_AGENT_RUNNERS
+
+        runner = _ACTIVE_AGENT_RUNNERS.get(event.unified_msg_origin)
+        stats = getattr(runner, "stats", None) if getattr(runner, "run_context", None) is run_context else None
+        usage = getattr(stats, "token_usage", None) or getattr(response, "usage", None)
+        if usage is not None:
+            timeline.tokens = {"input": usage.input, "output": usage.output}

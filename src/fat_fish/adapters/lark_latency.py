@@ -1,25 +1,23 @@
 """Opt-in, content-free Lark timings measured on the existing request path."""
 from contextlib import contextmanager
 from contextvars import ContextVar
+import asyncio
 import hashlib
 import json
 import logging
-import re
 import time
 
 logger = logging.getLogger(__name__)
-_GREETING = re.compile(r"(?:你好(?:呀|啊|哦)?|您好|嗨|哈喽|早上好|晚上好|晚安|谢谢(?:你|啦)?|hello|hi)[。！!，,.～~\s]*", re.I)
 _INTERVALS = {
     "native_ms": ("T1", "T2"), "authority_ms": ("T2", "T3"),
-    "batch_ms": ("T3", "T4"), "intent_ms": ("T4", "T5"),
+    "batch_ms": ("T3", "T4"), "gateway_prepare_ms": ("T2", "ready"),
+    "pre_agent_ms": ("T2", "T6"), "agent_ms": ("T6", "T7"),
+    "agent_completion_ms": ("T6", "agent_finished"),
     "memory_ms": ("memory_start", "memory_end"), "media_ms": ("media_start", "media_end"),
     "pace_ms": ("pace_start", "pace_end"), "model_first_output_ms": ("T6", "T7"),
     "submit_ms": ("T8", "T9"), "gateway_ms": ("T2", "T9"),
+    "gateway_to_first_api_result_ms": ("T2", "first_api_result"),
 }
-
-
-def is_greeting(text):
-    return bool(_GREETING.fullmatch(text.strip()))
 
 
 class LarkLatency:
@@ -35,22 +33,34 @@ class LarkLatency:
         self.category = "D"
         self.outcome = None
         self.error = None
+        self.tools = 0.0
+        self.tokens = None
 
     def mark(self, step):
         if step not in self.times:
             self.times[step] = time.monotonic()
+
+    def add_tool_time(self, start):
+        self.tools += time.monotonic() - start
 
     def log(self):
         fields = {"id": self.ident, "platform": "lark", "kind": self.kind,
                   "category": self.category, "status": self.outcome or "no_submission"}
         if self.error:
             fields["error"] = self.error
+        if self.tools:
+            fields["tool_ms"] = round(self.tools * 1000, 1)
+        if self.tokens is not None:
+            fields["agent_tokens"] = self.tokens
         fields.update({name: round((self.times[end] - self.times[start]) * 1000, 1)
                        for name, (start, end) in _INTERVALS.items() if start in self.times and end in self.times})
         if self.server is not None:
             if "T9" in self.times:
                 elapsed = self.times["T9"] - self.times["T1"]
                 fields["server_to_result_ms"] = round((self.arrival_wall - self.server + elapsed) * 1000, 1)
+            if "first_api_result" in self.times:
+                elapsed = self.times["first_api_result"] - self.times["T1"]
+                fields["server_to_first_api_result_ms"] = round((self.arrival_wall - self.server + elapsed) * 1000, 1)
             fields["server_to_receive_ms"] = round((self.arrival_wall - self.server) * 1000, 1)
         logger.info("FFA Lark latency %s", json.dumps(fields, separators=(",", ":")))
 
@@ -60,23 +70,28 @@ def trace(event):
 
 
 @contextmanager
-def submitted(event, *, streaming=False):
+def submitted(event, *, streaming=False, progress=False):
     timeline = trace(event)
-    if timeline is None or "T8" in timeline.times:
+    if timeline is None:
         yield
         return
     if streaming:
         timeline.category = "G"
-    timeline.mark("T8")
+    started = time.monotonic()
     try:
         yield
     except BaseException as exc:
-        timeline.outcome, timeline.error = "failed", type(exc).__name__
+        if not progress:
+            timeline.outcome, timeline.error = "failed", type(exc).__name__
         raise
     else:
-        timeline.outcome = "submitted"
+        timeline.mark("first_api_result")
+        if not progress:
+            timeline.outcome, timeline.error = "submitted", None
     finally:
-        timeline.mark("T9")
+        if not progress:
+            timeline.times["T8"] = started
+            timeline.times["T9"] = time.monotonic()
 
 
 def attach_native_ingress(adapter, private_dir):
@@ -87,12 +102,58 @@ def attach_native_ingress(adapter, private_dir):
         return lambda: None
     convert, create, parse = adapter.convert_msg, adapter.create_event, adapter._parse_message_components
     received = ContextVar("ffa_lark_native_receive", default=None)
+    profile_tasks = set()
+
+    def defer_profile(envelope):
+        from lark_oapi.api.contact.v3 import GetUserRequest
+        from astrbot.core.platform.sources.lark.lark_adapter import (
+            USER_NAME_CACHE_MAX_SIZE, USER_NAME_CACHE_TTL_SECONDS, USER_NAME_FAILURE_CACHE_TTL_SECONDS,
+            USER_NAME_LOOKUP_TIMEOUT_SECONDS,
+        )
+
+        message = getattr(envelope, "message", None)
+        sender = getattr(envelope, "sender", None)
+        subject = getattr(getattr(sender, "sender_id", None), "open_id", None)
+        if (getattr(message, "chat_type", None) != "p2p" or getattr(sender, "sender_type", "user") != "user"
+                or not isinstance(subject, str) or not subject.startswith("ou_")):
+            return
+        cache = adapter._user_name_cache
+        now = time.time()
+        cached = cache.get(subject)
+        if cached and cached[1] >= now:
+            return
+        # The native adapter uses this fallback when Contact is unavailable.
+        # Native IM routing and FFA identity still use the authenticated ID.
+        fallback = (subject[:8], now + USER_NAME_FAILURE_CACHE_TTL_SECONDS)
+        cache[subject] = fallback
+        if len(cache) > USER_NAME_CACHE_MAX_SIZE:
+            cache.pop(next(iter(cache)))
+        if len(profile_tasks) >= 16:
+            return
+
+        async def refresh():
+            request = GetUserRequest.builder().user_id(subject).user_id_type("open_id").build()
+            try:
+                async with asyncio.timeout(USER_NAME_LOOKUP_TIMEOUT_SECONDS):
+                    response = await adapter.lark_api.contact.v3.user.aget(request)
+                if response.success() and response.data and response.data.user:
+                    name = str(response.data.user.name or "").strip()
+                    if name and cache.get(subject) == fallback:
+                        cache[subject] = (name, time.time() + USER_NAME_CACHE_TTL_SECONDS)
+            except (AttributeError, OSError, RuntimeError, ValueError, TimeoutError) as exc:
+                logger.debug("Lark optional profile unavailable (%s)", type(exc).__name__)
+
+        task = asyncio.create_task(refresh())
+        profile_tasks.add(task)
+        task.add_done_callback(profile_tasks.discard)
 
     async def timed_convert(event):
         clock = ((time.time(), time.monotonic()) if private_dir is not None
                  and (private_dir / "ffa-lark-latency").is_file() else None)
         token = received.set(clock)
         try:
+            if hasattr(adapter, "_user_name_cache"):
+                defer_profile(getattr(event, "event", None))
             return await convert(event)
         finally:
             received.reset(token)
@@ -123,6 +184,8 @@ def attach_native_ingress(adapter, private_dir):
         setattr(adapter, name, hook)
 
     def detach():
+        for task in profile_tasks:
+            task.cancel()
         for name, hook in hooks.items():
             if getattr(adapter, name, None) is hook:
                 if name in previous:
