@@ -1,5 +1,6 @@
 """AstrBot ingress for registered communication providers."""
 import asyncio
+import hashlib
 from dataclasses import replace
 from collections import OrderedDict, deque
 import json
@@ -20,7 +21,7 @@ from fat_fish.communication.runtime import CommunicationRuntime
 from fat_fish.core.identity import IdentityDirectory, Role
 from fat_fish.memory.experience import contains_secret, sensitive_information
 from fat_fish.participation.participation import DEFAULT_COOLDOWN, Participation
-from fat_fish.persona.chat_settings import ChatSettings
+from fat_fish.persona.chat_settings import ChatSettings, feature_enabled
 from fat_fish.persona.persona_settings import effective_notes
 from fat_fish.persona.persona_reply import render, reply_segments
 from fat_fish.commands.confirmation import PendingActions
@@ -54,7 +55,7 @@ class PlatformGateway:
         self.pending = PendingActions()
         self.commands = CommandRegistry({
             **dict.fromkeys(("persona", "privatepersona", "grouppersona", "globalpersona",
-                             "personal", "webresearch", "naturalcommand", "groupsettings"),
+                             "personal", "websearch", "naturalcommand", "groupsettings"),
                             self._settings_command),
             "role": self._role_command,
             "globaladmin": self._role_command,
@@ -178,8 +179,18 @@ class PlatformGateway:
             state["followups"] = 0
 
     async def _settings_command(self, runtime, message, admission, words, event):
-        return self.chat_settings.command(event, message, admission, runtime.permissions,
-                                          event.get_extra("_ffa_platform_authorize"))
+        reply = self.chat_settings.command(event, message, admission, runtime.permissions,
+                                           event.get_extra("_ffa_platform_authorize"))
+        if words[0] in {"/websearch", "/webresearch"} and reply and "开启" in reply and "已关闭" not in reply:
+            from fat_fish.integrations.web_search import session_search_key
+
+            get_config = getattr(self.context, "get_config", None)
+            if get_config:
+                origin = event.unified_msg_origin
+                settings = get_config(umo=origin).get("provider_settings", {})
+                if not await session_search_key(self.context, origin, settings):
+                    reply += " 当前实例尚未配置可用的 DeepSeek 搜索凭据。"
+        return reply
 
     async def _new_command(self, runtime, message, admission, words, event):
         manager = getattr(self.context, "conversation_manager", None)
@@ -204,9 +215,6 @@ class PlatformGateway:
         return "请明确要执行的操作、目标和范围。"
 
     async def _help_command(self, runtime, message, admission, words, event):
-        if words[1:] in (["memory"], ["groupmemory"]):
-            await self._memory_command(runtime, message, admission, words, event)
-            return None
         return platform_help(message.conversation.kind is ChatKind.PRIVATE, admission, words[1:],
                              reminders=self.reminders is not None, registry=self.commands,
                              global_features=self.chat_settings.read().get("global_features"))
@@ -227,11 +235,11 @@ class PlatformGateway:
     async def _undo_command(self, runtime, message, admission, words, event):
         if words[1:] in (["role"], ["globaladmin"]):
             return await self._undo_admin(runtime, message, admission, words[1])
-        if len(words) == 2 and words[1] in {"personal", "naturalcommand", "webresearch", "groupsettings"}:
+        if len(words) == 2 and words[1] in {"personal", "naturalcommand", "websearch", "webresearch", "groupsettings"}:
             return self.chat_settings.undo_preference(words[1], message, admission, runtime.permissions,
                                                       event.get_extra("_ffa_platform_authorize"))
         key = message.sender.storage_key, message.conversation.storage_key
-        entry = self._reminder_undo.pop(key, None) if len(words) == 1 or words[1:] == ["reminder"] else None
+        entry = self._reminder_undo.pop(key, None) if len(words) == 1 or words[1:] in (["remind"], ["reminder"]) else None
         if entry and entry[0] > time.monotonic() and self.reminders is not None:
             access = ReminderAccess(runtime, message.conversation)
             return await asyncio.to_thread(self.reminders.undo, message.sender.subject, access, entry[1])
@@ -286,22 +294,33 @@ class PlatformGateway:
             from fat_fish.commands.intents import IntentUnavailable, classify
 
             first_content = 2 if operation == "addto" else 1
-            request = " ".join(args[first_content:])
+            raw = message.text.strip().split(maxsplit=first_content + 1)
+            request = raw[first_content + 1] if len(raw) > first_content + 1 else ""
             if not request:
                 return "请提供提醒的时间和事项。"
             if operation == "addto" and (message.conversation.kind is not ChatKind.GROUP
                     or not runtime.permissions.can_moderate(admission)):
                 return "只有本群管理员可以为其他成员创建提醒。"
             try:
-                parsed = await classify(self.context, event, request, "", (), recent=(), pending=None,
+                parsed = await classify(self.context, event, message.text, "", (), recent=(), pending=None,
                                         reminders=(), reminder_creation=True)
             except IntentUnavailable:
                 return "暂时无法使用模型解析提醒，请稍后重试。"
-            if (not parsed or parsed[0] != "reminder" or parsed[1][:1] != ["add"]
-                    or len(parsed[1]) != 3 or parsed[1][1] not in request):
+            if not parsed or parsed[0] != "reminder":
                 return "请明确提醒的时间和事项。"
-            args = [*args[:first_content], *parsed[1][1:]]
+            values = parsed[1]
+            if values[:1] == ["add-exact"] and len(values) == 4:
+                args = [operation + "-exact", *args[1:first_content], *values[1:]]
+            elif (values[:1] == ["add"] and len(values) in {3, 4} and values[1] in request
+                    and (len(values) == 3 or values[2] == "once" or values[2] in request)):
+                args = [*args[:first_content], *values[1:]]
+            else:
+                return "请明确提醒的时间和事项。"
             structured = True
+            event.set_extra("_ffa_reminder_natural", True)
+            current = runtime.authorize(message)
+            if current is None or current.principal_id != admission.principal_id:
+                return "当前权限不足，未执行。"
         try:
             reply = await asyncio.to_thread(self.reminders.command, event, args, access, structured=structured)
         except ValueError:
@@ -664,7 +683,7 @@ class PlatformGateway:
     async def _identity_command(self, runtime, message, event):
         text = message.text.strip()
         match = IDENTITY_REQUEST.match(text)
-        if match is None:
+        if match is None or text.split()[1:] == ["help"]:
             return False
         event.stop_event()
         if message.conversation.kind is not ChatKind.PRIVATE:
@@ -941,11 +960,15 @@ class PlatformGateway:
             pending = self.pending.peek((admission.principal_id, message.sender.storage_key),
                                         message.conversation.storage_key)
             private = message.conversation.kind is ChatKind.PRIVATE
-            natural = await self.natural_language.classify(
-                self.context, event, message, admission, runtime.permissions, self.chat_settings.read,
-                recent=self._recent_commands(receipt_key), pending=pending[1] if pending else None,
-                reminders=self.reminders,
-            )
+            natural = None
+            config = self.chat_settings.read()
+            natural_scope = admission.principal_id if private else message.conversation.storage_key
+            if not message.text.lstrip().startswith("/") and feature_enabled(config, "naturalcommand", natural_scope):
+                natural = await self.natural_language.classify(
+                    self.context, event, message, admission, runtime.permissions, config,
+                    recent=self._recent_commands(receipt_key), pending=pending[1] if pending else None,
+                    reminders=self.reminders,
+                )
             if not allowed():
                 event.stop_event()
                 completed = True
@@ -953,6 +976,12 @@ class PlatformGateway:
             natural_words = None
             if natural and natural[0] != "clarify":
                 name, args = natural
+                if name == "memory" and len(args) == 2 and args[0] == "remember":
+                    from fat_fish.memory.service import normalize
+
+                    body = args[1]
+                    key = hashlib.sha256(normalize(body).encode()).hexdigest()[:20]
+                    args = ["remember", f"note-{key} {body}"]
                 if name in {"confirm", "cancel"}:
                     current = self.pending.peek((admission.principal_id, message.sender.storage_key),
                                                 message.conversation.storage_key)
@@ -1011,21 +1040,29 @@ class PlatformGateway:
                         event.set_extra("_ffa_message_event", message)
 
             async def command_reply(reply):
-                await event.send(event.plain_result("【系统】" + reply))
+                name = words[0] if words else ""
+                lines = reply.splitlines() if name in {"/remind", "/reminder"} and words[-1] != "help" else (reply,)
+                for line in lines:
+                    if line.strip():
+                        await event.send(event.plain_result("【系统】" + line))
 
-            if words and words[0].startswith("/") and self.commands.find(words[0][1:]) is not None:
+            submenu = words and words[0].startswith("/") and words[1:] == ["help"]
+            if submenu or words and words[0].startswith("/") and self.commands.find(words[0][1:]) is not None:
                 event.stop_event()
                 try:
                     command = Command(words[0][1:], tuple(words[1:]))
                     current = runtime.authorize(message)
-                    reply = await self.commands.dispatch(
-                        command, current, allowed, builtin_args=(runtime, message, current, words, event))
+                    if submenu and current is not None and allowed():
+                        reply = await self._help_command(runtime, message, current, ["/help", command.name], event)
+                    else:
+                        reply = await self.commands.dispatch(
+                            command, current, allowed, builtin_args=(runtime, message, current, words, event))
                 except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
                     logger.warning("FFA management command failed (%s)", type(exc).__name__)
                     reply = "指令执行失败，不能确认是否完整生效；请检查本机日志后再试"
                 if reply is not None:
                     await command_reply(reply)
-                if natural_words and allowed():
+                if (natural_words or event.get_extra("_ffa_reminder_natural")) and allowed():
                     recent = self._recent_commands(receipt_key)
                     outcome = reply or (recent[-1] if recent else "已返回系统回执")
                     status = ("待确认" if "/confirm" in outcome else "已完成" if outcome.startswith("已")

@@ -188,7 +188,18 @@ class GatewayMemory:
             if not await asyncio.to_thread(self.memory().scope_enabled, access.scope):
                 return
             text = "收到消息"
-            command = self.command(event) or message.text.lstrip().startswith("/")
+            memory_command = self.command(event)
+            command = memory_command or message.text.lstrip().startswith("/")
+            words = message.text.strip().lower().split(maxsplit=2)
+            lookup = memory_command and len(words) > 1 and words[1] in {
+                "search", "archive", "history", "card", "card-archive",
+            }
+            if not command or lookup:
+                runtime = self.gateway.communication()
+                slot = runtime.connections.get(message.conversation.provider)
+                reconcile = getattr(slot.provider, "reconcile_retractions", None) if slot and slot.enabled else None
+                if reconcile and access.verify():
+                    await reconcile(event, message, force=lookup)
             event.set_extra("_ffa_memory_command", command)
             proposed_note = None
             safe_input = (access.scope.kind == "private" and not command and not message.reply_to
@@ -487,6 +498,8 @@ class GatewayMemory:
         try:
             memory = self.memory()
             epoch = await asyncio.to_thread(memory.erasure_epoch, access)
+            if isinstance(getattr(request, "contexts", None), list):
+                request.contexts = await asyncio.to_thread(memory.filter_retracted_context, access, request.contexts)
             semantic = await self._semantic(access, message.text)
             context = await asyncio.to_thread(self._context, access, message.text, semantic, exclude_turn=message.event_id)
             if epoch != await asyncio.to_thread(memory.erasure_epoch, access):

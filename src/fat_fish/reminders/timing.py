@@ -22,16 +22,80 @@ def next_time(stamp,rule,after):
     if kind=='once':return None
     if kind=='interval':return stamp+(int((after-stamp)//rule['seconds'])+1)*rule['seconds']
     if kind in {'daily','weekly'}:
-        delta=1 if kind=='daily' else 7
-        return (base+timedelta(days=max(1,(now.date()-base.date()).days//delta+1)*delta)).timestamp()
+        period = (1 if kind == 'daily' else 7) * 86400
+        return stamp + max(1, int((after - stamp) // period) + 1) * period
     year,month=now.year,now.month
     for _ in range(240):
         if rule['day']<=calendar.monthrange(year,month)[1]:
-            value=datetime(year,month,rule['day'],base.hour,base.minute,tzinfo=TZ)
+            value=datetime(year,month,rule['day'],base.hour,base.minute,base.second,tzinfo=TZ)
             if value>now:return value.timestamp()
         month+=1
         if month==13:year+=1;month=1
     raise ValueError('无法计算下一次时间')
+
+
+def parse_exact_time(start, recurrence, now=None):
+    now = now or datetime.now(TZ)
+
+    def duration(value):
+        match = re.fullmatch(r"([1-9][0-9]{0,7})([smhd])", value)
+        if match is None:
+            raise ValueError("时长须为正整数并带 s、m、h 或 d")
+        seconds = int(match[1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match[2]]
+        if seconds > 366 * 86400:
+            raise ValueError("时长不得超过 366 天")
+        return seconds
+
+    if start.startswith("+"):
+        due = now + timedelta(seconds=duration(start[1:]))
+    elif re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2})?", start):
+        due = datetime.fromisoformat(start).replace(tzinfo=TZ)
+    else:
+        raise ValueError("时间须为 YYYY-MM-DDTHH:MM[:SS] 或 +30s 等明确时长")
+    if due <= now:
+        raise ValueError("首次触发时间必须在未来")
+
+    if recurrence.startswith("every:"):
+        rule = {"kind": "interval", "seconds": duration(recurrence.removeprefix("every:"))}
+    elif recurrence in {"once", "daily", "weekly", "monthly"}:
+        rule = {"kind": recurrence}
+        if recurrence == "monthly":
+            rule["day"] = due.day
+    else:
+        raise ValueError("循环须为 once、daily、weekly、monthly 或 every:时长")
+    return due.timestamp(), rule
+
+
+def cycle_label(rule):
+    return {"once": "不循环", "daily": "每天", "weekly": "每周", "monthly": "每月"}.get(
+        rule["kind"], f"每隔{rule.get('seconds', '?')}秒")
+
+
+def parse_natural_schedule(start, recurrence=None):
+    due, inferred, note = parse_time(start)
+    if recurrence is None:
+        return due, inferred, note
+    date = datetime.fromtimestamp(due, TZ)
+    if recurrence == "once":
+        rule = {"kind": "once"}
+    elif recurrence in {"每天", "每日"}:
+        rule = {"kind": "daily"}
+    elif REPEATING_DELAY.fullmatch(recurrence):
+        _, rule, _ = parse_time(recurrence)
+    elif week := re.fullmatch(r"每(?:周|星期)([一二三四五六日天1-7])", recurrence):
+        weekday = "一二三四五六日".index(week[1].replace("天", "日")) if not week[1].isdigit() else int(week[1]) - 1
+        if date.weekday() != weekday:
+            raise ValueError("首次时间与每周循环日不一致")
+        rule = {"kind": "weekly"}
+    elif month := re.fullmatch(r"每月([0-9]{1,2})[日号]", recurrence):
+        if date.day != int(month[1]):
+            raise ValueError("首次时间与每月循环日不一致")
+        rule = {"kind": "monthly", "day": date.day}
+    else:
+        raise ValueError("无法可靠确定循环规则")
+    if inferred["kind"] != "once" and inferred != rule:
+        raise ValueError("首次时间和循环规则不一致")
+    return due, rule, note
 
 def tomorrow_date(now):
     return now.date()+timedelta(days=int((now.hour,now.minute)>=(4,30)))

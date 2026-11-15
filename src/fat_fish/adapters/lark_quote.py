@@ -42,6 +42,7 @@ async def quote_context(event, message, author_allowed):
             if response.success() and response.data:
                 return next((row for row in response.data.items or ()
                              if row.message_id == ident and row.chat_id == chat and row.sender
+                             and getattr(row, "deleted", False) is not True
                              and row.sender.id and author_allowed(row.sender.id)), None)
         except (OSError, RuntimeError, ValueError, AttributeError, TimeoutError):
             pass
@@ -87,6 +88,7 @@ async def quote_context(event, message, author_allowed):
             response = await asyncio.wait_for(api.alist(request), 2)
             if response.success() and response.data:
                 return [row for row in response.data.items or () if row.chat_id == chat and row.sender
+                        and getattr(row, "deleted", False) is not True
                         and row.sender.id and author_allowed(row.sender.id)]
         except (OSError, RuntimeError, ValueError, AttributeError, TimeoutError):
             pass

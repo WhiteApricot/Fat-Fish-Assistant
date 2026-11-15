@@ -206,6 +206,8 @@ class MemoryTests(unittest.TestCase):
             ref, _ = self.store.record(self.alice, activity, turn_id=ident, card_capture=(False, True))
             self.store.put_fact(self.alice, fact, "喜欢桂花茶", .8, ref)
             refs[ident] = ref
+        self.store.record(self.alice, Activity("out:target:1", ActivityKind.MESSAGE_SENT, OBS,
+                                               1001, "已经记下这款茶", "reply:target"), turn_id="target")
         with self.store.transaction(write=True) as db:
             db.executemany("INSERT INTO activity_vectors VALUES (?,'mock','[1,0]')",
                            ((ref,) for ref in refs.values()))
@@ -221,6 +223,10 @@ class MemoryTests(unittest.TestCase):
         for service in (self.store, restored):
             self.assertIsNone(service.fact_history(self.alice, "drink")[0]["content"])
             self.assertEqual(service.fact_history(self.alice, "second-drink")[0]["content"], "喜欢桂花茶")
+            messages = [{"role": "user", "content": "喜欢桂花茶"},
+                        {"role": "assistant", "content": "已经记下这款茶"},
+                        {"role": "user", "content": "保留下来的新内容"}]
+            self.assertEqual(service.filter_retracted_context(self.alice, messages), messages[-1:])
             self.assertEqual(len(service.card_records(self.alice)), 1)
             with service.transaction() as db:
                 self.assertEqual([row[0] for row in db.execute("SELECT ref FROM activity_vectors")], [refs["other"]])

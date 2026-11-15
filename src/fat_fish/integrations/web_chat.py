@@ -11,16 +11,20 @@ from fat_fish.memory.experience import contains_secret
 
 _log = logging.getLogger(__name__)
 PROGRESS_JITTER = 0.5
+PROGRESS_SECONDS = 6
 
 
 def start_web_progress(event, proposed):
-    if not event.get_extra('_ffa_reply_delay_bound', False) or event.get_extra('_ffa_web_progress_task'):
+    managed = event.get_extra('_ffa_platform_admission') is not None
+    paced = event.get_extra('_ffa_reply_delay_bound', False)
+    if not (managed or paced) or event.get_extra('_ffa_web_progress_task'):
         return
     text = _progress_text(proposed)
     if not text:
         return
     latest, media_only = event.get_extra('_ffa_reply_window', (time.monotonic(), False))
-    _, maximum = reply_window(command=event.get_extra('_ffa_reply_is_command', False), media=media_only)
+    maximum = (reply_window(command=event.get_extra('_ffa_reply_is_command', False), media=media_only)[1]
+               if paced else PROGRESS_SECONDS)
     deadline = max(time.monotonic(), latest + maximum) + random.uniform(0, PROGRESS_JITTER)
     task = asyncio.create_task(_send_web_progress(event, deadline, text))
     event.set_extra('_ffa_web_progress_task', task)
@@ -39,12 +43,17 @@ async def _send_web_progress(event, deadline, text):
 
         interrupted = event.get_extra('_ffa_reply_interrupted')
         await wait_before_reply(deadline, interrupted)
+        allowed = event.get_extra('_ffa_platform_authorize')
         if (event.is_stopped() or event.get_extra('_ffa_web_progress_closed', False)
+                or event.get_extra('_ffa_platform_admission') is not None and (not allowed or not allowed())
                 or event.get_extra('_ffa_reply_superseded', False)):
             return
+        event.set_extra('_ffa_web_progress_sending', True)
         await event.send(MessageChain(type=WEB_PROGRESS_TYPE).message(text))
     except Exception as exc:
         _log.info('Web progress unavailable: %s', type(exc).__name__)
+    finally:
+        event.set_extra('_ffa_web_progress_sending', False)
 
 
 async def finish_web_progress(event):

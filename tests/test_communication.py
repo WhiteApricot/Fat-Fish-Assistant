@@ -276,6 +276,92 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.event(owner, "/memory cancel")).sent, ["【系统】已取消待确认操作。"])
         self.assertEqual((await self.event(owner, "/cancel")).sent, ["【系统】当前没有有效的待确认操作。"])
 
+    async def test_reminder_modes_when_chat_classification_is_disabled(self):
+        from fat_fish.reminders.reminders import ReminderStore
+
+        self.gateway.chat_settings.save({"global_features": {"naturalcommand": False}})
+        self.gateway.reminders = ReminderStore(self.gateway.path.with_name("reminders.sqlite3"))
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        qq = Account(QQ, "32")
+        await self.bind(owner, qq)
+        model = SimpleNamespace(text_chat=unittest.mock.AsyncMock(side_effect=[
+            SimpleNamespace(completion_text='{"command":"reminder","args":["add","每天8点","每天","喝水"]}'),
+            SimpleNamespace(completion_text='{"command":"reminder","args":["add","30秒后","每隔十五分钟","喝水"]}'),
+        ]))
+        get_model = unittest.mock.AsyncMock(return_value=model)
+        self.gateway.context = SimpleNamespace(get_using_provider_async=get_model)
+        with patch.object(self.gateway.natural_language, "classify", new_callable=unittest.mock.AsyncMock) as classifier:
+            for account, prompt, cycle in (
+                (owner, "每天8点提醒我喝水", "每天"),
+                (qq, "30秒后开始提醒我喝水，之后每隔十五分钟提醒一次", "每隔900秒"),
+            ):
+                await self.event(account, "日常聊天")
+                exact = await self.event(account, "/remind add-exact +30s every:15m 喝水休息")
+                self.assertIn("每隔900秒", exact.sent[0])
+                invalid = await self.event(account, "/remind add-exact 明天 once 不应创建")
+                self.assertNotIn("已创建提醒", invalid.sent[0])
+                natural = await self.event(account, "/remind add " + prompt)
+                self.assertIn(cycle, natural.sent[0])
+            classifier.assert_not_awaited()
+        self.assertEqual(get_model.await_count, 2)
+        self.assertEqual(model.text_chat.await_count, 2)
+        rows = self.gateway.reminders.rows()
+        self.assertEqual(len(rows), 4)
+        self.assertEqual({json.loads(row["rule"])["kind"] for row in rows}, {"daily", "interval"})
+
+    async def test_group_reminders_use_full_model_input_and_send_distinct_parts(self):
+        from fat_fish.reminders.dispatch import ReminderDispatch
+        from fat_fish.reminders.reminders import ReminderStore
+
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        self.gateway.reminders = ReminderStore(self.gateway.path.with_name("reminders.sqlite3"))
+        room = Conversation(owner.provider, "900", ChatKind.GROUP, "oc_team", "oc_team")
+        self.ids.set_room(owner, room, "mention")
+        provider = self.runtime.connections[owner.provider].provider
+        provider.capabilities |= {Capability.GROUP_MESSAGE}
+        model = SimpleNamespace(text_chat=unittest.mock.AsyncMock(side_effect=[
+            SimpleNamespace(completion_text='{"command":"reminder","args":["add-exact","+7380s","once","整理书包"]}'),
+            SimpleNamespace(completion_text='{"command":"reminder","args":["add-exact","+900s","once","喝水"]}'),
+        ]))
+        self.gateway.context = SimpleNamespace(get_using_provider_async=unittest.mock.AsyncMock(return_value=model))
+        prompts = [
+            "/remind add 等两小时零三分钟，提醒我整理书包",
+            "提醒我过一刻钟去喝水。",
+        ]
+        with patch("fat_fish.gateway.platform_gateway.render",
+                   new=unittest.mock.AsyncMock(return_value="收到。 我会提醒你。")):
+            for prompt in prompts:
+                event = await self.event(owner, prompt, group=room.peer, mentions=(room.bot,))
+                self.assertIn("已创建提醒", event.sent[0])
+                self.assertEqual(event.sent[1:], ["收到。", "我会提醒你。"])
+            self.assertEqual([json.loads(call.kwargs["prompt"])["message"]
+                              for call in model.text_chat.await_args_list], prompts)
+            displayed = await self.event(owner, "/remind list", group=room.peer, mentions=(room.bot,))
+            self.assertEqual(len(displayed.sent), 2)
+        dispatch = ReminderDispatch(self.gateway.reminders, self.runtime,
+                                    unittest.mock.AsyncMock(return_value="时间到了。\n记得去做。"))
+        due = max(row["due"] for row in self.gateway.reminders.rows()) + 1
+        for _ in range(2):
+            await self.gateway.reminders.tick(dispatch.authorize, dispatch.send, now=due)
+        self.assertEqual([message.text for _, message in provider.deliveries], ["时间到了。", "记得去做。"] * 2)
+        self.assertEqual([message.mentions for _, message in provider.deliveries], [(owner.subject,), ()] * 2)
+
+    async def test_natural_remember_dispatch_and_matching_help(self):
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        get_model = unittest.mock.AsyncMock()
+        self.gateway.context = SimpleNamespace(get_using_provider_async=get_model)
+        result = await self.event(owner, "请帮我记住我喜欢蒸栗子。")
+        self.assertTrue(result.sent[0].startswith("【系统】已保存"))
+        self.assertIn("蒸栗子", (await self.event(owner, "/memory search 蒸栗子")).sent[0])
+        get_model.assert_not_awaited()
+        for command in ("memory", "persona", "websearch", "role", "owner"):
+            menu = (await self.event(owner, f"/help {command}")).sent
+            self.assertEqual(menu, (await self.event(owner, f"/{command} help")).sent)
+            self.assertTrue(all(" — " in line for line in menu[0].splitlines()))
+
     async def test_owner_opens_mention_room_and_confirms_member_grant(self):
         owner = Account(self.providers[0], "31")
         member = Account(owner.provider, "35")
@@ -346,7 +432,9 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(lark_help, (await self.event(qq, "/help")).sent[0])
         self.assertIn("【系统】/help — 查看指令", lark_help)
         whitelist_help = (await self.event(owner, "/help whitelist")).sent[0]
-        self.assertIn("\n/whitelist add|remove 群号 — ", whitelist_help)
+        self.assertIn("\n/whitelist add [群号] — ", whitelist_help)
+        self.assertIn("\n/whitelist remove [群号] — ", whitelist_help)
+        self.assertEqual(whitelist_help, (await self.event(owner, "/whitelist help")).sent[0])
         token = await self.bind(qq, third)
         self.assertIn("未完成", (await self.event(third, "/link " + token)).sent[0])
         for account in (owner, qq, third):

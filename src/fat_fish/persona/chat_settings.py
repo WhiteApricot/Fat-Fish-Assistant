@@ -14,6 +14,8 @@ FEATURES = {"naturalcommand": "自然语言指令", "webresearch": "联网搜索
 
 
 def feature_enabled(config, name, scope):
+    if name == "websearch":
+        name = "webresearch"
     return config.get("global_features", {}).get(name, False) is True and config.get(name, {}).get(scope, True) is True
 
 
@@ -68,6 +70,7 @@ class ChatSettings:
         return None
 
     def undo_preference(self, command, message, admission, permissions, allowed):
+        command = "webresearch" if command == "websearch" else command
         private = message.conversation.kind is ChatKind.PRIVATE
         if not private and not permissions.can_moderate(admission):
             return "此操作需要本群管理权限。"
@@ -106,6 +109,7 @@ class ChatSettings:
         if not words:
             return None
         name = words[0].lower().removeprefix("/")
+        name = "webresearch" if name == "websearch" else name
         if not words[0].startswith("/") or name not in {
             "persona", "privatepersona", "grouppersona", "globalpersona", "personal", "webresearch",
             "naturalcommand", "groupsettings",
@@ -144,14 +148,15 @@ class ChatSettings:
                 result = "个人回复长度已设为 " + lengths[payload]
             elif name in FEATURES:
                 label = FEATURES[name]
+                public_name = "websearch" if name == "webresearch" else name
                 global_values = config.get("global_features", {})
                 if global_feature:
                     args = payload.split()[1:]
                     if not args:
                         state = "开启" if global_values.get(name) is True else "关闭"
-                        return f"全局{label}：{state}。使用 /{name} global on|off。"
+                        return f"全局{label}：{state}。使用 /{public_name} global on|off。"
                     if args not in (["on"], ["off"]):
-                        return f"用法：/{name} global [on|off]"
+                        return f"用法：/{public_name} global [on|off]"
                     config.setdefault("global_features", {})[name] = args == ["on"]
                     self.save(config)
                     return f"已{'开启' if args == ['on'] else '关闭'}全局{label}。"
@@ -162,9 +167,9 @@ class ChatSettings:
                 key = actor if private else group
                 if payload in {"", "help"}:
                     state = "开启" if values.get(key, True) else "关闭"
-                    return f"当前会话{label}：{state}。使用 /{name} on|off。"
+                    return f"当前会话{label}：{state}。使用 /{public_name} on|off。"
                 if payload not in {"on", "off"}:
-                    return f"用法：/{name} on|off"
+                    return f"用法：/{public_name} on|off"
                 value = payload == "on"
                 result = f"已保存当前会话的{label}设置：" + ("开启" if payload == "on" else "关闭")
             elif name == "groupsettings":

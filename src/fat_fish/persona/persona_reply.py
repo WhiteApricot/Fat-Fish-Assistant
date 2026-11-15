@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 def reply_segments(text):
     """Keep each sentence's punctuation and send each nonempty line separately."""
-    lines = re.sub(r"([。！？!?]+)(?=[^\s。！？!?])", r"\1\n", text)
+    lines = re.sub(r"([。！？!?]+)[^\S\r\n]*(?=[^\s。！？!?])", r"\1\n", text)
     return [line.strip() for line in lines.splitlines() if line.strip()]
 
 

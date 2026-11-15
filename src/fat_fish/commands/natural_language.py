@@ -1,36 +1,37 @@
 """Context and classification for management requests from any provider."""
 import logging
+import re
 
 from fat_fish.commands.intents import IntentUnavailable, classify, contains_external_material
 from fat_fish.communication.model import ChatKind
 from fat_fish.gateway.media_ingress import UNSUPPORTED_MEDIA
 from fat_fish.memory.experience import contains_secret
-from fat_fish.persona.chat_settings import feature_enabled
 from fat_fish.persona.persona_settings import persona_catalog
 
 
 logger = logging.getLogger(__name__)
+EXPLICIT_REMEMBER = re.compile(r"^(?:(?:请|麻烦)\s*)?(?:帮我\s*)?记住(?:[：:]\s*|\s+|(?=我|我们|这|以后|将来))(.{2,1500})$", re.S)
 
 
 class NaturalLanguageManager:
     def __init__(self, registry):
         self.registry = registry
 
-    async def classify(self, context, event, message, admission, permissions, read_settings, *,
+    async def classify(self, context, event, message, admission, permissions, config, *,
                        recent, pending, reminders):
         private = message.conversation.kind is ChatKind.PRIVATE
         room = message.conversation.storage_key
         principal = admission.principal_id
         setting = principal if private else room
         text = message.text.strip()
-        if (context is None
-                or (not private and message.conversation.bot not in message.mentions)
+        if ((not private and message.conversation.bot not in message.mentions)
                 or not text or len(text) > 2000 or text.startswith("/") or message.media
                 or message.reply_to or contains_external_material(event)
                 or any(type(part).__name__ in UNSUPPORTED_MEDIA for part in event.get_messages())):
             return None
-        config = read_settings()
-        if not feature_enabled(config, "naturalcommand", setting):
+        if match := EXPLICIT_REMEMBER.fullmatch(text):
+            return ("memory" if private else "groupmemory"), ["remember", match[1].strip()]
+        if context is None:
             return None
         scope = ("private:" if private else "group:") + setting
         notes = config.get("private_persona_notes" if private else "group_persona_notes", {})

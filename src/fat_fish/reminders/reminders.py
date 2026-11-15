@@ -6,7 +6,7 @@ import time
 import uuid
 from datetime import datetime
 from contextlib import closing
-from fat_fish.reminders.timing import tomorrow_date, parse_time,next_time,display,TZ
+from fat_fish.reminders.timing import cycle_label, tomorrow_date, parse_exact_time, parse_natural_schedule, parse_time,next_time,display,TZ
 
 class ReminderStore:
     def __init__(self,path):
@@ -79,7 +79,10 @@ class ReminderStore:
         if principal is None:
             return '当前权限不足，未执行'
         if not args or args[0] == 'help':
-            return ('/remind add 时间提醒我事项\n/remind addto 账号 时间提醒事项\n/remind list\n'
+            return ('/remind add 自然语言描述\n/remind add-exact 时间 循环 事项\n'
+                    '/remind addto 账号 自然语言描述\n/remind addto-exact 账号 时间 循环 事项\n'
+                    '时间格式 +30s 或 YYYY-MM-DDTHH:MM[:SS]（台北时间）\n'
+                    '循环参数 once、daily、weekly、monthly、every:30m\n/remind list\n'
                     '/remind show 编号\n/remind time 编号 时间\n/remind text 编号 内容\n'
                     '/remind pause|resume 编号\n/remind delete 编号')
         operation = args[0]
@@ -101,24 +104,33 @@ class ReminderStore:
             else:selected=[]
             if len(selected)==1:return self.command(event, ['time', selected[0]['id'], args[2]] if len(args) > 2 else ['delete', selected[0]['id']], access)
             return '请指定提醒编号后执行；匹配不唯一或无法可靠确定：\n'+('\n'.join(self.format(r) for r in (selected or rows)) or '暂无')
-        if operation in {'add','addto'}:
+        if operation in {'add','addto','add-exact','addto-exact'}:
             target=actor
-            if operation=='addto':
+            targeted = operation in {'addto', 'addto-exact'}
+            if targeted:
                 if len(args)<3:return '请明确指定目标账号和提醒时间、内容'
                 target=args[1]
                 if not group or (target!=actor and not access.can_moderate(actor)):return '只有本群管理者可以为明确指定的其他成员创建提醒'
-            values=args[2:] if operation=='addto' else args[1:]
-            if structured:
-                if len(values)!=2 or not all(value.strip() for value in values):
+            values=args[2:] if targeted else args[1:]
+            if operation.endswith('-exact'):
+                if len(values) < 3:
+                    return '请依次提供明确时间、循环参数和事项。用法见 /remind help。'
+                due, rule = parse_exact_time(values[0], values[1])
+                note, body = '采用明确参数', " ".join(values[2:]).strip()
+            elif structured:
+                if len(values) not in {2, 3} or not all(value.strip() for value in values):
                     return '请明确提醒的时间和事项。'
-                parts=values
+                due, rule, note = parse_natural_schedule(*values[:-1])
+                body = values[-1].strip()
             else:
                 text=' '.join(values)
                 parts=text.split('提醒我',1) if '提醒我' in text else text.split('提醒',1)
                 if len(parts)!=2 or not parts[1].strip():
                     return '格式：/remind add 明天下午提醒我给老师打电话'
-            due,rule,note=parse_time(parts[0]);body=parts[1].strip()
-            if 'QQ电话' in parts[0] or '拨号' in parts[0]:note='QQ电话暂缓，本任务仅文字提醒；'+note
+                due,rule,note=parse_time(parts[0]);body=parts[1].strip()
+            if not operation.endswith('-exact') and ('QQ电话' in values[0] or '拨号' in values[0]):
+                note = '当前仅发送文字提醒；' + note
+            if not body:return '请提供提醒事项。'
             if len(body)>2000:return '提醒内容最多2000字'
             if len([r for r in self.rows() if r['creator']==actor and r['state'] not in {'deleted','done'}])>=100:return '提醒数量已达100，请先清理'
             ident=uuid.uuid4().hex[:12]
@@ -132,7 +144,7 @@ class ReminderStore:
                 self.remember_undo(db,event,ident,None)
             if hasattr(event,'set_extra'):
                 event.set_extra('_ffa_reminder_reference',ident)
-            return '已创建提醒 '+str(next(row['number'] for row in self.rows() if row['id']==ident))+'：'+display(due)+'；目标账号：'+target+'；'+note+'；'+body
+            return '已创建提醒 '+str(next(row['number'] for row in self.rows() if row['id']==ident))+'：'+display(due)+'；'+cycle_label(rule)+'；目标账号：'+target+'；'+note+'；'+body
         if len(args)<2:return '请指定提醒编号'
         row=next((r for r in rows if r['id']==args[1] or str(r['number'])==args[1]),None)
         if row is None:return '没有此编号或无权管理该提醒'
@@ -178,7 +190,7 @@ class ReminderStore:
     def format(self,row):
         state={'active':'已激活','paused':'已暂停','done':'已完成','deleted':'已删除','failed':'失败','unknown':'送达待确认','revoked':'已撤权'}.get(row['state'],row['state'])
         rule=json.loads(row['rule'])
-        cycle={'once':'不循环','daily':'每天','weekly':'每周','monthly':'每月'}.get(rule['kind'],f"每隔{rule.get('seconds','?')}秒")
+        cycle=cycle_label(rule)
         return f"【{state}】编号：{row['number']}；时间：{display(row['due'])}；提醒内容：{row['body']}；{cycle}。"
 
 

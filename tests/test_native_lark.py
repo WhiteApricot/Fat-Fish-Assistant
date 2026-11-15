@@ -27,6 +27,48 @@ except ModuleNotFoundError as exc:
 
 @unittest.skipIf(LarkPlatformAdapter is None, "Requires pinned AstrBot test runtime")
 class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shared_web_search_uses_current_admission(self):
+        from fat_fish.integrations.web_search import clean_reply, offer_search, session_search_key
+        from test_communication import NativeEvent
+
+        self.assertEqual(clean_reply("答复\n<｜DSML｜function_calls>\n<｜DSML｜invoke>参数</｜DSML｜invoke>\n</｜DSML｜function_calls>"), "答复")
+        for platform in ("lark", "aiocqhttp"):
+            event = NativeEvent(platform=platform, text="上网核对 Python 文档")
+            event.set_extra("_ffa_platform_admission", True)
+            request = SimpleNamespace(func_tool=None, system_prompt="")
+            permission = Mock(return_value=True)
+            provider = SimpleNamespace(provider_config={"api_base": "https://api.deepseek.com/v1"},
+                                       get_current_key=Mock(return_value="fixture"))
+            context = SimpleNamespace(get_using_provider_async=AsyncMock(return_value=provider))
+            key = await session_search_key(context, event.unified_msg_origin, {})
+            context.get_using_provider_async.assert_awaited_once_with(event.unified_msg_origin)
+            offer_search(event, request, {}, may_search=permission, resolved_key=key)
+            tool = request.func_tool.get_tool("web_search_deepseek")
+            usage = SimpleNamespace(context=SimpleNamespace(event=event, context=None))
+            rows = [{"title": "Docs", "url": "https://docs.python.org", "host": "docs.python.org", "snippet": "official"}]
+            with patch("fat_fish.integrations.web_search.search", new=AsyncMock(return_value=rows)) as search, \
+                 patch("fat_fish.integrations.web_answer_review.review_web_evidence",
+                       new=AsyncMock(return_value={"status": "verified"})):
+                result = await tool.call(usage, query="python docs")
+                self.assertEqual(json.loads(result)["status"], "verified")
+                search.assert_awaited_once_with("python docs", "fixture", read_content=False)
+                permission.return_value = False
+                await tool.call(usage, query="second query")
+                search.assert_awaited_once()
+
+    async def test_search_rejects_nonofficial_chat_credential_sources(self):
+        from fat_fish.integrations.web_search import session_search_key
+
+        provider = SimpleNamespace(provider_config={}, get_current_key=Mock(return_value="unrelated"))
+        context = SimpleNamespace(get_using_provider_async=AsyncMock(return_value=provider))
+        for endpoint in ("http://api.deepseek.com/v1", "https://api.deepseek.com.example.org/v1",
+                         "https://api.deepseek.com@proxy.example.org/v1", "https://api.deepseek.com:8443/v1"):
+            provider.provider_config["api_base"] = endpoint
+            key = await session_search_key(context, "lark:FriendMessage:fixture",
+                                           {"websearch_deepseek_key": ["dedicated"]})
+            self.assertEqual(key, "dedicated")
+        provider.get_current_key.assert_not_called()
+
     def adapter(self):
         adapter = LarkPlatformAdapter({"id": "lark-a", "app_id": "fixture", "app_secret": "fixture"},
                                       {}, asyncio.Queue())
@@ -237,6 +279,59 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(provider.track_inbound(native, message))
             self.assertFalse(await provider.verify_retraction(callback.await_args.args[1]))
             await provider.stop()
+
+    async def test_memory_search_reconciles_a_missed_recall_from_native_history(self):
+        from fat_fish.gateway.platform_gateway import PlatformGateway
+        from test_communication import NativeEvent
+
+        adapter = self.adapter()
+        address = ProviderId("lark", "lark-a")
+        account = Account(address, "ou_alice")
+        chat = "oc_private"
+        rows = [
+            SimpleNamespace(chat_id=chat, message_id="om_recalled", deleted=False),
+            SimpleNamespace(chat_id=chat, message_id="om_kept", deleted=False),
+            SimpleNamespace(chat_id="oc_other", message_id="om_kept", deleted=True),
+            SimpleNamespace(chat_id=chat, message_id="om_untracked", deleted=True),
+        ]
+        api = adapter.lark_api.im.v1.message
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gateway = PlatformGateway(private=root)
+            runtime = gateway.communication()
+            ids = runtime.identities
+            ids.confirm_owner_challenge(account, ids.issue_owner_challenge(account))
+            context = ProviderContext(lambda: adapter, AsyncMock(), private_dir=root, retract_native=gateway.retract)
+            provider = create_provider(address, "ou_bot", context, {})
+            runtime.register(provider)
+            self.assertTrue(await runtime.enable(address))
+
+            async def dispatch(ident, text):
+                event = NativeEvent(instance=address.instance, sender=account.subject, bot="ou_bot",
+                                    ident=ident, text=text, raw=SimpleNamespace(chat_id=chat))
+                event.bot = adapter.lark_api
+                await gateway.run(event, AsyncMock())
+                return event.sent[0]
+
+            result = SimpleNamespace(success=lambda: True, data=SimpleNamespace(items=rows,
+                                                                                 has_more=False, page_token=None))
+            with patch.object(api, "alist", new=AsyncMock(return_value=result)) as history:
+                await dispatch("om_recalled", "/memory remember recalled 钴蓝纸鹤放在台灯旁")
+                await dispatch("om_kept", "/memory remember kept 钴蓝纸鹤旁边有一支笔")
+                before = await dispatch("om_query", "/memory search 钴蓝纸鹤")
+                self.assertIn("recalled", before)
+                self.assertIn("kept", before)
+                result.success = lambda: False
+                rows[0].deleted = True
+                unavailable = await dispatch("om_unavailable", "/memory search 钴蓝纸鹤")
+                self.assertIn("recalled", unavailable)
+                result.success = lambda: True
+                after = await dispatch("om_recheck", "/memory search 钴蓝纸鹤")
+                self.assertNotIn("recalled", after)
+                self.assertIn("kept", after)
+                self.assertEqual(history.await_count, 3)
+            await runtime.stop_all()
 
     async def test_quote_uses_parent_id_even_without_native_reply_component(self):
         from fat_fish.adapters.lark_quote import quote_context

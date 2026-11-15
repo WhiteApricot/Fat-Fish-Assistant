@@ -140,14 +140,16 @@ class FatFishGuard(Star):
         allowed = event.get_extra('_ffa_platform_authorize')
         if not allowed or not allowed():
             raise asyncio.CancelledError('Fat-Fish-Assistant platform access revoked')
-        from fat_fish.integrations.web_search import offer_search
+        from fat_fish.integrations.web_search import offer_search, session_search_key
         settings = self.context.get_config(umo=event.unified_msg_origin).get('provider_settings', {})
         webresearch = event.get_extra('_ffa_webresearch')
 
         def may_search():
             return bool(webresearch and webresearch() and allowed())
 
-        offer_search(event, request, settings, enabled=may_search(), may_search=may_search)
+        enabled = may_search()
+        key = await session_search_key(self.context, event.unified_msg_origin, settings) if enabled else ""
+        offer_search(event, request, settings, enabled=enabled and may_search(), may_search=may_search, resolved_key=key)
 
     @filter.on_using_llm_tool(priority=-100000)
     async def mark_web_material(self,event,tool,_args):
@@ -175,7 +177,15 @@ class FatFishGuard(Star):
         clean=clean_reply(text)
         if response.result_chain is not None:clean_message(response.result_chain)
         if text.strip() and not clean and not getattr(response.result_chain,'chain',None):
-            clean='刚才没能整理出有效回复，请再试一次。'
+            from fat_fish.persona.private_persona import apply_affix
+            from fat_fish.persona.persona_reply import render
+
+            notes = event.get_extra('_ffa_persona_notes', '')
+            clean = await render(
+                self.context, event.unified_msg_origin, event.get_platform_name(),
+                {'已知结果': '没有取得可用回复，无法确认执行结果'}, notes=notes,
+                instructions='请用当前人格简短告知用户本次无法确认结果。不要声称执行了任何操作。')
+            clean = clean_reply(clean or '') or apply_affix('这次没拿到有效结果，麻烦再试一下。', notes)
             response.result_chain=MessageChain().message(clean)
         if response.result_chain is None:
             response.completion_text=clean

@@ -356,9 +356,11 @@ class MemoryService:
         payload = encode([scope, access.principal, source, asdict(activity)])
         digest = hashlib.sha256(payload.encode()).hexdigest()
         with self.transaction(write=True) as db:
-            if (producer == "core" and activity.kind is ActivityKind.MESSAGE_RECEIVED
+            inbound_id = activity.event_id if activity.kind is ActivityKind.MESSAGE_RECEIVED else (
+                "in:" + turn_id if activity.kind is ActivityKind.MESSAGE_SENT and turn_id else None)
+            if (producer == "core" and inbound_id is not None
                     and db.execute("SELECT 1 FROM memory_erasures WHERE scope=? AND digest=?",
-                                   (scope, self._retraction_digest(access.principal, activity.event_id))).fetchone()):
+                                   (scope, self._retraction_digest(access.principal, inbound_id))).fetchone()):
                 raise PermissionError("Inbound evidence was retracted")
             row = db.execute("SELECT ref,digest FROM activities WHERE producer=? AND event_id=?",
                              (producer, activity.event_id)).fetchone()
@@ -582,6 +584,30 @@ class MemoryService:
     def _retraction_digest(principal, inbound_id):
         return hashlib.sha256(encode(["retraction", principal, inbound_id]).encode()).hexdigest()
 
+    @staticmethod
+    def _retracted_context_digest(conversation, text):
+        return content_digest(encode(["retracted-context", conversation, normalize(text)]))
+
+    def filter_retracted_context(self, access, messages):
+        """Suppress native context copies belonging to verified withdrawn turns."""
+        access.require_recall()
+        with self.transaction() as db:
+            erased = {row[0] for row in db.execute("SELECT digest FROM memory_erasures WHERE scope=?",
+                                                   (access.scope.storage_key,))}
+        if not erased:
+            return messages
+        filtered = []
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                content = "\n".join(part["text"] for part in content
+                                    if isinstance(part, dict) and isinstance(part.get("text"), str))
+            if isinstance(content, str) and self._retracted_context_digest(access.source.conversation, content) in erased:
+                continue
+            filtered.append(message)
+        access.require_recall()
+        return filtered
+
     def retract_message(self, scope, principal, event_id, allowed):
         """Remember a verified withdrawal even when the inbound evidence has not arrived."""
         if not allowed():
@@ -590,26 +616,41 @@ class MemoryService:
         with self.transaction(write=True) as db:
             recorded = db.execute("INSERT OR IGNORE INTO memory_erasures VALUES (?,?)",
                                   (scope.storage_key, self._retraction_digest(principal, inbound_id))).rowcount
-            row = db.execute("""SELECT ref,summary FROM activities WHERE producer='core'
-                AND scope=? AND actor=? AND event_id=? AND kind='message_received' AND redacted=0""",
+            row = db.execute("""SELECT ref,turn_id FROM activities a WHERE producer='core'
+                AND scope=? AND actor=? AND event_id=? AND kind='message_received' AND (
+                    redacted=0 OR EXISTS (SELECT 1 FROM activities reply WHERE reply.scope=a.scope
+                    AND reply.producer='core' AND reply.kind='message_sent'
+                    AND reply.turn_id=a.turn_id AND reply.redacted=0))""",
                 (scope.storage_key, principal, inbound_id)).fetchone()
             if row is not None:
-                self._erase_inbound_evidence(db, scope.storage_key, row["ref"])
+                self._erase_inbound_evidence(db, scope.storage_key, row["ref"], row["turn_id"])
             if not allowed():
                 raise PermissionError("Retraction authorization revoked")
             return bool(recorded or row is not None)
 
-    def _erase_inbound_evidence(self, db, scope, ref):
+    def _erase_inbound_evidence(self, db, scope, ref, turn_id=None):
+        event = db.execute("SELECT turn_id FROM activities WHERE ref=?", (ref,)).fetchone()
+        turn_id = turn_id or (event["turn_id"] if event else None)
+        related = db.execute("""SELECT ref,summary,source FROM activities WHERE ref=? OR
+            (scope=? AND producer='core' AND kind='message_sent' AND turn_id=?)""", (ref, scope, turn_id)).fetchall()
+        db.executemany("INSERT OR IGNORE INTO memory_erasures VALUES (?,?)", (
+            (scope, self._retracted_context_digest(json.loads(item["source"])["conversation"], item["summary"]))
+            for item in related if item["summary"] and item["summary"] not in {
+                "收到消息", "通信适配器已返回回复提交",
+            }
+        ))
         affected = {scope}
-        affected.update(item[0] for item in db.execute("""SELECT DISTINCT c.scope FROM memory_card c
-            JOIN memory_card_sources s ON s.card=c.id WHERE s.ref=?""", (ref,)))
+        for item in related:
+            affected.update(row[0] for row in db.execute("""SELECT DISTINCT c.scope FROM memory_card c
+                JOIN memory_card_sources s ON s.card=c.id WHERE s.ref=?""", (item["ref"],)))
         db.execute("""UPDATE facts SET status='deleted' WHERE (scope,fact_key,revision) IN
             (SELECT scope,fact_key,revision FROM fact_versions WHERE ref=?)""", (ref,))
         for table in ("fact_vectors", "fact_review"):
             db.execute(f"""DELETE FROM {table} WHERE (scope,fact_key,revision) IN
                 (SELECT scope,fact_key,revision FROM fact_versions WHERE ref=?)""", (ref,))
         db.execute("UPDATE fact_versions SET content=NULL,normalized='' WHERE ref=?", (ref,))
-        db.execute("UPDATE activities SET summary='',evidence='',redacted=1 WHERE ref=?", (ref,))
+        db.executemany("UPDATE activities SET summary='',evidence='',redacted=1 WHERE ref=?",
+                       ((item["ref"],) for item in related))
         for key in affected:
             self._mark_erasure(db, key)
             card.refresh_initial(db, key)

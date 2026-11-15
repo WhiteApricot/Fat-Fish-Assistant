@@ -30,7 +30,7 @@ class CommandRegistry:
 
     def register(self, name, *, routes, help, authorize, handle):
         if (not name.isascii() or not name.isalnum() or name != name.lower()
-                or name in {"chat", "comfirm", "remind"} or name in self.routes()):
+                or name in {"chat", "comfirm", "remind", "webresearch"} or name in self.routes()):
             raise ValueError("Invalid or duplicate command name")
         self.registrations[name] = CommandRegistration(routes, handle, help, authorize)
 
@@ -47,7 +47,7 @@ class CommandRegistry:
                 if entry.authorize is not None and entry.authorize(admission)}
 
     def find(self, name):
-        return self.registrations.get({"remind": "reminder", "comfirm": "confirm"}.get(name, name))
+        return self.registrations.get({"remind": "reminder", "comfirm": "confirm", "webresearch": "websearch"}.get(name, name))
 
     async def dispatch(self, command, admission, allowed, *, builtin_args):
         entry = self.find(command.name)

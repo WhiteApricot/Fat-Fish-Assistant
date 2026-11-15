@@ -117,6 +117,10 @@ class LarkCommunication(AstrBotCommunication):
         self.retractions.attach(self.context.platform_instance())
         return self.retractions.track(event, message)
 
+    async def reconcile_retractions(self, event, message, *, force=False):
+        if self.retractions is not None:
+            await self.retractions.reconcile(event, message, force=force)
+
     def convert_retraction(self, notice):
         if not isinstance(notice, MessageRetraction):
             raise ValueError("Expected a correlated native recall")

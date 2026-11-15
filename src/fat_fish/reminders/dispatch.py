@@ -65,20 +65,40 @@ class ReminderDispatch:
 
     def delivery_state(self, row):
         room, _ = address(row)
-        return self.runtime.outbound_state(room, operation_id(row))
+        operation = operation_id(row)
+        return (self.runtime.outbound_state(room, operation)
+                or self.runtime.outbound_state(room, operation + ":multipart"))
 
     async def send(self, row):
         room, actor = address(row)
         mentions = (row["target"],) if room.kind is ChatKind.GROUP else ()
         text = (await self.render(room, row["creator_principal"], row["body"]) if self.render
                 else "提醒：" + row["body"])
-        message = Outgoing(text, mentions=mentions)
         operation = operation_id(row)
         if not self.allowed(row):
             return False
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(lines) <= 1:
+            await self.send_part(row, actor, room, Outgoing(text, mentions=mentions), operation)
+            return None
+
+        # A restart must not regenerate a different set of parts after any of
+        # the original parts may have been submitted.
+        marker = operation + ":multipart"
+        scope = "outbound:" + room.storage_key
+        if not self.runtime.seen.begin_delivery(scope, marker):
+            if self.delivery_state(row) in {"submitted", "delivered"}:
+                return None
+            raise ConnectionError("Multipart reminder delivery is unresolved")
+        for index, line in enumerate(lines):
+            await self.send_part(row, actor, room, Outgoing(line, mentions=mentions if index == 0 else ()),
+                                 f"{operation}:part:{index}")
+        self.runtime.seen.finish_delivery(scope, marker, "submitted")
+
+    async def send_part(self, row, actor, room, message, operation):
         sent = await self.runtime.send(actor, room, message, operation, proactive=True,
                                        recheck=lambda: self.allowed(row))
-        if not sent and self.delivery_state(row) not in {"submitted", "delivered"}:
+        if not sent and self.runtime.outbound_state(room, operation) not in {"submitted", "delivered"}:
             raise ConnectionError("Reminder delivery is unresolved")
 
     async def tick(self):

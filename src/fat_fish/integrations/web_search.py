@@ -29,7 +29,24 @@ def search_key(settings):
     return os.environ.get('DEEPSEEK_API_KEY', '').strip()
 
 
-def offer_search(event, request, settings, *, enabled=True, may_search):
+async def session_search_key(context, origin, settings):
+    """Reuse the session's official DeepSeek chat credential when available."""
+    resolve = getattr(context, 'get_using_provider_async', None)
+    if callable(resolve):
+        try:
+            provider = await resolve(origin)
+            config = getattr(provider, 'provider_config', {})
+            endpoint = urlsplit(config.get('api_base') or '')
+            if endpoint.scheme == 'https' and endpoint.netloc.lower() in {'api.deepseek.com', 'api.deepseek.com:443'}:
+                key = provider.get_current_key()
+                if isinstance(key, str) and key.strip() and not key.lstrip().startswith('$'):
+                    return key.strip()
+        except (AttributeError, LookupError, TypeError, ValueError) as exc:
+            _log.info('Unable to resolve DeepSeek chat provider (%s)', type(exc).__name__)
+    return search_key(settings)
+
+
+def offer_search(event, request, settings, *, enabled=True, may_search, resolved_key=None):
     """Offer one read-only tool. The reply model owns the decision to use it."""
     from astrbot.core.agent.tool import FunctionTool, ToolSet
 
@@ -42,7 +59,7 @@ def offer_search(event, request, settings, *, enabled=True, may_search):
     if (event.get_extra('_ffa_search_blocked', False)
             or '[FFA_FILE_MATERIAL]' in event.message_str or contains_secret(event.message_str)):
         return
-    key = search_key(settings)
+    key = search_key(settings) if resolved_key is None else resolved_key
     today = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
     request.system_prompt = (request.system_prompt or '') + (
         f'\n本轮真实日期为 {today}（东八区），用于解释今天、明天等，不要输出后台时间戳。'
@@ -84,7 +101,8 @@ def offer_search(event, request, settings, *, enabled=True, may_search):
     class NativeSearchTool(FunctionTool):
         async def call(self, context, **kwargs):
             current = context.context.event
-            if (current is not event or not event.get_extra('_ffa_access_checked', False)
+            if (current is not event or not (event.get_extra('_ffa_access_checked', False)
+                    or event.get_extra('_ffa_platform_admission') is not None)
                     or event.get_extra('_ffa_reply_superseded', False) or not may_search()):
                 return json.dumps({'status': 'review_unavailable'})
             queries = event.get_extra('_ffa_search_queries', [])
@@ -218,11 +236,13 @@ _DIAGNOSTIC = re.compile(
     r'Search failed or unavailable\b|Error (?:occurred|Type\s*[:：]|Message\s*[:：])|LLM 响应错误\s*[:：]|'
     r'Traceback \(most recent call last\)|.*DSML.*(?:invoke|calls))', re.I)
 _SYSTEM_REMINDER = re.compile(r'<system_reminder\b[^>]*>.*?(?:</system_reminder\s*>|\Z)', re.I | re.S)
+_DSML_CALLS = re.compile(
+    r'<[｜|]DSML[｜|](function_calls|tool_calls|invoke)\b[^>]*>.*?(?:</[｜|]DSML[｜|]\1\s*>|\Z)',
+    re.I | re.S)
 
 
 def clean_reply(text):
-    if 'DSML' in text and ('invoke' in text or 'calls' in text):
-        return ''
+    text = _DSML_CALLS.sub('', text)
     text = _SYSTEM_REMINDER.sub('', text)
     text = re.sub(r'</?system_reminder\s*>', '', text, flags=re.I)
     visible = []
