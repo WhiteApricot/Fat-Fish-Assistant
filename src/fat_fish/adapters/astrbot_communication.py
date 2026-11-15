@@ -1,6 +1,5 @@
 """Convert authenticated AstrBot messages and wrap the native send surface."""
 import time
-from contextlib import contextmanager
 
 from fat_fish.communication.model import (
     Account, AdapterManifest, Capability, ChatKind, Conversation, Media, MessageEvent, NotSubmitted, ProviderId,
@@ -15,28 +14,6 @@ def filter_native_lark_chat_log(record):
     """Suppress the native event outline, which includes private commands and IDs."""
     return not (getattr(record, "category", None) == "user_chat"
                 and getattr(record, "platform_type", None) == "lark")
-
-
-@contextmanager
-def guard_lark_stream(event, check_submission):
-    """Guard the submission primitives in the pinned AstrBot CardKit adapter."""
-    originals = {}
-    try:
-        for name in ("_create_streaming_card", "_send_card_message", "_update_streaming_text", "_close_streaming_mode"):
-            call = getattr(event, name, None)
-            if call is None:
-                continue
-            originals[name] = call
-
-            async def checked(*args, call=call, **kwargs):
-                check_submission()
-                return await call(*args, **kwargs)
-
-            setattr(event, name, checked)
-        yield
-    finally:
-        for name, call in originals.items():
-            setattr(event, name, call)
 
 
 def provider_id(event):
@@ -118,6 +95,10 @@ def convert(event):
 
 
 def create_provider(address, bot, context, config):
+    if address.platform == "lark":
+        from fat_fish.adapters.lark_communication import LarkCommunication
+
+        return LarkCommunication(address, bot, context)
     if address.platform == "qq":
         from fat_fish.adapters.onebot_communication import OneBotCommunication
 
@@ -130,7 +111,6 @@ class AstrBotCommunication:
 
     capabilities = frozenset({Capability.TEXT, Capability.PUSH, Capability.DIRECT_MESSAGE, Capability.GROUP_MESSAGE})
     verification_capabilities = frozenset({"private-message"})
-    guard_stream = staticmethod(guard_lark_stream)
     native_platform = None
 
     def __init__(self, address, bot, context):
@@ -212,7 +192,7 @@ class AstrBotCommunication:
             await AstrMessageEvent.send(event, result)
 
     async def send_checked(self, target, message, allowed):
-        origin = self.routes.get(target)
+        origin = self.outbound_origin(target)
         if origin is None:
             raise NotSubmitted("Native conversation has not been verified")
 
@@ -225,3 +205,6 @@ class AstrBotCommunication:
             raise NotSubmitted("Target authorization revoked")
         if not await self.context.send_native(origin, chain):
             raise ConnectionError("Native adapter rejected delivery")
+
+    def outbound_origin(self, target):
+        return self.routes.get(target)

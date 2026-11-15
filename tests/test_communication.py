@@ -946,7 +946,9 @@ class ProviderRegistryTests(unittest.IsolatedAsyncioTestCase):
         address = ProviderId("lark", "office")
         valid = RetractionProvider(address)
         definition = SimpleNamespace(entrypoint=f"{__name__}:create_test_provider",
-                                     capabilities=valid.capabilities, verification_capabilities=frozenset())
+                                     capabilities=valid.capabilities - {Capability.RETRACT},
+                                     verification_capabilities=frozenset(),
+                                     platform_capabilities={"lark": frozenset({Capability.RETRACT})})
         with patch(f"{__name__}.create_test_provider", return_value=valid):
             self.assertIs(ProviderDefinition.create(definition, address, "900", {}, None), valid)
             with patch.object(valid, "verify_retraction", None):

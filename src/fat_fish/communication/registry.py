@@ -1,5 +1,5 @@
 """Discover trusted provider definitions and configure independent runtime instances."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
 from importlib import import_module
 from importlib.metadata import entry_points
@@ -21,6 +21,8 @@ class ProviderContext:
     platform_instance: Callable[[], object]
     send_native: Callable[[str, object], Awaitable[bool]]
     speech_provider: Callable[[str], Awaitable[object]] | None = None
+    private_dir: Path | None = None
+    retract_native: Callable[[ProviderId, object], Awaitable[bool]] | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,7 @@ class ProviderDefinition:
     required_dependencies: tuple[str, ...]
     verification_capabilities: frozenset[str]
     lifecycle_capabilities: frozenset[str]
+    platform_capabilities: dict[str, frozenset[Capability]] = field(default_factory=dict)
 
     @classmethod
     def read(cls, data):
@@ -54,11 +57,17 @@ class ProviderDefinition:
         platforms = frozenset(strings("supported_platforms"))
         if not platforms:
             raise ValueError("Provider must declare a platform")
+        overrides = data.get("platform_capabilities", {})
+        if not isinstance(overrides, dict) or any(
+            name not in platforms or not isinstance(values, list) for name, values in overrides.items()
+        ):
+            raise ValueError("Invalid platform capability overrides")
         return cls(
             identifier(data["provider_id"]), identifier(data["name"]), identifier(data["version"]),
             data["entrypoint"], platforms, frozenset(Capability(value) for value in strings("capabilities")),
             schema, strings("required_dependencies"), frozenset(strings("verification_capabilities")),
             frozenset(strings("lifecycle_capabilities")),
+            {name: frozenset(Capability(value) for value in values) for name, values in overrides.items()},
         )
 
     def validate_config(self, config):
@@ -75,7 +84,8 @@ class ProviderDefinition:
         module, _, symbol = self.entrypoint.partition(":")
         factory = getattr(import_module(module), symbol)
         provider = factory(address, bot, context, config)
-        if provider.address != address or provider.bot != bot or provider.capabilities != self.capabilities:
+        capabilities = self.capabilities | self.platform_capabilities.get(address.platform, frozenset())
+        if provider.address != address or provider.bot != bot or provider.capabilities != capabilities:
             raise ValueError("Provider instance does not match its manifest or configuration")
         for method in ("start", "stop", "healthy", "send_checked"):
             if not callable(getattr(provider, method, None)):
@@ -85,7 +95,7 @@ class ProviderDefinition:
             or not callable(getattr(provider, "verify_account", None))
         ):
             raise ValueError("Provider verification interface unavailable")
-        if Capability.RETRACT in self.capabilities and any(
+        if Capability.RETRACT in capabilities and any(
             not callable(getattr(provider, method, None))
             for method in ("convert_retraction", "verify_retraction")
         ):

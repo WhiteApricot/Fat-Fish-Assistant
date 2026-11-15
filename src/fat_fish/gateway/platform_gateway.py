@@ -625,6 +625,7 @@ class PlatformGateway:
         return ProviderContext(
             lambda: native.get_platform_inst(address.instance), send_native,
             getattr(native, "get_using_stt_provider_async", None),
+            private_dir=self.path.parent, retract_native=self.retract,
         )
 
     async def start_configured(self):
@@ -796,6 +797,10 @@ class PlatformGateway:
                 observe = getattr(slot.provider, "observe", None)
                 if observe is not None:
                     observe(message.conversation, event.unified_msg_origin)
+                track = getattr(slot.provider, "track_inbound", None)
+                if track is not None and not track(event, message):
+                    runtime.finish_receive(message, "completed")
+                    admission = None
         except (AttributeError, KeyError, OSError, TypeError, ValueError, sqlite3.Error):
             if admission is not None:
                 runtime.finish_receive(message, "retryable")
@@ -875,21 +880,24 @@ class PlatformGateway:
             async def send(authorize):
                 streamed = False
                 preview = ""
+                guard = getattr(slot.provider, "guard_stream", None)
 
-                def check_submission():
+                def check_submission(mark_submitted=True):
                     nonlocal submitted, streamed
-                    authorize()
-                    submitted = streamed = True
+                    authorize(mark_submitted)
+                    if mark_submitted:
+                        submitted = streamed = True
 
                 async def guarded():
                     nonlocal preview
                     async for part in generator:
-                        check_submission()
-                        if len(preview) < 1500 and isinstance(part, str):
-                            preview += part[:1500 - len(preview)]
+                        check_submission(not guard)
+                        if len(preview) < 1500:
+                            text = part if isinstance(part, str) else (
+                                part.get_plain_text() if hasattr(part, "get_plain_text") else "")
+                            preview += text[:1500 - len(preview)]
                         yield part
 
-                guard = getattr(slot.provider, "guard_stream", None)
                 with guard(event, check_submission) if guard else nullcontext():
                     result = await original_stream(guarded(), *args, **kwargs)
                 if streamed:

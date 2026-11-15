@@ -10,6 +10,10 @@ def address(row):
     return Conversation(provider, bot, ChatKind(kind), peer, thread), Account(provider, row["creator"])
 
 
+def operation_id(row):
+    return f"reminder:{row['id']}:{row['due']}"
+
+
 class ReminderAccess:
     def __init__(self, runtime, room):
         self.permissions = runtime.permissions
@@ -55,17 +59,28 @@ class ReminderDispatch:
     async def authorize(self, row):
         return self.allowed(row)
 
+    async def ready(self, row):
+        room, _ = address(row)
+        return await self.runtime.ready_for_push(room)
+
+    def delivery_state(self, row):
+        room, _ = address(row)
+        return self.runtime.outbound_state(room, operation_id(row))
+
     async def send(self, row):
         room, actor = address(row)
         mentions = (row["target"],) if room.kind is ChatKind.GROUP else ()
         text = (await self.render(room, row["creator_principal"], row["body"]) if self.render
                 else "提醒：" + row["body"])
         message = Outgoing(text, mentions=mentions)
-        operation = f"reminder:{row['id']}:{row['due']}"
+        operation = operation_id(row)
+        if not self.allowed(row):
+            return False
         sent = await self.runtime.send(actor, room, message, operation, proactive=True,
                                        recheck=lambda: self.allowed(row))
-        if not sent and self.runtime.seen.delivery("outbound:" + room.storage_key, operation) != "submitted":
+        if not sent and self.delivery_state(row) not in {"submitted", "delivered"}:
             raise ConnectionError("Reminder delivery is unresolved")
 
     async def tick(self):
-        await self.store.tick(self.authorize, self.send, only=lambda row: bool(row["creator_principal"]))
+        await self.store.tick(self.authorize, self.send, only=lambda row: bool(row["creator_principal"]),
+                              ready=self.ready, delivery_state=self.delivery_state)

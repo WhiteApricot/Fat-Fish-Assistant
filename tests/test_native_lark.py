@@ -1,18 +1,23 @@
 """Exercise the pinned Lark adapter without a live Feishu connection."""
 import asyncio
+from contextlib import closing
 import json
+from pathlib import Path
+import tempfile
+import time
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from types import SimpleNamespace
 
 from fat_fish.adapters.astrbot_communication import create_provider, convert
-from fat_fish.communication.model import ChatKind, Outgoing, ProviderId
+from fat_fish.communication.model import Account, Capability, ChatKind, Conversation, Media, NotSubmitted, Outgoing, ProviderId
 from fat_fish.communication.registry import ProviderContext
 
 try:
     from astrbot.core.platform.sources.lark.lark_adapter import LarkPlatformAdapter, lark
     from astrbot.core.platform.sources.lark.lark_event import LarkMessageEvent
     from astrbot.core.platform.astr_message_event import AstrMessageEvent
+    from astrbot.api.event import MessageChain
     from astrbot.api.message_components import Reply
 except ModuleNotFoundError as exc:
     if exc.name != "astrbot":
@@ -22,6 +27,217 @@ except ModuleNotFoundError as exc:
 
 @unittest.skipIf(LarkPlatformAdapter is None, "Requires pinned AstrBot test runtime")
 class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
+    def adapter(self):
+        adapter = LarkPlatformAdapter({"id": "lark-a", "app_id": "fixture", "app_secret": "fixture"},
+                                      {}, asyncio.Queue())
+        adapter.bot_open_id = "ou_bot"
+        return adapter
+
+    async def test_due_reminders_after_restart_without_inbound_sessions(self):
+        from astrbot.core.platform.message_session import MessageSesion
+        from fat_fish.gateway.platform_gateway import PlatformGateway
+        from fat_fish.reminders.dispatch import ReminderAccess, ReminderDispatch
+        from fat_fish.reminders.reminders import ReminderStore
+        from test_communication import NativeEvent
+
+        adapter = self.adapter()
+        address = ProviderId("lark", "lark-a")
+        owner = Account(address, "ou_alice")
+        personal = Conversation(address, "ou_bot", ChatKind.PRIVATE, owner.subject, owner.subject)
+        group = Conversation(address, "ou_bot", ChatKind.GROUP, "oc_group", "oc_group")
+        unavailable = Conversation(address, "ou_bot", ChatKind.GROUP, "oc_revoked", "oc_revoked")
+
+        async def send_native(origin, chain):
+            await adapter.send_by_session(MessageSesion.from_str(origin), chain)
+            return True
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = PlatformGateway(private=root).communication()
+            ids = first.identities
+            ids.confirm_owner_challenge(owner, ids.issue_owner_challenge(owner))
+            store = ReminderStore(root / "reminders.sqlite3")
+            for room in (personal, group, unavailable):
+                if room.kind is ChatKind.GROUP:
+                    ids.set_room(owner, room, "mention")
+                event = NativeEvent(instance=address.instance, sender=owner.subject,
+                                    group=room.peer if room.kind is ChatKind.GROUP else "")
+                response = store.command(event, ["add", "十秒之后", room.peer],
+                                         ReminderAccess(first, room), structured=True)
+                self.assertIn("已创建提醒", response)
+            ids.set_room(owner, unavailable, None)
+            interrupted = next(row for row in store.rows() if row["scope"] == group.storage_key)
+            with closing(store.connect()) as db, db:
+                db.execute("INSERT INTO deliveries VALUES (?, ?, 'sending', '', ?)",
+                           (interrupted["id"], interrupted["due"], time.time()))
+
+            runtime = PlatformGateway(private=root).communication()
+            provider = create_provider(address, "ou_bot", ProviderContext(lambda: adapter, send_native), {})
+            runtime.register(provider)
+            adapter.bot_open_id = ""
+            adapter._refresh_bot_info = AsyncMock()
+            self.assertFalse(await runtime.enable(address))
+            adapter._refresh_bot_info.assert_awaited_once()
+            recovered = ReminderStore(store.path)
+            dispatch = ReminderDispatch(recovered, runtime)
+            due = time.time() + 20
+            with patch.object(adapter.lark_api.im.v1.message, "acreate", new_callable=AsyncMock) as send, \
+                 patch("astrbot.core.platform.sources.lark.lark_adapter.sp.get_async", new=AsyncMock(return_value=None)), \
+                 patch("astrbot.core.platform.platform.Metric.upload", new_callable=AsyncMock):
+                send.return_value = SimpleNamespace(success=lambda: True)
+                await recovered.tick(dispatch.authorize, dispatch.send, now=due, ready=dispatch.ready,
+                                     delivery_state=dispatch.delivery_state)
+                send.assert_not_awaited()
+                self.assertEqual(sum(row["state"] == "active" for row in recovered.rows()), 2)
+                adapter.bot_open_id = "ou_bot"
+                for _ in range(3):
+                    await recovered.tick(dispatch.authorize, dispatch.send, now=due, ready=dispatch.ready,
+                                         delivery_state=dispatch.delivery_state)
+            endpoints = {(call.args[0].receive_id_type, call.args[0].request_body.receive_id)
+                         for call in send.await_args_list}
+            self.assertEqual(endpoints, {("open_id", "ou_alice"), ("chat_id", "oc_group")})
+            self.assertEqual(send.await_count, 2)
+            self.assertEqual(sorted(row["state"] for row in recovered.rows()), ["done", "done", "revoked"])
+            self.assertEqual(provider.routes, {})
+
+    async def test_outbound_media_uses_native_upload_and_rechecks_before_submission(self):
+        adapter = self.adapter()
+        address = ProviderId("lark", "lark-a")
+        room = Conversation(address, "ou_bot", ChatKind.GROUP, "oc_team", "oc_team")
+        provider = create_provider(address, room.bot, ProviderContext(lambda: adapter, AsyncMock()), {})
+        self.assertTrue({Capability.MEDIA, Capability.IMAGE, Capability.FILE} <= provider.manifest.capabilities)
+        upload = adapter.lark_api.im.v1
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(upload.image, "acreate", new_callable=AsyncMock) as image, \
+             patch.object(upload.file, "acreate", new_callable=AsyncMock) as file, \
+             patch.object(upload.message, "acreate", new_callable=AsyncMock) as send:
+            path = Path(directory, "sample.png")
+            path.write_bytes(b"attachment fixture")
+            image.return_value = SimpleNamespace(success=lambda: True, data=SimpleNamespace(image_key="img_sample"))
+            file.return_value = SimpleNamespace(success=lambda: True, data=SimpleNamespace(file_key="file_sample"))
+            send.return_value = SimpleNamespace(success=lambda: True)
+            outgoing = Outgoing("caption", media=(Media("image", str(path)),), mentions=("ou_alice",))
+            await provider.send_checked(room, outgoing, lambda: True)
+            self.assertEqual(send.await_args.args[0].request_body.receive_id, "oc_team")
+            self.assertIn('"image_key": "img_sample"', send.await_args.args[0].request_body.content)
+            send.reset_mock()
+            await provider.send_checked(room, Outgoing("", (Media("file", str(path)),)), lambda: True)
+            self.assertEqual(send.await_args.args[0].request_body.msg_type, "file")
+            send.reset_mock()
+            with self.assertRaises(NotSubmitted):
+                await provider.send_checked(room, outgoing, lambda: False)
+            image.return_value = SimpleNamespace(success=lambda: False, code=1, msg="fixture")
+            with self.assertRaises(NotSubmitted):
+                await provider.send_checked(room, outgoing, lambda: True)
+            with self.assertRaises(NotSubmitted):
+                await provider.send_checked(room, Outgoing("", (Media("video", str(path)),)), lambda: True)
+            send.assert_not_awaited()
+
+    async def test_cardkit_finalization_and_safe_fallback(self):
+        adapter = self.adapter()
+        from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
+        from astrbot.core.platform.message_type import MessageType
+        from fat_fish.adapters.lark_communication import guard_stream
+
+        fixture = AstrBotMessage()
+        fixture.type = MessageType.FRIEND_MESSAGE
+        fixture.self_id = "ou_bot"
+        fixture.sender = MessageMember("ou_alice", "Alice")
+        fixture.message_id = "om_current"
+        fixture.message = MessageChain().message("hello").chain
+        event = LarkMessageEvent("hello", fixture, adapter.meta(), "ou_alice", adapter.lark_api)
+        cardkit = adapter.lark_api.cardkit.v1
+        im = adapter.lark_api.im.v1
+        success = SimpleNamespace(success=lambda: True)
+        failed = SimpleNamespace(success=lambda: False, code=1, msg="fixture")
+
+        async def chunks():
+            yield MessageChain().message("hello")
+
+        with patch.object(cardkit.card, "acreate", new_callable=AsyncMock) as create, \
+             patch.object(cardkit.card_element, "acontent", new_callable=AsyncMock) as update, \
+             patch.object(cardkit.card, "asettings", new_callable=AsyncMock) as close, \
+             patch.object(im.message, "areply", new_callable=AsyncMock) as submit, \
+             patch.object(event, "send", new_callable=AsyncMock) as fallback, \
+             patch("astrbot.core.platform.sources.lark.lark_event.Metric.upload", new_callable=AsyncMock):
+            create.return_value = SimpleNamespace(success=lambda: True, data=SimpleNamespace(card_id="card_1"))
+            submit.return_value = update.return_value = close.return_value = success
+            authorize = Mock()
+            with guard_stream(event, authorize):
+                await event.send_streaming(chunks())
+            self.assertEqual(authorize.call_args_list[0].args, (False,))
+            update.assert_awaited_once()
+            self.assertEqual(close.await_args.args[0].request_body.sequence, 2)
+            fallback.assert_not_awaited()
+
+            close.return_value = failed
+            with guard_stream(event, authorize), self.assertRaises(ConnectionError):
+                await event.send_streaming(chunks())
+            close.return_value = success
+            update.return_value = failed
+            with guard_stream(event, authorize), self.assertRaises(ConnectionError):
+                await event.send_streaming(chunks())
+            update.return_value = success
+            submit.return_value = failed
+            with guard_stream(event, authorize), self.assertRaises(ConnectionError):
+                await event.send_streaming(chunks())
+            fallback.assert_not_awaited()
+
+            submit.return_value = success
+            update.reset_mock()
+            close.reset_mock()
+
+            async def revoke_after_card(_):
+                authorize.side_effect = asyncio.CancelledError
+                return success
+
+            submit.side_effect = revoke_after_card
+            with guard_stream(event, authorize), self.assertRaises(asyncio.CancelledError):
+                await event.send_streaming(chunks())
+            update.assert_not_awaited()
+            close.assert_not_awaited()
+
+            authorize.side_effect = None
+            create.return_value = failed
+            with guard_stream(event, authorize):
+                await event.send_streaming(chunks())
+            fallback.assert_awaited_once()
+
+    async def test_native_recall_dispatch_uses_original_author_after_restart(self):
+        from fat_fish.adapters.lark_retraction import EVENT
+        from test_communication import NativeEvent
+
+        adapter = self.adapter()
+        address = ProviderId("lark", "lark-a")
+        native = NativeEvent(instance=address.instance, sender="ou_alice", ident="om_original")
+        native.message_obj.raw_message = SimpleNamespace(chat_id="oc_private")
+        message = convert(native)
+        async def retract(received_address, notice):
+            self.assertEqual(address, received_address)
+            self.assertTrue(await provider.verify_retraction(notice))
+            self.assertEqual(notice.actor, message.sender)
+            self.assertEqual(notice.event_id, message.event_id)
+
+        callback = AsyncMock(side_effect=retract)
+        with tempfile.TemporaryDirectory() as directory:
+            context = ProviderContext(lambda: adapter, AsyncMock(), private_dir=Path(directory), retract_native=callback)
+            provider = create_provider(address, message.conversation.bot, context, {})
+            adapter.bot_open_id = message.conversation.bot
+            await provider.start()
+            self.assertTrue(provider.track_inbound(native, message))
+            await provider.stop()
+            self.assertNotIn(EVENT, adapter.event_handler._processorMap)
+            provider = create_provider(address, message.conversation.bot, context, {})
+            await provider.start()
+            processor = adapter.event_handler._processorMap[EVENT]
+            for chat in ("oc_unrelated", "oc_private"):
+                processor.do(processor.type()({"event": {"chat_id": chat, "message_id": "om_original"}}))
+            await asyncio.gather(*provider.retractions.tasks)
+            callback.assert_awaited_once()
+            self.assertFalse(provider.track_inbound(native, message))
+            self.assertFalse(await provider.verify_retraction(callback.await_args.args[1]))
+            await provider.stop()
+
     async def test_quote_uses_parent_id_even_without_native_reply_component(self):
         from fat_fish.adapters.lark_quote import quote_context
         from test_communication import NativeEvent

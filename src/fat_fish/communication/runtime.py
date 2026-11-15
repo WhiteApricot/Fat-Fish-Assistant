@@ -204,12 +204,13 @@ class CommunicationRuntime:
             return None
         submitted = False
 
-        def authorize():
+        def authorize(mark_submitted=True):
             nonlocal submitted
             current = self.authorize(event)
             if current is None or current.principal_id != admission.principal_id:
                 raise asyncio.CancelledError("FFA reply authorization revoked")
-            submitted = True
+            if mark_submitted:
+                submitted = True
 
         try:
             if not check_on_submit:
@@ -284,6 +285,23 @@ class CommunicationRuntime:
             except Exception as exc:
                 logger.warning("FFA delivery evidence skipped (%s)", type(exc).__name__)
         return True
+
+    async def ready_for_push(self, target):
+        slot = self.connections.get(target.provider)
+        if slot is None:
+            return False
+        probe = getattr(slot.provider, "ready_for_push", None)
+        if probe is None:
+            return True
+        if target.bot != slot.provider.bot:
+            return False
+        if slot.state == "start_failed":
+            await self.enable(target.provider)
+        async with slot.lock:
+            return slot.enabled and await probe(target)
+
+    def outbound_state(self, target, operation_id):
+        return self.seen.delivery("outbound:" + target.storage_key, operation_id)
 
     def reconcile_send(self, actor, target, operation_id, evidence, *, verify):
         """Trusted host only: verifier returns delivered, rejected or no conclusive evidence."""

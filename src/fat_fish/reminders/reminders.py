@@ -182,13 +182,16 @@ class ReminderStore:
         return f"【{state}】编号：{row['number']}；时间：{display(row['due'])}；提醒内容：{row['body']}；{cycle}。"
 
 
-    async def tick(self,authorize,send,now=None,*,only=None):
+    async def tick(self,authorize,send,now=None,*,only=None,ready=None,delivery_state=None):
         now=time.time() if now is None else now
         for row in self.rows():
             if only is not None and not only(row):continue
             if row['state']!='active' or row['due']>now:continue
             # Authorization precedes reservation and is repeated immediately before I/O.
-            try:permitted=await authorize(row)
+            try:
+                permitted=await authorize(row)
+                if permitted and ready is not None and not await ready(row):
+                    continue
             except Exception as exc:
                 with closing(self.connect()) as db:
                     db.execute('INSERT INTO authorization_failures VALUES(?,1,?,?) ON CONFLICT(id) DO UPDATE SET count=count+1,error=excluded.error,updated=excluded.updated',(row['id'],type(exc).__name__,now))
@@ -208,8 +211,25 @@ class ReminderStore:
                 db.commit()
             if not inserted:
                 with closing(self.connect()) as db:
-                    prior=db.execute('SELECT state FROM deliveries WHERE id=? AND due=?',(row['id'],row['due'])).fetchone()
-                self.advance(row,now,prior['state'] if prior else 'unknown');continue
+                    prior=db.execute('SELECT state,error FROM deliveries WHERE id=? AND due=?',(row['id'],row['due'])).fetchone()
+                state = prior['state'] if prior else 'unknown'
+                if state == 'sending':
+                    continue
+                if state == 'unknown' and delivery_state is not None:
+                    evidence = delivery_state(row)
+                    if evidence in {'submitted', 'delivered'}:
+                        state = 'sent'
+                        self.finish(row, state, '')
+                    elif evidence is None and prior and prior['error'] == 'restart during delivery':
+                        # A managed send acquires its communication record before
+                        # calling the provider. No record means no external I/O.
+                        with closing(self.connect()) as db, db:
+                            db.execute("""DELETE FROM deliveries WHERE id=? AND due=?
+                                          AND state='unknown' AND error='restart during delivery'""",
+                                       (row['id'], row['due']))
+                        continue
+                self.advance(row, now, state)
+                continue
             state,error='sent',''
             try:
                 if not await authorize(row):state='revoked'
