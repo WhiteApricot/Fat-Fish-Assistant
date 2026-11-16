@@ -289,7 +289,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handler.await_count, 2)
         self.assertIn("程序实际执行完毕", (await self.event(owner, "/history all")).sent[0])
 
-    async def test_management_sends_one_persona_reply_using_updated_preferences(self):
+    async def test_management_sends_persona_segments_using_updated_preferences(self):
         owner = Account(self.providers[0], "31")
         self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
         event = NativeEvent(sender=owner.subject, ident="persona-after", text="从现在起每句话开头加喵")
@@ -301,14 +301,14 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
             receipt = await turn.call("persona", ["add", "每句话前面加喵"])
             self.assertEqual(receipt["delivery"], "submitted")
             event.set_extra("_ffa_agent_finished", True)
-            event.set_extra("_ffa_management_persona_text", "好呀，听你的。")
+            event.set_extra("_ffa_management_persona_text", "好呀，听你的。已经照做了！\n\n接着聊吧。")
             await event.send(event.plain_result("这段交给回执后的统一发送。"))
 
         await self.gateway.run(event, agent)
         sent = [item.get_plain_text() for item in event.sent]
-        self.assertEqual(len(sent), 2)
+        self.assertEqual(len(sent), 4)
         self.assertTrue(sent[0].startswith("【系统】"))
-        self.assertEqual(sent[1], "喵好呀，听你的。")
+        self.assertEqual(sent[1:], ["喵好呀，听你的。", "喵已经照做了！", "喵接着聊吧。"])
 
     async def test_reminder_targeting_the_authenticated_sender_normalizes_to_self(self):
         from fat_fish.reminders.reminders import ReminderStore

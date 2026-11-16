@@ -1,8 +1,6 @@
 # 快速开始：双击操作
 
-> Windows 上可通过 [SnowLuma 接入 QQ](SNOWLUMA_WINDOWS.md)，或通过 [AstrBot 原生适配器接入飞书](LARK.md)。
-
-适用 Windows 10/11 x64。先审阅项目和第三方许可，准备聊天模型凭证。使用 QQ 时准备机器人 QQ，并按 [SnowLuma 官方 Windows 指南](https://snowluma.github.io/en/docs/guide/deploy/windows) 准备 QQ 客户端。
+适用 Windows 10/11 x64。先审阅项目和第三方许可，准备聊天模型凭证。[飞书接入](LARK.md)使用 AstrBot 原生 Lark 适配器。[Windows QQ 接入](SNOWLUMA_WINDOWS.md)使用独立的 SnowLuma 和机器人 QQ 账号。
 
 ## 首次安装
 
@@ -13,23 +11,19 @@
 3. 安装器创建待验证的身份库。主人账号在通信接入后通过私聊验证。
 4. 等待固定解释器、独立环境、固定上游源码/补丁、插件和模型安装。进度与日志会持续显示，下载或初次构建可能较慢，请保留窗口。
 5. 在隐藏输入提示中填写 **DeepSeek API Key**。输入不回显，不出现在命令行参数或普通管理日志。
-6. 接入 QQ 时按向导填写机器人 QQ，再完成下节连接。接入飞书时在 Dashboard 配置原生 Lark 适配器。[飞书接入步骤](LARK.md)
+## 接入平台并开始聊天
 
-## 连接 SnowLuma
+1. 飞书按[接入指南](LARK.md)配置应用订阅、AstrBot 适配器和 FFA Provider。使用 QQ 时先按安装向导登记机器人号码，再按[独立接入指南](SNOWLUMA_WINDOWS.md)完成账号登录和 OneBot 反向连接。
+2. 新实例在任一已接入平台的机器人私聊发送 `/owner`，按回复完成一次性验证码确认。已有主人时，可以用绑定流程跨平台共用身份。群聊需要由主人申请准入并确认。[账号与权限](PERMISSIONS.md)
+3. 在当前会话发送 `/help` 查看可用功能。自然语言管理和联网搜索各有全局与会话开关，可按需要启用。[聊天指令](COMMAND_REFERENCE.md)
 
-1. 获取 Windows x64 Full ZIP，使用 [固定发行清单](../manifests/snowluma/windows-x64.json) 的来源和 SHA256 校验。解压到 FFA 安装目录之外，双击 SnowLuma 自带的 `launcher.bat`。
-2. 按启动窗口的地址打开官方 WebUI。初次使用时按官方页面阅读协议，并使用启动日志给出的初始密码。确认监听范围只限本机。用机器人账号扫码并在官方界面完成设备确认和 QQ 接入。
-3. 在 SnowLuma 的 OneBot 设置里添加反向 WebSocket 客户端。默认地址填 `ws://127.0.0.1:6199/ws`，角色选 Universal，消息格式选 array，重连间隔设 5000 毫秒，关闭上报自身消息和状态命令。若维护者修改过 AstrBot 端口，使用该实例的端口。
-4. 使用 [Windows 官方接入](SNOWLUMA_WINDOWS.md) 中的复制命令，把 FFA 私密令牌粘贴到官方 WebUI 的 Token 字段，保存并启用，然后清理剪贴板。
-5. 在已配置且支持私聊验证的连接上发送 `/owner`，按回复完成一次性验证码确认。[主人设置步骤](PERMISSIONS.md#首次设置)
-
-普通短回复默认按换行分成多条发送，代码块和长篇说明保持完整。新安装默认载入 Dejavu Moe 的 24 张鲸鱼娘 GIF，按语境、概率和冷却适度触发，每次回复最多一张；可以在表情包管理页继续添加或替换自己的素材。表情功能通过现有插件实现，不要求开通额外图床或语义模型。
+普通短回复可分条发送，代码块和长篇说明保持完整。新安装默认载入 Dejavu Moe 的 24 张鲸鱼娘 GIF，可在表情包管理页增加或替换素材。
 
 只有缺少 Microsoft 运行库时，才会获取固定哈希的官方运行库安装程序并可能请求必要的 Windows 系统确认。拒绝确认会安全停止，已有数据保留。脚本不操作 QQ 窗口，不代替扫码，不改变全局 PowerShell 策略或系统 Python。
 
 AstrBot Dashboard 用户名固定为 astrbot，启动日志中的初始密码自动加密保存到 instance/private/dashboard-credential.dpapi，不保存明文。修改 Dashboard 密码后，如果自动登录失效，设置入口会要求隐藏输入当前密码一次；通过原生登录验证后更新加密凭据，后续启动无需重复输入。启用二次验证时仍需在 Dashboard 完成验证，换 Windows 用户或主机后需重新更新凭据。新安装可按所选平台指南完成私聊和群聊验证。
 
-长期偏好、重要关系、持续项目、习惯和长期计划可以在普通聊天中自动保存到现有长期记忆插件，不必每次说“记住”。普通闲聊、临时内容和凭据不自动保存。支持 `/memory search 关键词`、`/memory update 键 修订号 新内容`、`/memory delete 键 修订号`；只作用当前授权会话。
+可用 `/memory status` 查看长期记忆状态。私聊记忆按统一身份管理，群记忆默认关闭，获授权的群管理员可以在当前群启用。[长期记忆与命令](MEMORY.md)
 
 ## 日常启动
 

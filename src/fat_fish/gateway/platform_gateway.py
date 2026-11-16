@@ -22,7 +22,7 @@ from fat_fish.memory.experience import contains_secret, sensitive_information
 from fat_fish.participation.participation import DEFAULT_COOLDOWN, Participation
 from fat_fish.persona.chat_settings import ChatSettings, feature_enabled
 from fat_fish.persona.persona_settings import effective_notes
-from fat_fish.persona.persona_reply import management_reply, render
+from fat_fish.persona.persona_reply import management_reply, render, reply_segments
 from fat_fish.commands.confirmation import PendingActions
 from fat_fish.commands.agent_tool import ManagementTurn
 from fat_fish.commands.command_help import platform_help
@@ -1323,11 +1323,13 @@ class PlatformGateway:
                     and not event.get_extra("_ffa_web_material") and await asyncio.to_thread(allowed)):
                 config = await asyncio.to_thread(self.chat_settings.read)
                 notes = effective_notes(config, admission.principal_id, "" if private else message.conversation.storage_key)
-                persona_result = event.plain_result(management_reply(
+                reply = management_reply(
                     event.get_extra("_ffa_management_persona_text"), notes=notes,
                     previous_notes=event.get_extra("_ffa_persona_notes", ""),
-                ))
-                await checked_send(persona_result)
+                )
+                for segment in reply_segments(reply):
+                    persona_result = event.plain_result(segment)
+                    await checked_send(persona_result)
             elif not submitted and management is not None and management.feedback and await asyncio.to_thread(allowed):
                 await self._send_command_receipt(event, None, management.feedback, management=True)
             completed = True

@@ -2,6 +2,8 @@
 
 在当前会话发送 `/help` 查看可用操作。`/help 命令` 与 `/命令 help` 显示同一子菜单。每行给出一条指令、方括号内的参数和中文说明。
 
+启用自然语言指令后，可以直接提出明确的管理请求，例如「从现在起先说结论」，或「半小时后提醒我喝水」。助手提交操作，由程序核对权限并发送系统回执。回执后的短人格回复按句号「。」、问号、感叹号和换行分成独立消息。本轮是否完成以系统回执为准。
+
 ### 创建提醒
 
 - 严格参数模式用 `/remind add-exact 时间 循环 事项`，例如 `/remind add-exact +30s once 喝水`。时间可用台北时间 `YYYY-MM-DDTHH:MM[:SS]`，也可用 `+30s`、`+5m`、`+2h` 或 `+1d`。循环必须明确填写 `once`、`daily`、`weekly`、`monthly` 或 `every:30m` 等固定间隔。每周及每月以首次触发日为准，当月没有相应日期时跳过。
@@ -16,7 +18,7 @@
 | 角色 | `/role`，管理者可在私聊申请 `/role grant 平台 实例 账号 member` |
 | 群准入 | 主人可在群内 @机器人并发送 `/whitelist add` 或 `/whitelist remove`。私聊也支持 `/whitelist list`、`/whitelist add 群号` 和 `/whitelist remove 群号`。 |
 | 群参与 | `/groupmode`，有权管理时可选择 `mention` 或 `smart` |
-| 确认 | 在原会话发送 `/confirm` 或 `/cancel`。新请求替换此前的待确认操作 |
+| 确认 | 系统回执要求确认时，由同一账号在原会话发送 `/confirm` 或 `/cancel`。新请求替换此前的待确认操作。 |
 | 卡片和档案 | `/memory card [关键词]`、`/memory card-archive [关键词]`、私聊 `/memory history [关键词]` |
 | 编辑 | `/memory update 键 修订号 新内容` 或 `/memory rename 卡号 \| 标题` |
 | 管理 | `/memory pin 卡号`、`/memory unpin 卡号`、`/memory merge 卡号 卡号`、`/memory erase-card 卡号`、`/memory reset` |
@@ -35,3 +37,5 @@
 | 群限制 | `/blacklist list`、`/blacklist add 账号`、`/blacklist remove 账号`。可用一条原生 @ 选取目标成员。 |
 | 提醒与回执 | `/remind help`、`/history`、`/undo` |
 | 群记忆共享 | 获授权的群管理员可用 `/memory card-sharing on` 或 `/memory card-sharing off` |
+
+联网搜索使用 [DeepSeek Search API](https://api-docs.deepseek.com/api/search/)。使用 DeepSeek 官方聊天服务时，搜索复用当前会话的聊天凭据。两项功能的开关独立设置。
