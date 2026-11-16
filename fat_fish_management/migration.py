@@ -19,7 +19,7 @@ from fat_fish_management.instance import digest,protect_boundary
 from fat_fish_management.lifecycle_lock import exclusive
 from fat_fish_management.migration_package import pack,unpack
 
-LOCKS=['components.json','sources.json','dashboard.json','chat.json','speech.json','assets.json','python-runtime.json','model-runtime-lock.json']
+LOCKS=['components.json','sources.json','dashboard.json','chat.json','assets.json','python-runtime.json','model-runtime-lock.json']
 
 def check_configuration_boundary(instance):
     """Do not silently claim to migrate resources held outside managed user storage."""
@@ -65,7 +65,7 @@ def relocate_configuration(stage,destination,root,source):
     for platform in cfg.get('platform',[]):
         if platform.get('id')=='feiyu-onebot':platform['ws_reverse_port']=port(platform['ws_reverse_port'])
     for provider in cfg.get('provider',[]):
-        field='embedding_api_base' if provider.get('id')=='feiyu-local-embedding' else 'api_base' if provider.get('id')=='feiyu-local-stt' else None
+        field='embedding_api_base' if provider.get('id')=='feiyu-local-embedding' else None
         if not field:continue
         endpoint=urllib.parse.urlsplit(provider[field])
         if endpoint.scheme!='http' or endpoint.hostname not in {'127.0.0.1','localhost'}:raise ValueError('Restored local provider has a non-loopback endpoint')
@@ -99,7 +99,7 @@ def validate_snapshot(snapshot):
         if name not in {'core.json'} or value!=digest(c.PROJECT/'manifests'/name):raise ValueError('Dependency profile lock mismatch')
     if plan.get('dependency_profile','chat') not in {'core','chat'}:raise ValueError('Unknown migration dependency profile')
     if plan.get('dependency_profile')=='core' and 'core.json' not in plan.get('profile_locks',{}):raise ValueError('Missing core dependency lock')
-    if set(plan['components'])-{'python','astrbot','plugins','embedding','speech'}:raise ValueError('Unsupported components in migration')
+    if set(plan['components'])-{'python','astrbot','plugins','embedding'}:raise ValueError('Unsupported components in migration')
     return manifest,plan
 
 def export(root,record,destination,password):
@@ -111,7 +111,7 @@ def export(root,record,destination,password):
         expected={item['name']:item for item in c.load('sources.json')}
         if any(not c.source_descriptor_compatible(item,expected.get(item['name'])) for item in metadata['vendor']):
             raise ValueError('Installed upstream versions differ from this engineering package; export with the matching package and manifests')
-        for profile in ['chat','speech']:
+        for profile in ['chat']:
             if not record.get(profile+'_python'):continue
             receipt=c.resolve(root,record[profile+'_python']).parents[1]/'ffa-environment.json'
             if not receipt.exists() or c.read(receipt).get('lock_sha256')!=c.profile_fingerprint(c.environment_profile(root,record,profile)):
@@ -121,7 +121,7 @@ def export(root,record,destination,password):
         c.invoke(root,c.chat_python(root,record),'manage.py','recover-lifecycle','--instance',target)
         with exclusive(target,'.start-lock'):
             check_configuration_boundary(target)
-            for name in ['astrbot','embedding','speech']:
+            for name in ['astrbot','embedding']:
                 if record.get('components',{}).get(name,{}).get('installed') and c.component_status(root,record,name)['running']:
                     raise ValueError('Writer did not stop: '+name)
             with tempfile.TemporaryDirectory(prefix='migration-export-',dir=root) as tmp:
@@ -130,9 +130,8 @@ def export(root,record,destination,password):
                 release=Path(c.read(target/'instance.json')['release'])
                 metadata=c.read(release/'release.json')
                 plugins=[x['name'] for x in metadata['vendor'] if x['name'] in {'astrbot_plugin_livingmemory','astrbot_plugin_continuous_message','meme_manager'}]
-                components=[name for name in ['python','astrbot','plugins','embedding','speech'] if record['components'].get(name,{}).get('installed')]
+                components=[name for name in ['python','astrbot','plugins','embedding'] if record['components'].get(name,{}).get('installed')]
                 dependencies={'python':c.load('python-runtime.json'),'sources':metadata['vendor'],'chat':c.load(record.get('dependency_profile','chat')+'.json'),'dashboard':c.load('dashboard.json'),'assets':c.load('assets.json')}
-                if record.get('speech_python'):dependencies['speech']=c.load('speech.json')
                 states={name:{key:record['components'][name].get(key) for key in ['installed','version','ownership']} for name in components}
                 c.atomic(snapshot/'installation-plan.json',{'schema':2,'components':components,'component_state':states,'dependencies':dependencies,'plugins':plugins,'locks':{name:digest(c.PROJECT/'manifests'/name) for name in LOCKS},'source_suspended':True,'dependency_profile':record.get('dependency_profile','chat'),'profile_locks':{name:digest(c.PROJECT/'manifests'/name) for name in ['core.json']}})
                 manifest,_=validate_snapshot(snapshot)
@@ -166,7 +165,7 @@ def import_package(root,package,password,confirm_source_offline=False,cache=None
             destination=root/'instance'
             c.invoke(root,c.chat_python(root,record),'instance.py','restore','--snapshot',snapshot,'--destination',destination,'--release',release,'--installation-root',root)
             record['instance']='instance'
-            for name in ['embedding','speech']:
+            for name in ['embedding']:
                 if record['components'].get(name,{}).get('installed'):record['components'][name]['path']='instance'
             c.atomic(root/'installation.json',record)
         # Existing installer rehydrates engines/models using locked hashes; it never

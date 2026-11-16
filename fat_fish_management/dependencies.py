@@ -41,13 +41,13 @@ def prune_download_cache(cache,built=()):
     """Evict only known, hash-verified inputs; leave unknown/user files alone."""
     cache=external(cache)
     removed=0
-    for manifest in ['core.json','chat.json','speech.json','build.json','sources.json','assets.json','dashboard.json','python-runtime.json','starter-memes.json']:
+    for manifest in ['core.json','chat.json','build.json','sources.json','assets.json','dashboard.json','python-runtime.json','starter-memes.json']:
         rows=load(manifest);rows=rows.get('files',[rows]) if isinstance(rows,dict) else rows
         for row in rows:
             name=row.get('file',row.get('filename'))
             expected=row.get('archive_sha256',row.get('sha256'))
             if not name or Path(name).name!=name:continue
-            for group in ['', 'artifacts','core-wheels','chat-wheels','speech-wheels','build-tools','full-extra-wheels']:
+            for group in ['', 'artifacts','core-wheels','chat-wheels','build-tools','full-extra-wheels']:
                 path=cache/group/name
                 if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(cache) and digest(path)==expected:
                     removed+=path.stat().st_size;path.unlink()
@@ -250,7 +250,9 @@ def build_release(destination,cache,plugins=None,offline=False,progress=None,*,r
         return matched
     stage.mkdir(parents=True)
     try:
-        shutil.copytree(PROJECT/'src',stage/'src',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+        # Only runtime source and pinned assets enter the package. The temporary
+        # diagnostics/latency_probe runner is outside the runtime layout.
+        shutil.copytree(PROJECT/'src',stage/'src',ignore=shutil.ignore_patterns('__pycache__','*.pyc','latency_probe'))
         (stage/'plugins').mkdir()
         for spec in selected:
             if copy_verified_tree(spec['target']):continue

@@ -172,7 +172,7 @@ function Launch {
   Write-Host 'AstrBot 已启动。Dashboard 需要重新认证，QQ 连接检查将继续。' -ForegroundColor Yellow
  }
  foreach($warning in $result.warnings){
-  $label=switch($warning.component){'embedding'{'长期记忆'}'speech'{'语音识别'}default{'附加功能'}}
+  $label=switch($warning.component){'embedding'{'长期记忆'}default{'附加功能'}}
   Write-Host ($label+'暂时无法启动，其他可用功能会继续启动。详细日志：'+(LogReference)) -ForegroundColor Yellow
  }
  $view=Api @('config','show')
@@ -225,7 +225,7 @@ try{
    else{
    $components='chat'
    Write-Host '进入插件选配环节。'
-   foreach($item in @(@{id='embedding';label='本地长期记忆检索（可选）';default=$false},@{id='speech';label='语音识别（可选）';default=$false})){
+   foreach($item in @(@{id='embedding';label='本地长期记忆检索（可选）';default=$false})){
     $hint=if($item.default){'[Y/N]，回车安装；输入 N 不安装'}else{'[y/N]，直接回车跳过'}
     $answer=ReadInput ('是否安装 '+$item.label+'？'+$hint)
     if($answer -match '^[Yy]$' -or (-not $answer -and $item.default)){$components+=','+$item.id}
@@ -238,7 +238,7 @@ try{
    }
    $record=Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $root 'installation.json')|ConvertFrom-Json
    $runtime=Join-Path $root $record.instance
-   if($record.components.embedding.installed -or $record.components.speech.installed){Api @('config','initialize-local-models')|Out-Null}
+   if($record.components.embedding.installed){Api @('config','initialize-local-models')|Out-Null}
    if(-not(Test-Path -LiteralPath (Join-Path $runtime 'private/onebot-token.txt'))){Api @('config','initialize-chat')|Out-Null}
    if(-not(Test-Path -LiteralPath (Join-Path $runtime 'private/deepseek-key.txt'))){
     $key=ReadSecret '请输入 API Key（隐藏输入，不写普通日志）'

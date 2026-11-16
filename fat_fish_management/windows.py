@@ -90,21 +90,17 @@ def install_runtime(root, installer):
     return run_script(root, 'Install-Runtime.ps1', '-Installer', installer)
 
 
-def model_service(root, action, instance, name, *, port=None, python=None):
+def model_service(root, action, instance, name, *, port=None):
     options = []
     if port is not None:
         options.extend(('-Port', port))
-    if python is not None:
-        options.extend(('-SpeechPython', python))
     return run_script(root, 'Invoke-LocalModels.ps1', '-Action', action.title(),
                       '-Runtime', instance, '-Component', name.title(), *options,
                       json_output=action == 'status')
 
 
-def verify_environment(root, chat_python, speech_python=None):
+def verify_environment(root, chat_python):
     options = ['-ChatPython', chat_python]
-    if speech_python is not None:
-        options.extend(('-SpeechPython', speech_python))
     return run_script(root, 'Check-Environment.ps1', *options)
 
 

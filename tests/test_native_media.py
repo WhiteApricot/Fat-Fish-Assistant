@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from fat_fish.adapters.astrbot_communication import convert
+from fat_fish.adapters.group_media import GroupMedia
 from fat_fish.gateway.media_ingress import prepare_media
 from fat_fish.integrations.forwards import ForwardReader
 from test_communication import NativeEvent
@@ -92,23 +93,31 @@ class NativeMediaTests(unittest.IsolatedAsyncioTestCase):
                         native.untrack_temporary_local_file = Mock()
                         message = convert(native)
                         self.assertTrue(message.media or message.reply_to)
-                        speech = SimpleNamespace(get_text=AsyncMock(return_value="离线转写"))
                         stage = preprocess.PreProcessStage()
-                        stage.config, stage.platform_settings, stage.stt_settings = {}, {}, {"enable": True}
-                        stage.plugin_manager = SimpleNamespace(context=SimpleNamespace(
-                            get_using_stt_provider_async=AsyncMock(return_value=speech)))
+                        stage.config, stage.platform_settings, stage.stt_settings = {}, {}, {"enable": False}
                         config = SimpleNamespace(provider_wake_prefix="", provider_settings={})
                         with patch("astrbot.core.utils.astrbot_path.get_astrbot_temp_path", return_value=str(root)), patch.object(
                             astr_main_agent, "_get_session_conv", new=AsyncMock(return_value=SimpleNamespace(history="[]"))
                         ):
                             await prepare_media(native, lambda: True, forward_reader=ForwardReader(),
                                                 author_allowed=lambda _: True)
+                            if kind == "record":
+                                async def asr(path, *, allowed):
+                                    self.assertTrue(allowed())
+                                    with wave.open(str(path), "rb") as decoded:
+                                        self.assertGreater(decoded.getnframes(), 0)
+                                    return "测试转写"
+
+                                with patch("fat_fish.integrations.voice_input.session_application_key",
+                                           new=AsyncMock(return_value="fixture")), patch(
+                                    "fat_fish.integrations.voice_input.DeepSeekChatBot.transcribe",
+                                    new=AsyncMock(side_effect=asr),
+                                ) as transcribe:
+                                    self.assertTrue(await GroupMedia().transcribe(
+                                        native, None, None, lambda: True, room="fixture"))
+                                    transcribe.assert_awaited_once()
                             await stage.process(native)
                             req, _ = await astr_main_agent.collect_initial_request(native, None, config)
-                        if kind == "record":
-                            speech.get_text.assert_awaited_once()
-                            with wave.open(speech.get_text.await_args.kwargs["audio_url"], "rb") as decoded:
-                                self.assertGreater(decoded.getnframes(), 0)
                         results.append((req.prompt, req.image_urls, [part.text for part in req.extra_user_content_parts]))
                 self.assertEqual(len(results), 2)
                 self.assertEqual(results[0], results[1])
@@ -116,7 +125,7 @@ class NativeMediaTests(unittest.IsolatedAsyncioTestCase):
                 if kind in {"image", "reply"}:
                     self.assertEqual(images, [str(root / "pic.png")])
                 elif kind == "record":
-                    self.assertIn("离线转写", prompt)
+                    self.assertIn("测试转写", prompt)
                 elif kind == "video":
                     self.assertTrue(any("movie.mp4" in text for text in extras))
                 elif kind == "file":

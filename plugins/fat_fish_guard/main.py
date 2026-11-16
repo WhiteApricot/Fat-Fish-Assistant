@@ -129,6 +129,7 @@ class FatFishGuard(Star):
             if not allowed or not await asyncio.to_thread(allowed):
                 raise asyncio.CancelledError('Fat-Fish-Assistant platform access revoked')
             request.func_tool = None
+            event.set_extra("_ffa_native_tools", {})
             return
     @filter.on_llm_request(priority=-99999)
     async def enforce_private_persona(self,event,request):
@@ -193,7 +194,7 @@ class FatFishGuard(Star):
         if response is None:
             return
         event.set_extra('_llm_reasoning_content','')
-        from fat_fish.integrations.web_search import clean_reply,clean_message
+        from fat_fish.integrations.deepseek_tool_output import clean_reply,clean_message
         from astrbot.api.event import MessageChain
         text=response.completion_text or ''
         clean=clean_reply(text)

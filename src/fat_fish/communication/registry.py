@@ -20,7 +20,6 @@ PACKAGE_GROUP = "fat_fish.communication_providers"
 class ProviderContext:
     platform_instance: Callable[[], object]
     send_native: Callable[[str, object], Awaitable[bool]]
-    speech_provider: Callable[[str], Awaitable[object]] | None = None
     private_dir: Path | None = None
     retract_native: Callable[[ProviderId, object], Awaitable[bool]] | None = None
 

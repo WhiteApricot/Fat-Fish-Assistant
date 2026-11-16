@@ -18,7 +18,7 @@ def reply_segments(text):
 
 def management_reply(text, *, notes, previous_notes):
     """Use the Agent's reaction to a delivered system receipt."""
-    from fat_fish.integrations.web_search import clean_reply
+    from fat_fish.integrations.deepseek_tool_output import clean_reply
 
     reply = clean_reply(text or "").strip()
     if not reply or len(reply) > 240 or "【系统】" in reply:

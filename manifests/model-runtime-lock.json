@@ -258,15 +258,5 @@
     "component": "Embedding",
     "path": "models/embedding/bge-small-zh-v1.5-f16.gguf",
     "sha256": "ab9b81d9cd329c712eee379cf0068eabe6a5e2a01d0def61535eba9384085e2c"
-  },
-  {
-    "component": "Speech",
-    "path": "models/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/model.int8.onnx",
-    "sha256": "12ca1a2ae7ecf3e0019ef2822307ee0b5cadc9196569e379b4c4026f8205276d"
-  },
-  {
-    "component": "Speech",
-    "path": "models/sensevoice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/tokens.txt",
-    "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
   }
 ]

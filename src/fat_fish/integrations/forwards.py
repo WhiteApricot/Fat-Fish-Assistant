@@ -123,11 +123,11 @@ class ForwardReader:
                             if self.context and ref and voice_count<=8:
                                 try:
                                     from astrbot.api.message_components import Record
-                                    provider=await self.context.get_using_stt_provider_async(event.unified_msg_origin)
-                                    if provider:
-                                        async with asyncio.timeout(12):
-                                            path=await Record(file=ref,url=ref).convert_to_file_path()
-                                            text=await provider.get_text(audio_url=path)
+                                    from fat_fish.integrations.voice_input import transcribe_record
+                                    allowed = event.get_extra("_ffa_platform_authorize")
+                                    if allowed:
+                                        text = await transcribe_record(Record(file=ref,url=ref), self.context,
+                                                                       event, lambda: allowed() and uid not in blocked)
                                 except Exception:pass
                             body.append('[语音转写] '+str(text)[:4000] if text else '[语音暂不可识别]')
                         elif typ=='at':body.append('[提及 '+str(detail.get('qq','未知'))+']')

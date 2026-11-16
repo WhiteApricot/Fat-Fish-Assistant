@@ -165,30 +165,23 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([type(p).__name__ for p in failed], ["Plain", "File"])
         self.assertFalse(failed[-1].file_)
 
-    def test_retired_web_calls_are_removed_from_model_history(self):
+    def test_history_omits_empty_tool_lists_and_preserves_tool_pairs(self):
         from astrbot.core.agent.message import Message
         from fat_fish.integrations.deepseek_tool_output import clean_assistant_history
 
         history = [
             Message.model_validate({"role": "assistant", "tool_calls": [
-                {"id": "old", "type": "function", "function": {"name": "web_search_deepseek", "arguments": "{}"}},
                 {"id": "current", "type": "function", "function": {"name": "ffa_manage", "arguments": "{}"}},
             ]}),
-            Message(role="tool", content="old result", tool_call_id="old"),
             Message(role="tool", content="management result", tool_call_id="current"),
-            Message.model_validate({"role": "assistant", "content": "搜索前的文字", "tool_calls": [
-                {"id": "only_old", "type": "function", "function": {"name": "web_search_deepseek", "arguments": "{}"}},
-            ]}),
-            Message(role="tool", content="another retired result", tool_call_id="only_old"),
             Message(role="assistant", content="已存的普通答复", tool_calls=[]),
             Message(role="assistant", content="答复保留"),
         ]
         cleaned = clean_assistant_history(history)
         self.assertEqual([x.id for x in cleaned[0].tool_calls], ["current"])
-        self.assertEqual(cleaned[1], history[2])
-        self.assertEqual(cleaned[2].model_dump(), {"role": "assistant", "content": "搜索前的文字"})
-        self.assertEqual(cleaned[3].model_dump(), {"role": "assistant", "content": "已存的普通答复"})
-        self.assertEqual(cleaned[4], history[-1])
+        self.assertEqual(cleaned[1], history[1])
+        self.assertEqual(cleaned[2].model_dump(), {"role": "assistant", "content": "已存的普通答复"})
+        self.assertEqual(cleaned[3], history[-1])
 
     async def test_agent_capabilities_are_independent_at_native_tool_boundary(self):
         from astrbot.core import astr_main_agent
@@ -201,6 +194,7 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(management=management, search=search):
                 event = NativeEvent(text="运行测试命令")
                 event.set_extra("_ffa_platform_admission", True)
+                event.set_extra("_ffa_platform_authorize", lambda: True)
                 registry = CommandRegistry()
                 registry.register("sample", routes={"show": {1}}, help="/sample show",
                                   authorize=lambda _: True, handle=AsyncMock())
@@ -237,6 +231,105 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
                         restore()
                 self.assertIs(astr_main_agent.MAIN_AGENT_HOOKS, original)
 
+    async def test_pinned_executor_requires_registered_hook_and_current_authority(self):
+        from astrbot.core import astr_main_agent, astr_agent_hooks
+        from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+        from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+        from astrbot.core.pipeline import context_utils
+        from astrbot.core.provider.entities import LLMResponse, ProviderRequest
+        from astrbot.core.star.star_handler import EventType
+        from fat_fish.commands.agent_tool import install_native_tool_boundary
+        from fat_fish.integrations.web_search import offer_search
+        from mcp.types import CallToolResult, TextContent
+        from test_communication import NativeEvent
+
+        event = NativeEvent()
+        event.plugins_name = None
+        event.trace = SimpleNamespace(record=Mock())
+        event.clear_result = Mock()
+        event.is_stopped = lambda: event.stopped
+        event.set_extra("_ffa_platform_admission", True)
+        state = {"platform": True, "web": True}
+        event.set_extra("_ffa_platform_authorize", lambda: state["platform"])
+        request = ProviderRequest(prompt=None)
+        offer_search(event, request, {}, enabled=True, may_search=lambda: state["web"], resolved_key="fixture")
+        tool = request.func_tool.get_tool("ffa_web_search")
+        run = SimpleNamespace(context=SimpleNamespace(event=event), tool_call_timeout=3)
+        args = {"query": "公开资料"}
+        calls = []
+        fail_handler = False
+
+        async def on_using(native_event, selected, arguments):
+            calls.append(EventType.OnUsingLLMToolEvent)
+            self.assertIs(native_event, event)
+            self.assertIs(selected, tool)
+            self.assertEqual(arguments, args)
+            if fail_handler:
+                raise RuntimeError("test hook failure")
+
+        async def on_result(native_event, selected, arguments, result):
+            calls.append(EventType.OnLLMToolRespondEvent)
+            self.assertIs(selected, tool)
+            self.assertIsNotNone(result)
+
+        def subscriptions(kind, **_kwargs):
+            method = on_using if kind is EventType.OnUsingLLMToolEvent else on_result
+            return [SimpleNamespace(handler_module_path="fixture", handler_name=method.__name__,
+                                    handler_full_name=f"fixture.{method.__name__}", event_type=kind, handler=method)]
+
+        async def tool_handler(*_args, **_kwargs):
+            calls.append("execute")
+            return CallToolResult(content=[TextContent(type="text", text="result")])
+
+        async def execute(selected):
+            return [result async for result in FunctionToolExecutor.execute(selected, run, **args)][0]
+
+        wrapped = AsyncMock(wraps=context_utils.call_event_hook)
+        with patch.object(context_utils, "call_event_hook", wrapped), \
+             patch.object(astr_agent_hooks, "call_event_hook", wrapped), \
+             patch.object(context_utils.star_handlers_registry, "get_handlers_by_event_type", side_effect=subscriptions), \
+             patch.object(type(tool), "call", new=tool_handler):
+            restore = install_native_tool_boundary()
+            try:
+                hooks = astr_main_agent.MAIN_AGENT_HOOKS
+                runner = ToolLoopAgentRunner()
+                await runner.reset(SimpleNamespace(provider_config={}), request, run, FunctionToolExecutor, hooks)
+                response = LLMResponse(role="tool", tools_call_name=[tool.name],
+                                       tools_call_args=[args], tools_call_ids=["fixture"])
+                results = [row async for row in runner._handle_function_tools(request, response)]
+                self.assertEqual(results[-1].tool_call_result_blocks[0].content, "result")
+                self.assertEqual(calls, [EventType.OnUsingLLMToolEvent, "execute", EventType.OnLLMToolRespondEvent])
+                self.assertTrue((await execute(tool)).isError)
+                await hooks.on_tool_start(run, tool, args)
+                state["web"] = False
+                self.assertTrue((await execute(tool)).isError)
+                with self.assertRaises(PermissionError):
+                    await hooks.on_tool_start(run, tool, args)
+                self.assertTrue((await execute(tool)).isError)
+                state["web"] = True
+                await hooks.on_tool_start(run, tool, args)
+                state["platform"] = False
+                self.assertTrue((await execute(tool)).isError)
+                state["platform"] = True
+                unknown = SimpleNamespace(name="unknown_tool")
+                with self.assertRaises(PermissionError):
+                    await hooks.on_tool_start(run, unknown, args)
+                self.assertTrue((await execute(unknown)).isError)
+                fail_handler = True
+                await hooks.on_tool_start(run, tool, args)
+                self.assertTrue((await execute(tool)).isError)
+                wrapped.side_effect = RuntimeError("dispatcher failed")
+                with self.assertRaises(RuntimeError):
+                    await hooks.on_tool_start(run, tool, args)
+                self.assertTrue((await execute(tool)).isError)
+                wrapped.side_effect = None
+                wrapped.return_value = True
+                await hooks.on_tool_start(run, tool, args)
+                self.assertTrue((await execute(tool)).isError)
+                self.assertEqual(calls.count("execute"), 1)
+            finally:
+                restore()
+
     async def test_deepseek_text_tool_protocol_is_retried_as_a_native_call(self):
         from astrbot.core.agent.message import Message, TextPart
         from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
@@ -244,7 +337,7 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
         from fat_fish.integrations.deepseek_tool_output import (
             ToolText, clean_assistant_history, install_deepseek_tool_output,
         )
-        from fat_fish.integrations.web_search import clean_reply
+        from fat_fish.integrations.deepseek_tool_output import clean_reply
         from test_communication import NativeEvent
 
         fragment = '<｜｜DSML｜｜ parameter name="query" string="true">internal</｜｜DSML｜｜ parameter>'
@@ -272,6 +365,8 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(name=name, enabled=enabled, recover=recover):
                 event = NativeEvent()
                 event.set_extra("_ffa_platform_admission", True)
+                if enabled:
+                    event.set_extra("_ffa_native_tools", {name: (None, None)})
                 context = SimpleNamespace(context=SimpleNamespace(event=event), messages=[user])
                 runner = SimpleNamespace(run_context=context, name=name, recover=recover, calls=0,
                                          provider=SimpleNamespace(provider_config={"api_base": "https://proxy.example/v1"}),
@@ -296,6 +391,7 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
         from test_communication import NativeEvent
 
         event = NativeEvent()
+        event.set_extra("_ffa_platform_admission", True)
         for name, other in (("ffa_manage", "ffa_web_search"), ("ffa_web_search", "ffa_manage")):
             with self.subTest(name=name):
                 response = LLMResponse(role="tool", completion_text="不可信的成功声明",
@@ -506,7 +602,8 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_shared_web_search_uses_current_admission(self):
         from fat_fish.integrations.deepseek_chatbot import session_application_key
-        from fat_fish.integrations.web_search import clean_reply, offer_search
+        from fat_fish.integrations.deepseek_tool_output import clean_reply
+        from fat_fish.integrations.web_search import offer_search
         from test_communication import NativeEvent
 
         self.assertEqual(clean_reply("答复\n<｜DSML｜function_calls>\n<｜DSML｜invoke>参数</｜DSML｜invoke>\n</｜DSML｜function_calls>"), "答复")

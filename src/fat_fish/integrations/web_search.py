@@ -9,6 +9,8 @@ from urllib.parse import parse_qsl, urlsplit
 
 from fat_fish.integrations.deepseek_chatbot import DeepSeekChatBot, DeepSeekError, application_key
 from fat_fish.memory.experience import contains_secret
+from fat_fish.integrations.deepseek_tool_output import clean_reply
+from fat_fish.commands.agent_tool import bind_native_tool
 
 
 URL = re.compile(r'https?://[^\s<>"，。！？、；）\])]+', re.I)
@@ -17,7 +19,6 @@ _history_revision = 0
 HISTORY_SECONDS = 600
 WEB_SEARCH_TOOL = "ffa_web_search"
 READ_URL_TOOL = "ffa_read_url"
-RETIRED_WEB_TOOLS = frozenset({"web_search_deepseek", "deepseek_fetch_web_page"})
 logger = logging.getLogger(__name__)
 
 
@@ -53,7 +54,7 @@ def offer_search(event, request, settings, *, enabled=True, may_search, resolved
     from astrbot.core.agent.tool import FunctionTool, ToolSet
 
     if request.func_tool:
-        for name in (*RETIRED_WEB_TOOLS, WEB_SEARCH_TOOL, READ_URL_TOOL):
+        for name in (WEB_SEARCH_TOOL, READ_URL_TOOL):
             request.func_tool.remove_tool(name)
     admitted = event.get_extra("_ffa_platform_admission")
     if not enabled or admitted is None:
@@ -188,66 +189,12 @@ def offer_search(event, request, settings, *, enabled=True, may_search, resolved
         (WEB_SEARCH_TOOL, "通过 DeepSeek 原生搜索核对公开资料。查询只含公开关键词。"),
         (READ_URL_TOOL, "通过 DeepSeek 原生网页阅读，理解用户提供的链接或追问刚读过的页面。"),
     ):
-        request.func_tool.add_tool(NativeWebTool(
+        tool = NativeWebTool(
             name=name,
             description=description,
             parameters={"type": "object", "properties": {
                 "query": {"type": "string", "maxLength": 1000, "description": "可公开的独立问题"},
                 "progress_message": {"type": "string", "maxLength": 80},
             }, "required": ["query"], "additionalProperties": False},
-        ))
-
-
-_DIAGNOSTIC = re.compile(
-    r'^\s*(?:[*`#]+\s*)?(?:Current datetime\s*[:：]|Weather\s*[:：]\s*(?:WARNING|ERROR)\b|'
-    r'(?:WARNING|ERROR)\s*[:：].*(?:web_search_deepseek|weather-capable tool|tool was not called)|'
-    r'Search failed or unavailable\b|Error (?:occurred|Type\s*[:：]|Message\s*[:：])|LLM 响应错误\s*[:：]|'
-    r'Traceback \(most recent call last\)|.*DSML.*(?:invoke|calls))', re.I)
-_SYSTEM_REMINDER = re.compile(r'<system_reminder\b[^>]*>.*?(?:</system_reminder\s*>|\Z)', re.I | re.S)
-_DSML_CALLS = re.compile(
-    r'<[｜|]+DSML[｜|]+\s*(function_calls|tool_calls|invoke|parameter)\b[^>]*>.*?'
-    r'(?:</[｜|]+DSML[｜|]+\s*\1\s*>|\Z)',
-    re.I | re.S)
-DSML_MARKER = re.compile(r'</?[｜|]+DSML[｜|]+', re.I)
-
-
-def clean_reply(text):
-    text = _DSML_CALLS.sub('', text)
-    text = re.sub(r'</?[｜|]+DSML[｜|]+[^>]*(?:>|\Z)', '', text, flags=re.I)
-    text = _SYSTEM_REMINDER.sub('', text)
-    text = re.sub(r'</?system_reminder\s*>', '', text, flags=re.I)
-    visible = []
-    for line in text.splitlines():
-        if line.lstrip().startswith('Traceback (most recent call last)'):
-            break
-        if not _DIAGNOSTIC.match(line):
-            visible.append(line)
-    return '\n'.join(visible).strip()
-
-
-def is_intermediate_message(event, message):
-    kind = getattr(message, 'type', None)
-    if kind in {'tool_call', 'tool_result', 'reasoning', 'agent_stats'}:
-        return True
-    return (kind != 'tool_direct_result' and event.get_extra('_ffa_agent_running', False)
-            and not event.get_extra('_ffa_agent_finished', False))
-
-
-def clean_message(message):
-    chain = getattr(message, 'chain', None)
-    if not isinstance(chain, list):
-        return False
-    removed = False
-    for part in chain[:]:
-        if part.__class__.__name__ != 'Plain':
-            continue
-        text = part.text
-        cleaned = clean_reply(text)
-        if cleaned == text.strip():
-            continue
-        removed = True
-        if cleaned:
-            part.text = cleaned
-        else:
-            chain.remove(part)
-    return removed
+        )
+        bind_native_tool(event, request, tool, may_search)

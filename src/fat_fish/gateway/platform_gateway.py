@@ -760,7 +760,6 @@ class PlatformGateway:
 
         return ProviderContext(
             lambda: native.get_platform_inst(address.instance), send_native,
-            getattr(native, "get_using_stt_provider_async", None),
             private_dir=self.path.parent, retract_native=self.retract,
         )
 
@@ -1083,7 +1082,7 @@ class PlatformGateway:
                 return None
             sequence += 1
 
-            from fat_fish.integrations.web_search import clean_message, is_intermediate_message
+            from fat_fish.integrations.deepseek_tool_output import clean_message, is_intermediate_message
 
             if not (receipt or progress or persona) and hasattr(result, "chain"):
                 if is_intermediate_message(event, result):

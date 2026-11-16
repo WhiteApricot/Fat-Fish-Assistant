@@ -6,7 +6,7 @@ import random
 import time
 
 from fat_fish.gateway.reply_schedule import WEB_PROGRESS_TYPE
-from fat_fish.integrations.web_search import clean_reply
+from fat_fish.integrations.deepseek_tool_output import clean_reply
 from fat_fish.memory.experience import contains_secret
 
 _log = logging.getLogger(__name__)

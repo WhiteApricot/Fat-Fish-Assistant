@@ -9,15 +9,6 @@
     "license_source": "https://huggingface.co/BAAI/bge-small-zh-v1.5"
   },
   {
-    "id": "sensevoice-int8-20250909",
-    "filename": "sensevoice-int8-20250909.tar.bz2",
-    "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2",
-    "sha256": "7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63",
-    "format": "tar",
-    "license_status": "converted-model-conditions-pending",
-    "license_source": "https://huggingface.co/ASLP-lab/WSYue-ASR/tree/main/sensevoice_small_yue"
-  },
-  {
     "id": "llama-b11946-win-cpu",
     "filename": "llama-b11946-bin-win-cpu-x64.zip",
     "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11946/llama-b11946-bin-win-cpu-x64.zip",

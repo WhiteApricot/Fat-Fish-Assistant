@@ -7,7 +7,7 @@
 | 飞书 | AstrBot 内置原生适配器与固定 SDK 提供长连接 | [飞书接入](LARK.md) |
 | SnowLuma / QQ | Windows QQ 兼容组件，使用官方发行包独立安装 | 官方 v2.4.2 Full，[Windows x64 发行锁](../manifests/snowluma/windows-x64.json) · [离线接入条件](SNOWLUMA_WINDOWS.md) |
 | LivingMemory、Continuous Message、Meme Manager、SelfReply 决策子集 | 记忆兼容、连续消息插件、表情和主动参与判断。受管聊天的回复轮次由 FFA 调度 | [固定提交及许可证](../manifests/sources.json) |
-| 嵌入与语音组件 | 可选本地记忆检索，以及通过 sherpa-onnx 使用 SenseVoice INT8 识别语音 | [模型清单](../manifests/model-runtime-lock.json) |
+| 嵌入与语音组件 | 可选本地记忆检索，语音通过 DeepSeek ASR | [模型清单](../manifests/model-runtime-lock.json) |
 
 模型服务需按实际配置提供凭据。分发条件、模型与素材声明见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
 
@@ -17,6 +17,6 @@ SnowLuma 仅从官方 GitHub 仓库或官方 Release 获取。任何获准的传
 
 ## Windows 安装依赖范围
 
-默认使用 Core 锁，141 个发行项。完整 Chat 锁 160 项，保留给显式选择。双击安装默认跳过两个本地模型组件。Speech 使用自己的 4 项锁和模型，Embedding 使用独立模型和引擎。构建期的 2 个工具只用于固定源码构建；应用只在确实缺少共享 VC++ 运行库时引导补齐。SnowLuma Full 自带 Node，QQ 客户端由腾讯官方提供。旧通信运行包、独立 Node 安装和额外 QQ 运行资产均不在 FFA 安装计划中。
+默认使用 Core 锁，141 个发行项。完整 Chat 锁 160 项，保留给显式选择。双击安装默认跳过本地模型组件。Embedding 使用独立模型和引擎。构建期的 2 个工具只用于固定源码构建；应用只在确实缺少共享 VC++ 运行库时引导补齐。SnowLuma Full 自带 Node，QQ 客户端由腾讯官方提供。旧通信运行包、独立 Node 安装和额外 QQ 运行资产均不在 FFA 安装计划中。
 
 PyPI 优先使用国内镜像匹配固定文件名，失败后回退官方 PyPI。同意使用的 GitHub 加速服务可设置 FFA_GITHUB_TRANSFER_BASE，地址需为 HTTPS。加速服务失败后回退固定官方 URL。SnowLuma 接入使用用户保存的原始官方 ZIP 或有效安装目录。本地 ZIP 校验大小与 SHA256。[Windows QQ 接入](SNOWLUMA_WINDOWS.md)

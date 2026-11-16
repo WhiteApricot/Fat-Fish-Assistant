@@ -38,4 +38,4 @@
 | 提醒与回执 | `/remind help`、`/history`、`/undo` |
 | 群记忆共享 | 获授权的群管理员可用 `/memory card-sharing on` 或 `/memory card-sharing off` |
 
-联网搜索使用 [DeepSeek Search API](https://api-docs.deepseek.com/api/search/)。使用 DeepSeek 官方聊天服务时，搜索复用当前会话的聊天凭据。两项功能的开关独立设置。
+联网搜索和链接阅读使用 DeepSeek ChatBot 原生工具，并优先复用当前会话的官方 DeepSeek 聊天凭据。联网与自然语言管理的开关独立设置。[DeepSeek Web Tools](https://api-docs.deepseek.com/guides/web_tools/)

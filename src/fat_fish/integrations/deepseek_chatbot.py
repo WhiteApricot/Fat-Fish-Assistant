@@ -6,8 +6,10 @@ import time
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
+from fat_fish.model_config import DEFAULT_CHAT_MODEL
+
 BASE_URL = "https://api.deepseek.com"
-FLASH_MODELS = {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}
+
 ASR_MAX_BYTES = 8 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
@@ -106,7 +108,7 @@ class DeepSeekChatBot:
     async def web(self, messages, *, read_url, allowed):
         tool = "deepseek_read_url" if read_url else "deepseek_web_search"
         data = await self._request("POST", "/chat/completions", allowed=allowed, timeout=45, json_body={
-            "model": "deepseek-flash", "stream": False, "thinking": {"type": "disabled"},
+            "model": DEFAULT_CHAT_MODEL, "stream": False, "thinking": {"type": "disabled"},
             "safety_check": {"level": "high"}, "tools": [{"type": tool}], "messages": messages,
             "max_tokens": 1800,
         })

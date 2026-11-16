@@ -18,7 +18,7 @@
 
 QQ 掉线时从 SnowLuma 官方 WebUI 查看登录状态，按提示扫码或完成设备确认。OneBot 令牌与两套管理页密码各自独立。
 
-CMD 使用 `daily-start`，仍调用既有组件管理和健康接口：依次处理 Embedding、Speech、AstrBot，Core 随 AstrBot 加载；已运行服务复用，未安装组件跳过，可选组件失败单独报告。记忆数据需要恢复但 Embedding 不可用时，Chat 不会绕过一致性保护。stop 按反序停止 FFA 受管服务，先触发 Chat 原生退出和索引落盘。全局启停返回 SnowLuma 官方人工步骤，结果的 complete 字段标记待完成。
+CMD 使用 `daily-start`，仍调用既有组件管理和健康接口：依次处理 Embedding、AstrBot，Core 随 AstrBot 加载；已运行服务复用，未安装组件跳过，可选组件失败单独报告。记忆数据需要恢复但 Embedding 不可用时，Chat 不会绕过一致性保护。stop 按反序停止 FFA 受管服务，先触发 Chat 原生退出和索引落盘。全局启停返回 SnowLuma 官方人工步骤，结果的 complete 字段标记待完成。
 
 启动时先取得生命周期锁，再写入 RUNNING。就绪检查核验实例进程身份、关联的启动器和监听端口。冷启动最长等待约 10 分钟，并在等待中显示进度，失败时可查看实例日志。平台收发通过各自的连接和客户端验证。
 
@@ -41,7 +41,7 @@ CMD 使用 `daily-start`，仍调用既有组件管理和健康接口：依次�
 
 ## 升级与回滚
 
-DeepSeek 能力随 FFA 代码发布。测试实例使用现有安装向导修复入口重建并切换发布，继续采用官方 DeepSeek Flash Provider 和已配置的凭据。直接语音使用 DeepSeek ASR，语音格式转换复用锁定依赖中的 FFmpeg。既有可选本地 Speech 仍供合并转发中的语音及原生历史接入使用。[配置、用量与验收](DEEPSEEK_CHATBOT.md)
+DeepSeek 能力随 FFA 代码发布。测试实例使用现有安装向导修复入口重建并切换发布，继续采用官方 DeepSeek Flash Provider 和已配置的凭据。直接语音使用 DeepSeek ASR，语音格式转换复用锁定依赖中的 FFmpeg。[配置、用量与验收](DEEPSEEK_CHATBOT.md)
 
 固定来源组装并校验新 release，停止写入后事务切换插件和发布指针；故障由原 journal 回退/恢复。插件自定义资源及已识别的私密图床配置在升级和恢复时保留；锁定程序漂移或资源与程序冲突拒绝覆盖。数据库不回灌、不做未经测试的 schema 降级，新聊天不能用旧快照覆盖。
 

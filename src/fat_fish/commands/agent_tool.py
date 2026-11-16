@@ -1,5 +1,6 @@
 """Bind management proposals to the authenticated turn and the command registry."""
 import asyncio
+from contextvars import ContextVar
 from datetime import datetime
 import json
 import logging
@@ -253,36 +254,98 @@ async def offer_management(event, request):
             "lookup": {"type": "boolean", "description": "仅在准备其他操作、需要先只读核实目标时设为 true；直接执行或查询时省略。"},
         }, "required": ["command", "args"], "additionalProperties": False},
     )
-    event.set_extra("_ffa_management_native_tool", tool)
+    bind_native_tool(event, request, tool, turn.available)
+
+
+def bind_native_tool(event, request, tool, allowed):
+    bindings = dict(event.get_extra("_ffa_native_tools", {}))
+    bindings[tool.name] = (tool, allowed)
+    event.set_extra("_ffa_native_tools", bindings)
     request.func_tool.add_tool(tool)
 
 
 def install_native_tool_boundary():
-    """Extend the pinned runner hook for the event-bound FFA tool."""
+    """Require a successful start hook at the actual native execution boundary."""
     from astrbot.core import astr_main_agent
+    from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
     from astrbot.core.pipeline.context_utils import call_event_hook
     from astrbot.core.star.star_handler import EventType
+    from mcp.types import CallToolResult, TextContent
 
     original = astr_main_agent.MAIN_AGENT_HOOKS
+    original_execute = FunctionToolExecutor.execute
+    descriptor = FunctionToolExecutor.__dict__["execute"]
+    permit = ContextVar("ffa_native_tool_permit", default=None)
+
+    async def authorized(event, tool):
+        binding = event.get_extra("_ffa_native_tools", {}).get(tool.name)
+        allowed = event.get_extra("_ffa_platform_authorize")
+        return bool(binding and binding[0] is tool and allowed and await asyncio.to_thread(
+            lambda: not event.get_extra("_ffa_reply_superseded", False) and allowed() and binding[1]()
+        ))
 
     class Hooks(type(original)):
         async def on_tool_start(self, run_context, tool, tool_args):
+            if pending := permit.get():
+                pending.clear()
+            permit.set(None)
             event = run_context.context.event
-            if tool.name != TOOL_NAME:
+            if event.get_extra("_ffa_platform_admission") is None:
                 return await original.on_tool_start(run_context, tool, tool_args)
-            turn = event.get_extra("_ffa_management_turn")
-            if turn is None or tool is not event.get_extra("_ffa_management_native_tool"):
-                raise PermissionError("Management tool outside its authenticated turn")
-            if reason := await asyncio.to_thread(turn.unavailable_reason):
-                turn.feedback_result("denied", reason)
-                raise PermissionError("Management tool outside its authenticated turn")
-            await call_event_hook(event, EventType.OnUsingLLMToolEvent, tool, tool_args)
+            if not await authorized(event, tool):
+                raise PermissionError("Tool outside its authenticated turn")
+            # The pinned dispatcher reports handler exceptions through this trace
+            # callback even when storing the native trace is disabled.
+            trace = getattr(event, "trace", None)
+            failed = False
+            if trace is None:
+                stopped = await call_event_hook(event, EventType.OnUsingLLMToolEvent, tool, tool_args)
+            else:
+                record = trace.record
+                previous = vars(trace).get("record")
+
+                def checked_record(action, **fields):
+                    nonlocal failed
+                    if (action == "handler_end" and fields.get("hook") == EventType.OnUsingLLMToolEvent.name
+                            and fields.get("status") == "error"):
+                        failed = True
+                    record(action, **fields)
+
+                trace.record = checked_record
+                try:
+                    stopped = await call_event_hook(event, EventType.OnUsingLLMToolEvent, tool, tool_args)
+                finally:
+                    if previous is None:
+                        del trace.record
+                    else:
+                        trace.record = previous
+            if not stopped and not failed:
+                # The runner consumes the executor in a child task, whose
+                # copied context must share the same single-use permit.
+                permit.set([(run_context, tool)])
+
+    async def execute(cls, tool, run_context, **tool_args):
+        event = run_context.context.event
+        if event.get_extra("_ffa_platform_admission") is not None:
+            pending = permit.get()
+            issued = pending.pop() if pending else None
+            permit.set(None)
+            if (issued is None or issued[0] is not run_context or issued[1] is not tool
+                    or not await authorized(event, tool)):
+                yield CallToolResult(isError=True, content=[TextContent(type="text", text="本轮工具权限不足，请求未执行。")])
+                return
+        async for result in original_execute(tool, run_context, **tool_args):
+            yield result
 
     installed = Hooks()
+    installed_execute = classmethod(execute)
     astr_main_agent.MAIN_AGENT_HOOKS = installed
+    FunctionToolExecutor.execute = installed_execute
 
     def restore():
         if astr_main_agent.MAIN_AGENT_HOOKS is installed:
             astr_main_agent.MAIN_AGENT_HOOKS = original
+        if FunctionToolExecutor.__dict__["execute"] is installed_execute:
+            FunctionToolExecutor.execute = descriptor
 
     return restore

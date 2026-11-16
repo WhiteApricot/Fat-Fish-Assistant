@@ -1,32 +1,5 @@
 [
   {
-    "path": "astrbot/core/astr_agent_hooks.py",
-    "before": "accd70ee25c31732f4915f3dfb5cedfd5c1ca2e2890c4d8fa070eb4c74d12317",
-    "after": "2e72d8ae1d93310aac364490e069858791d8203363d4d018db4bbbcbf450523f",
-    "edits": [
-      {
-        "start": 0,
-        "end": 0,
-        "old": [],
-        "new": [
-          "# Modified for Fat-Fish-Assistant integration on 2026-10-29; see vendor-lock changes.json and THIRD_PARTY_NOTICES.md.\n"
-        ]
-      },
-      {
-        "start": 48,
-        "end": 48,
-        "old": [],
-        "new": [
-          "        event=run_context.context.event\n",
-          "        if event.get_extra('_ffa_platform_admission', None) is not None:\n",
-          "            allowed = event.get_extra('_ffa_platform_authorize')\n",
-          "            if not allowed or not allowed() or getattr(tool, 'name', '') not in {'web_search_deepseek', 'deepseek_fetch_web_page'}:\n",
-          "                raise PermissionError('Tool outside the canonical chat capability boundary')\n"
-        ]
-      }
-    ]
-  },
-  {
     "path": "astrbot/core/fat_fish_gateway.py",
     "before": null,
     "after": "b24013034a2c96c46f996b5b5a8081bc3d002932815fe18404c95e79f32b850e",

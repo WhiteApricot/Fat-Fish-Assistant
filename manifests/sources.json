@@ -3,7 +3,7 @@
     "name": "astrbot",
     "commit": "f61a7f42696da6df25dc7a249ec9b8d54ed9da18",
     "archive_sha256": "be20f687f9c0c5964bfaa806ed4ad6ec01c8db5d3f08f9c146d3fdd18839a33b",
-    "changes": 11,
+    "changes": 10,
     "repository": "https://github.com/AstrBotDevs/AstrBot",
     "url": "https://codeload.github.com/AstrBotDevs/AstrBot/zip/f61a7f42696da6df25dc7a249ec9b8d54ed9da18",
     "filename": "astrbot-f61a7f42696da6df25dc7a249ec9b8d54ed9da18.zip",
@@ -12,7 +12,7 @@
     "license_source": "https://github.com/AstrBotDevs/AstrBot/blob/f61a7f42696da6df25dc7a249ec9b8d54ed9da18/LICENSE",
     "strip_prefix": "AstrBot-f61a7f42696da6df25dc7a249ec9b8d54ed9da18/",
     "patches": "patches/astrbot/changes.json",
-    "patch_sha256": "7a19da6295cc43532b82752e27c4d1545570a4e84d5f11a0f1e45b8ddc86b172"
+    "patch_sha256": "78de5e8ddbe27e9bbf8efe1a5d080e5c2d4cf1d23ce44d62adee0a7dc65a6257"
   },
   {
     "name": "astrbot_plugin_livingmemory",

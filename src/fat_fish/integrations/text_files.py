@@ -6,8 +6,10 @@ from pathlib import Path, PureWindowsPath
 from urllib.parse import urljoin, urlparse
 
 from fat_fish.integrations.deepseek_chatbot import (
-    FLASH_MODELS, DeepSeekChatBot, DeepSeekError, chat_provider, official_provider, provider_key,
+    DeepSeekChatBot, DeepSeekError, chat_provider, official_provider, provider_key,
 )
+
+from fat_fish.model_config import DEFAULT_CHAT_MODEL
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_TEXT_BYTES = 64 * 1024
@@ -94,7 +96,7 @@ async def upload_attachments(event, context, allowed):
 
     provider = await chat_provider(context, event.unified_msg_origin)
     key = provider_key(provider)
-    if not key or provider.get_model() not in FLASH_MODELS:
+    if not key or provider.get_model() != DEFAULT_CHAT_MODEL:
         raise UnsupportedMedia("当前主模型配置无法使用 DeepSeek 文件输入，请检查实例的官方 DeepSeek Flash 配置。")
     client = DeepSeekChatBot(key)
     file_ids = []
@@ -158,7 +160,7 @@ def install_deepseek_files():
         _, ids, allowed = active
         if not await asyncio.to_thread(allowed):
             raise asyncio.CancelledError("Attachment access revoked")
-        if payload["model"] not in FLASH_MODELS:
+        if payload["model"] != DEFAULT_CHAT_MODEL:
             raise DeepSeekError("file input requires the active DeepSeek Flash model")
         for message in reversed(messages):
             if message.get("role") != "user":

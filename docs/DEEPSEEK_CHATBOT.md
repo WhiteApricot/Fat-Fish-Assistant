@@ -15,9 +15,9 @@ DeepSeek 原生 Web 工具和 AstrBot 自定义函数工具需要分开调用。
 
 ## 配置和支持边界
 
-- 搜索、链接和语音优先复用当前会话的官方 DeepSeek 聊天凭据，接着读取旧配置 `provider_settings.websearch_deepseek_key` 或 `DEEPSEEK_API_KEY`。文件需当前会话本身采用官方 DeepSeek Flash Provider，文件上传和对话需使用可访问同一文件的账号。
+- 搜索、链接和语音优先复用当前会话的官方 DeepSeek 聊天凭据，接着读取可选配置 `provider_settings.websearch_deepseek_key` 或 `DEEPSEEK_API_KEY`。文件需当前会话本身采用官方 DeepSeek Flash Provider，文件上传和对话需使用可访问同一文件的账号。
 - FFA 每轮最多上传 3 份、合计 8 MiB，单份纯文本限 64 KiB。支持 TXT、Markdown、CSV、JSON、LOG、YAML、PDF、DOC/DOCX、PPT/PPTX、XLS/XLSX、EPUB 和 MOBI。正文来自官方解析和模型上下文。官方 Files API 的最高限额依文件类别为 32 或 100 MiB，解析文档最多 1,000 页，聊天最多引用 20 个文档且正文合计最多 8 MiB。解析后的文件正文不提供下载接口。FFA 在本轮结束时请求删除文件，并设置一小时过期。后续普通对话可以利用已有回复和记忆，再查附件正文需重新发送。 [官方 Files API](https://api-docs.deepseek.com/guides/files_api/) · [文件解析](https://api-docs.deepseek.com/guides/document_parsing/)
-- 官方语音接口接收 16 位 PCM WAV 或 Ogg Opus，每份至多 8 MiB、120 秒。请求一次返回完整文本和音频时长，以音频时长计费。现有可选本地 Speech 供合并转发中的语音和原生历史接入使用。 [官方 ASR](https://api-docs.deepseek.com/guides/asr/)
+- 官方语音接口接收 16 位 PCM WAV 或 Ogg Opus，每份至多 8 MiB、120 秒。请求一次返回完整文本和音频时长，以音频时长计费。 [官方 ASR](https://api-docs.deepseek.com/guides/asr/)
 - 原生 Web 独立调用使用完整 JSON。DeepSeek 也支持 SSE，流式的工具调用、引用及最终 usage 分别在各增量到达。其链接读取仅检查最后一条用户消息的前十个不同链接。页面正文由服务端签名恢复，历史搜索在下一轮仅提供答复文本。FFA 的链接状态在进程内保留十分钟并随已验证的撤回失效。Main Agent 继续使用 AstrBot 自有的流式回复与会话上下文。 [官方 Web Tools](https://api-docs.deepseek.com/guides/web_tools/) · [官方 Demo](https://github.com/deepseek-ai/chat-demo)
 - 当前没有启用图片搜索、图片生成、视频理解或新的多模态能力。现有普通图片等输入仍走原通道。
 
@@ -29,7 +29,7 @@ Web 费用由 DeepSeek 返回的输入、缓存命中和输出 Token，加上计
 
 ## 2026-11-16 本地验收
 
-在 `Fat-Fish-Assistant.local/deepseek-chatbot-20261116` 使用真实 DeepSeek API 和合成样本。基线为远端 `main` 的 `9ff9ac5`。两组联网基准用相同的 DeepSeek Flash 非思考设置和三个公开问题，依次检查 Python 3.14 的 PEP 750、SQLite WAL 的跨主机限制和 IANA 示例域名。测试驱动保留 FFA 的工具选择提示、实际工具处理代码和模型调用。延迟从提交问题到最终正文首个流式片段及结束计时，排除 IM 通道、实际客户端展示和回复节奏。
+在隔离测试环境使用真实 DeepSeek API 和合成样本。基线为远端 `main` 的 `9ff9ac5`。两组联网基准用相同的 DeepSeek Flash 非思考设置和三个公开问题，依次检查 Python 3.14 的 PEP 750、SQLite WAL 的跨主机限制和 IANA 示例域名。测试驱动保留 FFA 的工具选择提示、实际工具处理代码和模型调用。延迟从提交问题到最终正文首个流式片段及结束计时，排除 IM 通道、实际客户端展示和回复节奏。
 
 | 三题平均 | 基线 | 本次 |
 | --- | ---: | ---: |
@@ -55,10 +55,10 @@ TXT、CSV、标准 PDF、DOCX 都提取了预置值。锁定的 AstrBot Provider
 
 飞书客户端将混发附件放在富文本的外层 `files` 字段，适配器复用平台的文件资源读取并保留正文。故障记录中的 PPTX 资源端点返回 HTTP 200，合成的文字加 PPTX 原生事件在真实 DeepSeek API 复验中读出了预置编号。
 
-搜索与网页阅读使用独立的原生 API 工具入口，历史中的旧调用和对应结果在发送给模型前过滤。真实 Flash 请求选择了新搜索工具并返回 SQLite 官方来源。修复发布通过 24 项飞书与媒体契约测试。
+搜索与网页阅读分别使用原生 API 工具。真实 Flash 请求选择了搜索工具并返回 SQLite 官方来源。该次发布通过 24 项飞书与媒体契约测试。
 
 ## 修改范围
 
 - 客户端与执行链路位于 `deepseek_chatbot.py`、`web_search.py`、`web_chat.py`、`text_files.py`、`voice_input.py`、`deepseek_tool_output.py`、`platform_gateway.py`、`media_ingress.py` 和 `fat_fish_guard/main.py`。
-- 平台相关变更集中在 `group_media.py` 与 `lark_communication.py`。平台独有的旧 `lark_voice.py` 和联网复核模块 `web_answer_review.py` 已删除。
+- 平台相关变更集中在 `group_media.py` 与 `lark_communication.py`。飞书和 QQ 共用 DeepSeek 语音输入。
 - 回归覆盖更新于 `test_communication.py`、`test_native_lark.py` 和 `test_native_media.py`。部署、配置与数据说明同步见 [开发参考](DEVELOPMENT.md)、[运维](OPERATIONS.md)、[快速开始](QUICK_START.md)、[功能](FEATURES.md)、[数据与隐私](DATA_AND_PRIVACY.md) 和 [故障排查](TROUBLESHOOTING.md)。

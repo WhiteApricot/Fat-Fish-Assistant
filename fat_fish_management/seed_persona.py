@@ -23,7 +23,7 @@ async def main():
         # Style examples are reference assets, never pretend user/assistant history.
         await db.insert_persona('feiyu-v1',(root/'persona/Persona_Master.md').read_text(encoding='utf-8-sig'),
              begin_dialogs=[],
-             tools=['memorize_long_term_memory','web_search_deepseek','deepseek_fetch_web_page'],skills=[])
+             tools=['memorize_long_term_memory'],skills=[])
         assert not await db.get_conversations()
     finally:await db.engine.dispose()
     print('Default persona initialized without sample history; chat database empty')

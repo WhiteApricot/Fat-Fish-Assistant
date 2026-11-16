@@ -49,7 +49,7 @@ class ManagementTest(unittest.TestCase):
 
     def test_component_selection_preserves_dependencies(self):
         self.assertEqual(c.selection('chat,snowluma'), {'core', 'plugins', 'astrbot', 'python', 'snowluma'})
-        self.assertIn('speech', c.selection('speech'))
+        self.assertIn('embedding', c.selection('embedding'))
         with self.assertRaises(c.Fault):
             c.selection('work')
 
@@ -228,15 +228,14 @@ class ManagementTest(unittest.TestCase):
         self.assertFalse(result['data']['complete'])
         self.assertEqual(result['data']['operations'][0]['id'], 'snowluma')
 
-    def test_windows_diagnostics_routes_both_interpreters(self):
+    def test_windows_diagnostics_routes_core_interpreter(self):
         chat = self.root / 'chat-python.exe'
-        speech = self.root / 'speech-python.exe'
         record = {'schema_version': 1, 'components': {'python': {'installed': True}},
-                  'chat_python': str(chat), 'speech_python': str(speech)}
+                  'chat_python': str(chat)}
         c.atomic(self.installation / 'installation.json', record)
         with patch.object(windows, 'verify_environment', return_value={'checked': True}) as verify:
             self.assertTrue(self.dispatch('component', 'python', 'integrity')['checked'])
-            verify.assert_called_once_with(self.installation, chat, speech)
+            verify.assert_called_once_with(self.installation, chat)
 
     def test_migration_plan_accepts_only_ffa_components_and_current_schema(self):
         try:

@@ -12,7 +12,7 @@ from fat_fish_management.lifecycle_lock import exclusive
 def repair_port(runtime,component):
     with exclusive(runtime):
         path=runtime/'data/cmd_config.json';before=path.read_bytes();cfg=json.loads(before.decode('utf-8-sig'))
-        ident,field=('feiyu-local-embedding','embedding_api_base') if component=='embedding' else ('feiyu-local-stt','api_base')
+        ident,field='feiyu-local-embedding','embedding_api_base'
         provider=next((x for x in cfg.get('provider',[]) if x.get('id')==ident),None)
         if not provider:return None
         endpoint=urllib.parse.urlsplit(provider.get(field,''))

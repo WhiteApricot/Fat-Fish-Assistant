@@ -24,6 +24,7 @@ import uuid
 import tempfile
 from pathlib import Path
 
+from src.fat_fish.model_config import DEFAULT_CHAT_MODEL
 from fat_fish_management.dependencies import PROJECT,acquire,build_release,clean_environment,digest,external,install_environment,load,profile_fingerprint,run_logged,unpack,verify_environment_versions,link_or_copy,RELEASE_LAYOUT,extend_core_environment
 
 from fat_fish_management import snowluma, windows
@@ -131,7 +132,7 @@ def owned_root(root,create=False):
 def state(root):
     value=read(root/'installation.json') if (root/'installation.json').exists() else {'schema_version':SCHEMA,'project':'Fat-Fish-Assistant','components':{}}
     if value.get('schema_version')!=SCHEMA:raise Fault('incompatible','Unknown management state version')
-    if set(value.get('components',{}))-set(COMPONENTS)-{'embedding-engine','embedding-model','speech-model'}:
+    if set(value.get('components',{}))-set(COMPONENTS)-{'embedding-engine','embedding-model'}:
         raise Fault('incompatible','Unsupported installation components','Use a separate managed root. Existing installation data has been preserved.')
     return value
 
@@ -214,7 +215,7 @@ def inspect_environment(root,network=False):
     add('disk_space',free>=2*1024**3,{'free_bytes':free,'minimum_core_bytes':2*1024**3},'Allow additional disk space for optional models and retained failed stages.')
     add('permissions',os.access(parent,os.W_OK),{'parent_writable':os.access(parent,os.W_OK)},'Choose a directory owned by your user; no administrator privileges are required for core files.')
     ports={}
-    for port in [6185,6199,6202,6203,6099]:
+    for port in [6185,6199,6203,6099]:
         try:
             with socket.create_connection(('127.0.0.1',port),timeout=.15):ports[str(port)]='occupied'
         except ConnectionRefusedError:ports[str(port)]='available'
@@ -279,9 +280,8 @@ def environment_profile(root,record,role):
     python=resolve(root,record[role+'_python'])
     receipt=read(python.parents[1]/'ffa-environment.json')
     profile=receipt.get('profile',role)
-    if profile not in {'chat','core','speech'}:raise Fault('incompatible','Unknown dependency profile')
+    if profile not in {'chat','core'}:raise Fault('incompatible','Unknown dependency profile')
     if role=='chat' and profile not in {'chat','core'}:raise Fault('incompatible','Chat profile required')
-    if role=='speech' and profile not in {'speech'}:raise Fault('incompatible','Speech profile required')
     return profile
 
 def install(root,args):
@@ -295,7 +295,7 @@ def install(root,args):
         record=state(root);cache=Path(args.cache).resolve() if args.cache else root/'cache'
         requested_profile=getattr(args,'dependency_profile',None)
         existing_profile=environment_profile(root,record,'chat') if record.get('chat_python') else None
-        dependency_profile=requested_profile or (existing_profile.split('-speech')[0] if existing_profile else 'core')
+        dependency_profile=requested_profile or (existing_profile or 'core')
         if record.get('instance') and existing_profile and existing_profile.startswith('chat') and dependency_profile=='core':raise Fault('incompatible','Existing full installation is preserved; slimming needs a new instance and verified migration')
         if record.get('instance'):
             runtime=instance(root,record)
@@ -304,7 +304,7 @@ def install(root,args):
             if any((runtime/'private'/name).exists() for name in ['RUNNING','DIRTY','upgrade-journal.json']):
                 raise Fault('busy','Stop the owned instance cleanly before installation or component changes')
             if args.repair:
-                for profile in ['chat','speech']:
+                for profile in ['chat']:
                     if not record.get(profile+'_python'):continue
                     marker=resolve(root,record[profile+'_python']).parents[1]/'ffa-environment.json'
                     if not marker.exists() or read(marker).get('lock_sha256')!=profile_fingerprint(environment_profile(root,record,profile)):
@@ -340,10 +340,6 @@ def install(root,args):
                 python=install_environment(base,root/'envs'/(effective_profile+'-'+tag),cache,effective_profile,args.offline,progress)
             record['dependency_profile']=dependency_profile
             record['chat_python']=rel(root,python);save()
-        if 'speech' in chosen:
-            tag=profile_fingerprint('speech')[:12]
-            python=install_environment(base,root/'envs'/('speech-'+tag),cache,'speech',args.offline,progress)
-            record['speech_python']=rel(root,python);save()
         progress('3/5','verified upstream sources and compatibility patches')
         if 'astrbot' in chosen:
             plugins=args.plugins.split(',') if args.plugins else []
@@ -380,12 +376,11 @@ def install(root,args):
         wanted=[]
         if 'embedding' in chosen:
             wanted.extend([('embedding-engine',specs['llama-b11946-win-cpu'],root/'assets/llama-b11946'),('embedding-model',specs['embedding-bge-small-zh-v1.5'],root/'assets/bge-small-zh-v1.5-f16.gguf')])
-        if 'speech' in chosen:wanted.append(('speech-model',specs['sensevoice-int8-20250909'],root/'assets/sensevoice-int8-20250909'))
         for name,spec,target in wanted:
             if not args.accept_external_licenses:raise Fault('needs_input','Optional asset requires review: '+spec['id'],'Review manifests/assets.json and use --accept-external-licenses only after accepting applicable external conditions.')
             install_asset(root,name,spec,target,cache,args.offline)
             record['components'][name]={'installed':True,'version':spec['id'],'path':rel(root,target),'ownership':'managed','depends':[]};save()
-        for component in ['embedding','speech']:
+        for component in ['embedding']:
             if component in chosen:
                 record['components'][component]={'installed':True,'version':COMPONENTS[component].get('asset',COMPONENTS[component].get('assets')),'path':'assets','ownership':'managed','depends':COMPONENTS[component]['depends']}
         progress('5/5','independent instance initialization')
@@ -408,13 +403,13 @@ def install(root,args):
                     atomic(stage/'private/install-origin.json',proof)
                     stage.rename(target)
                 record['instance']=rel(root,target);save()
-            if 'embedding' in chosen or 'speech' in chosen:
+            if 'embedding' in chosen:
                 runtime=instance(root,record)
                 existing_ids={x.get('id') for x in read(runtime/'data/cmd_config.json').get('provider',[])}
-                missing=[x for x in ['embedding','speech'] if x in chosen and ('feiyu-local-embedding' if x=='embedding' else 'feiyu-local-stt') not in existing_ids]
-                if missing:invoke(root,chat_python(root,record),'configure_local_models.py','--instance',runtime,'--components',','.join(missing),'--embedding-port',available_loopback_port(6203),'--speech-port',available_loopback_port(6202))
+                missing=[x for x in ['embedding'] if x in chosen and 'feiyu-local-embedding' not in existing_ids]
+                if missing:invoke(root,chat_python(root,record),'configure_local_models.py','--instance',runtime,'--components',','.join(missing),'--embedding-port',available_loopback_port(6203))
                 prepare_instance_assets(root,record,runtime)
-                for component in ['embedding','speech']:
+                for component in ['embedding']:
                     if component in chosen:record['components'][component]={'installed':True,'version':COMPONENTS[component].get('asset',COMPONENTS[component].get('assets')),'path':rel(root,runtime),'ownership':'managed','depends':COMPONENTS[component]['depends']}
         save();atomic(journal,{'schema_version':SCHEMA,'state':'completed','requested':sorted(chosen)})
         if not getattr(args,'retain_cache',False) and cache==root/'cache' and cache.resolve().parent==root and not cache.is_symlink() and not cache.is_junction():
@@ -424,7 +419,7 @@ def install(root,args):
         return {'components':sorted(chosen-{'snowluma'}),'snowluma':snowluma_status(record),'instance_initialized':bool(record.get('instance')),'next_steps':guidance(root,record),'repeated_install_preserves_instance':True}
 
 def prepare_instance_assets(root,record,runtime):
-    for source,target in [('embedding-engine','engines/llama'),('embedding-model','models/embedding/bge-small-zh-v1.5-f16.gguf'),('speech-model','models/sensevoice')]:
+    for source,target in [('embedding-engine','engines/llama'),('embedding-model','models/embedding/bge-small-zh-v1.5-f16.gguf')]:
         if source not in record['components']:continue
         origin=resolve(root,record['components'][source]['path']);destination=runtime/target
         files=list(origin.rglob('*')) if origin.is_dir() else [origin]
@@ -460,7 +455,7 @@ def component_status(root,record,name):
     if not result['installed'] or (name!='python' and info.get('ownership')=='external-readonly'):
         return lifecycle(result)
     if name=='python':
-        result['environments']=[{'profile':profile,'path':record[profile+'_python'],'completion_receipt':(resolve(root,record[profile+'_python']).parents[1]/'ffa-environment.json').exists()} for profile in ['chat','speech'] if record.get(profile+'_python')]
+        result['environments']=[{'profile':profile,'path':record[profile+'_python'],'completion_receipt':(resolve(root,record[profile+'_python']).parents[1]/'ffa-environment.json').exists()} for profile in ['chat'] if record.get(profile+'_python')]
     if name=='astrbot' and record.get('instance'):
         active=Path(read(instance(root,record)/'instance.json')['release'])
         metadata=read(active/'release.json')
@@ -474,7 +469,7 @@ def component_status(root,record,name):
                       maintenance_pending=chat.get('maintenance_pending',False),
                       ready=read_protocol(root,record).get('core_loaded'))
         if result['running'] and result['ready'] is False:result['health_failed']=True
-    elif name in {'embedding','speech'}:
+    elif name in {'embedding'}:
         if not record.get('instance'):
             result.update({'running':False,'ready':False,'needs_input':'Initialize an instance before configuring local provider credentials.'});return lifecycle(result,initialized=False)
         marker=instance(root,record)/'private'/(name.title()+'.pid')
@@ -495,7 +490,7 @@ def operate(root,record,action,selected=None,*,include_external=True):
         raise Fault('busy','Source is suspended after migration; target must be stopped before explicit source reactivation')
     default_selection=selected is None
     if default_selection:
-        selected=[x for x in ['embedding','speech','astrbot'] if record.get('components',{}).get(x,{}).get('installed')]
+        selected=[x for x in ['embedding','astrbot'] if record.get('components',{}).get(x,{}).get('installed')]
     if selected==['snowluma'] or (default_selection and include_external and not selected):
         return {'operations':[official_operation(record,action)],'complete':False}
     if not selected:raise Fault('needs_input','No service components are installed')
@@ -523,16 +518,15 @@ def operate(root,record,action,selected=None,*,include_external=True):
                 invoke(root,chat_python(root,record),'manage.py','recover-lifecycle','--instance',target)
                 invoke(root,chat_python(root,record),'configure_experience.py','--instance',target,'--release',resolve(root,record['release']),json_output=True)
             result=invoke(root,chat_python(root,record),'manage.py',action,'--instance',target)
-        elif name in {'embedding','speech'}:
+        elif name in {'embedding'}:
             port=None
             cfg=read(instance(root,record)/'data/cmd_config.json')
-            provider=next((p for p in cfg.get('provider',[]) if p.get('id')==('feiyu-local-embedding' if name=='embedding' else 'feiyu-local-stt')),None)
+            provider=next((p for p in cfg.get('provider',[]) if p.get('id')=='feiyu-local-embedding'),None)
             if action=='start' and provider:
-                endpoint=urllib.parse.urlsplit(provider.get('embedding_api_base' if name=='embedding' else 'api_base',''))
+                endpoint=urllib.parse.urlsplit(provider.get('embedding_api_base',''))
                 if endpoint.scheme!='http' or endpoint.hostname not in {'127.0.0.1','localhost'}:raise Fault('invalid','Local model endpoint must use loopback')
                 port=endpoint.port or 80
-            python=resolve(root,record['speech_python']) if name=='speech' and action=='start' else None
-            result=windows.model_service(root,action,instance(root,record),name,port=port,python=python)
+            result=windows.model_service(root,action,instance(root,record),name,port=port)
         else:raise Fault('incompatible','This component has no service lifecycle: '+name)
         results.append({'id':name,**result})
     if default_selection and include_external:
@@ -569,11 +563,10 @@ def daily_start(root,record):
             record['release']=rel(root,Path(read(runtime/'instance.json')['release']))
             atomic(root/'installation.json',record)
     verify_runtime_environment(root,record,'chat')
-    for name in ['embedding','speech','astrbot']:
+    for name in ['embedding','astrbot']:
         if not record.get('components',{}).get(name,{}).get('installed'):continue
         try:
-            if name=='speech':verify_runtime_environment(root,record,'speech')
-            if name in {'embedding','speech'} and not component_status(root,record,name)['running']:
+            if name in {'embedding'} and not component_status(root,record,name)['running']:
                 from fat_fish_management.local_model_ports import repair_port
                 # The live chat holds this lock; never rewrite endpoints mid-turn.
                 try:reassigned=repair_port(instance(root,record),name)
@@ -584,7 +577,7 @@ def daily_start(root,record):
                     progress('local-model-port',name+': '+str(reassigned['from'])+' -> '+str(reassigned['to']))
                     operations.append({'id':name,'local_port_reassigned':reassigned})
             operations.extend(operate(root,record,'start',[name])['operations'])
-            if name in {'embedding','speech'}:
+            if name in {'embedding'}:
                 for attempt in range(30):
                     try:
                         invoke(root,chat_python(root,record),'service_health.py','--component',name,'--instance',instance(root,record),json_output=True)
@@ -624,7 +617,7 @@ def health_check(root,record,*,diagnose=False):
                     protocol=read_protocol(root,record)
                 except (Fault,OSError,ValueError):
                     pass
-        for component in ('embedding','speech'):
+        for component in ('embedding',):
             if not any(item['id']==component and item['running'] for item in result['components']):
                 continue
             try:
@@ -672,18 +665,18 @@ def config_view(root,record):
 def configure(root,record,args):
     view=config_view(root,record)
     if args.config_action=='initialize-local-models':
-        selected=[x for x in ['embedding','speech'] if record.get('components',{}).get(x,{}).get('installed')]
+        selected=[x for x in ['embedding'] if record.get('components',{}).get(x,{}).get('installed')]
         if not selected:raise Fault('missing','No local model components are installed')
         with installation_lock(root):
             target=instance(root,record);cfg=read(target/'data/cmd_config.json')
             ports={}
-            for name,default in [('embedding',6203),('speech',6202)]:
-                provider=next((x for x in cfg.get('provider',[]) if x.get('id')==('feiyu-local-embedding' if name=='embedding' else 'feiyu-local-stt')),None)
-                endpoint=urllib.parse.urlsplit(provider.get('embedding_api_base' if name=='embedding' else 'api_base','')) if provider else None
+            for name,default in [('embedding',6203)]:
+                provider=next((x for x in cfg.get('provider',[]) if x.get('id')=='feiyu-local-embedding'),None)
+                endpoint=urllib.parse.urlsplit(provider.get('embedding_api_base','')) if provider else None
                 if endpoint and (endpoint.scheme!='http' or endpoint.hostname not in {'127.0.0.1','localhost'}):raise Fault('invalid','Local model endpoint is not loopback; refusing to replace custom remote configuration')
                 preferred=endpoint.port if endpoint and endpoint.port else default
                 ports[name]=preferred if name in selected and component_status(root,record,name)['running'] else available_loopback_port(preferred)
-            invoke(root,chat_python(root,record),'configure_local_models.py','--instance',target,'--components',','.join(selected),'--embedding-port',ports['embedding'],'--speech-port',ports['speech'])
+            invoke(root,chat_python(root,record),'configure_local_models.py','--instance',target,'--components',','.join(selected),'--embedding-port',ports['embedding'])
         return {'configured':selected,'ports':ports,'credentials_changed':False,'permissions_changed':False}
     if args.config_action=='initialize-experience':
         with installation_lock(root):
@@ -730,7 +723,7 @@ def parser():
     setup.add_argument('--repair',action='store_true',help='Explicit same-dependency repair through the existing transactional upgrade mechanism')
     for name in ['status','components','start','daily-start','stop','restart','health','diagnose','wizard','rollback']:sub.add_parser(name)
     component=sub.add_parser('component');component.add_argument('name',choices=list(COMPONENTS));component.add_argument('action',choices=['status','version','dependencies','start','stop','restart','health','integrity','connection-health'])
-    conf=sub.add_parser('config');conf.add_argument('config_action',choices=['show','validate','apply','initialize-chat','initialize-onebot','initialize-experience','initialize-local-models']);conf.add_argument('--file',default='-');conf.add_argument('--onebot-port',type=int,default=6199);conf.add_argument('--model',choices=['deepseek-chat','deepseek-reasoner'],default='deepseek-chat');conf.add_argument('--bot-id')
+    conf=sub.add_parser('config');conf.add_argument('config_action',choices=['show','validate','apply','initialize-chat','initialize-onebot','initialize-experience','initialize-local-models']);conf.add_argument('--file',default='-');conf.add_argument('--onebot-port',type=int,default=6199);conf.add_argument('--model',choices=[DEFAULT_CHAT_MODEL],default=DEFAULT_CHAT_MODEL);conf.add_argument('--bot-id')
     backup=sub.add_parser('backup');backup.add_argument('--destination',required=True,type=Path)
     restore=sub.add_parser('restore');restore.add_argument('--snapshot',required=True,type=Path);restore.add_argument('--destination',type=Path);restore.add_argument('--erasure-ledger',type=Path)
     upgrade=sub.add_parser('upgrade');upgrade.add_argument('--release',required=True,type=Path)
@@ -867,11 +860,11 @@ def dispatch(args):
         if not record.get('components',{}).get(args.name,{}).get('installed'):raise Fault('missing','Component is not installed: '+args.name)
         if args.action=='health' and args.name=='astrbot':
             return invoke(root,chat_python(root,record),'authenticated_health.py','--instance',instance(root,record),json_output=True)
-        if args.action=='health' and args.name in {'embedding','speech'}:
+        if args.action=='health' and args.name in {'embedding'}:
             return invoke(root,chat_python(root,record),'service_health.py','--component',args.name,'--instance',instance(root,record),json_output=True)
         if args.name in {'astrbot','plugins'}:
             return invoke(root,chat_python(root,record),'doctor.py','--instance',instance(root,record),json_output=True)
-        if args.name in {'embedding','speech'}:
+        if args.name in {'embedding'}:
             runtime=instance(root,record)
             for row in load('model-runtime-lock.json'):
                 if row['component'].lower()!=args.name:continue
@@ -879,10 +872,9 @@ def dispatch(args):
                 if digest(path)!=row['sha256']:raise Fault('integrity','Model artifact hash mismatch')
             return {'component':args.name,'pinned_artifact_integrity':'pass'}
         if args.name=='python':
-            profiles=[x for x in ['chat','speech'] if record.get(x+'_python')]
+            profiles=[x for x in ['chat'] if record.get(x+'_python')]
             if 'chat' in profiles:
-                speech=resolve(root,record['speech_python']) if 'speech' in profiles else None
-                return windows.verify_environment(root,chat_python(root,record),speech)
+                return windows.verify_environment(root,chat_python(root,record))
             base=resolve(root,record['components']['python']['path'])
             run_logged([base,'-I','-c','import sys,ssl,sqlite3; assert sys.version_info[:3]==(3,12,3)'],root/'logs/python-probe.log')
             return {'python_stdlib_probe':'pass','scope':'Base interpreter only; no Chat environment installed'}

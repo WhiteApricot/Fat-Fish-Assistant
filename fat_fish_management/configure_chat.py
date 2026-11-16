@@ -13,15 +13,17 @@ from pathlib import Path
 from fat_fish_management.lifecycle_lock import exclusive
 from fat_fish_management.onebot_config import listener
 
-def configure(root,port=6199,model='deepseek-chat'):
+from src.fat_fish.model_config import DEFAULT_CHAT_MODEL
+
+def configure(root,port=6199,model=DEFAULT_CHAT_MODEL):
     root=Path(root).resolve()
     if type(port) is not int or not 1024<=port<=65535:raise ValueError('Invalid loopback OneBot port')
-    if model not in {'deepseek-chat','deepseek-reasoner'}:raise ValueError('Unsupported model preset')
+    if model != DEFAULT_CHAT_MODEL:raise ValueError('Unsupported model preset')
     with exclusive(root):
         if any((root/'private'/name).exists() for name in ['RUNNING','DIRTY','upgrade-journal.json']):raise ValueError('Stop cleanly before configuration')
         path=root/'data/cmd_config.json';before=path.read_bytes();cfg=json.loads(before.decode('utf-8-sig'))
         providers=cfg.setdefault('provider',[]);platforms=cfg.setdefault('platform',[])
-        provider={'id':'fat-fish-chat','provider':'deepseek','type':'openai_chat_completion','provider_type':'chat_completion','enable':True,'key':['$DEEPSEEK_API_KEY'],'api_base':'https://api.deepseek.com/v1','model':model,'timeout':120}
+        provider={'id':'fat-fish-chat','provider':'deepseek','type':'openai_chat_completion','provider_type':'chat_completion','enable':True,'key':['$DEEPSEEK_API_KEY'],'api_base':'https://api.deepseek.com/v1','model':model,'custom_extra_body':{'thinking':{'type':'disabled'}},'timeout':120}
         old=next((x for x in providers if x.get('id')==provider['id']),None)
         if old is not None and old!=provider:raise ValueError('Existing provider differs; use native configuration UI')
         if any(x.get('id')!='fat-fish-chat' and x.get('provider_type')=='chat_completion' for x in providers):raise ValueError('Existing Chat provider requires explicit native configuration')
@@ -49,5 +51,5 @@ def configure(root,port=6199,model='deepseek-chat'):
     return {'configured':True,'secret_values_printed':False,'group_permissions_changed':False,'onebot_loopback_port':port,'api_key_required':'private/deepseek-key.txt','manual_step':'Configure the reverse WebSocket in the official SnowLuma WebUI using the private OneBot credential.'}
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--instance',type=Path,required=True);p.add_argument('--onebot-port',type=int,default=6199);p.add_argument('--model',default='deepseek-chat');args=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--instance',type=Path,required=True);p.add_argument('--onebot-port',type=int,default=6199);p.add_argument('--model',default=DEFAULT_CHAT_MODEL);args=p.parse_args()
     print(json.dumps(configure(args.instance,args.onebot_port,args.model)))

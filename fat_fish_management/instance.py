@@ -173,7 +173,7 @@ def _backup_locked(instance, destination):
             if parts[0]=='private' and path.suffix=='.log':continue
             if parts==('private','install-origin.json'):continue
             if parts==('private','runtime-health.json'):continue
-            if parts[0]=='private' and path.name.casefold() in {'embedding.process.json','speech.process.json','embedding.process.json.pending','speech.process.json.pending'}:continue
+            if parts[0]=='private' and path.name.casefold() in {'embedding.process.json','embedding.process.json.pending'}:continue
             if parts[:2]==('data','plugins'):
                 plugin_relative=Path(*rel.parts[2:]).as_posix()
                 if plugin_relative in locked_plugins and plugin_relative not in PLUGIN_MUTABLE_CONFIGS:
@@ -183,7 +183,7 @@ def _backup_locked(instance, destination):
             if parts[:2]==('data','temp'):continue
             if parts[:4]==('data','plugin_data','meme_manager','temp'):continue
             if path.name.endswith(('-wal','-shm')):continue
-            if len(parts)==2 and parts[0]=='private' and path.name.casefold() in {'.instance-lock','.start-lock','running','stop','stopped','dirty','previous-release.json','embedding.pid','speech.pid','migrated-out.json'}:continue
+            if len(parts)==2 and parts[0]=='private' and path.name.casefold() in {'.instance-lock','.start-lock','running','stop','stopped','dirty','previous-release.json','embedding.pid','migrated-out.json'}:continue
             path.resolve().relative_to(instance.resolve())
             target=destination/'payload'/rel
             target.parent.mkdir(parents=True,exist_ok=True)

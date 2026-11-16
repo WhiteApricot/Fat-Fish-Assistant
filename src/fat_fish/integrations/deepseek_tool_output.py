@@ -3,9 +3,59 @@ from contextlib import aclosing
 import logging
 import re
 
-from fat_fish.integrations.web_search import (
-    DSML_MARKER, READ_URL_TOOL, RETIRED_WEB_TOOLS, WEB_SEARCH_TOOL, clean_message, clean_reply,
-)
+_DIAGNOSTIC = re.compile(
+    r'^\s*(?:[*`#]+\s*)?(?:Current datetime\s*[:：]|Weather\s*[:：]\s*(?:WARNING|ERROR)\b|'
+    r'(?:WARNING|ERROR)\s*[:：].*(?:weather-capable tool|tool was not called)|'
+    r'Search failed or unavailable\b|Error (?:occurred|Type\s*[:：]|Message\s*[:：])|LLM 响应错误\s*[:：]|'
+    r'Traceback \(most recent call last\)|.*DSML.*(?:invoke|calls))', re.I)
+_SYSTEM_REMINDER = re.compile(r'<system_reminder\b[^>]*>.*?(?:</system_reminder\s*>|\Z)', re.I | re.S)
+_DSML_CALLS = re.compile(
+    r'<[｜|]+DSML[｜|]+\s*(function_calls|tool_calls|invoke|parameter)\b[^>]*>.*?'
+    r'(?:</[｜|]+DSML[｜|]+\s*\1\s*>|\Z)',
+    re.I | re.S)
+DSML_MARKER = re.compile(r'</?[｜|]+DSML[｜|]+', re.I)
+
+
+def clean_reply(text):
+    text = _DSML_CALLS.sub('', text)
+    text = re.sub(r'</?[｜|]+DSML[｜|]+[^>]*(?:>|\Z)', '', text, flags=re.I)
+    text = _SYSTEM_REMINDER.sub('', text)
+    text = re.sub(r'</?system_reminder\s*>', '', text, flags=re.I)
+    visible = []
+    for line in text.splitlines():
+        if line.lstrip().startswith('Traceback (most recent call last)'):
+            break
+        if not _DIAGNOSTIC.match(line):
+            visible.append(line)
+    return '\n'.join(visible).strip()
+
+
+def is_intermediate_message(event, message):
+    kind = getattr(message, 'type', None)
+    if kind in {'tool_call', 'tool_result', 'reasoning', 'agent_stats'}:
+        return True
+    return (kind != 'tool_direct_result' and event.get_extra('_ffa_agent_running', False)
+            and not event.get_extra('_ffa_agent_finished', False))
+
+
+def clean_message(message):
+    chain = getattr(message, 'chain', None)
+    if not isinstance(chain, list):
+        return False
+    removed = False
+    for part in chain[:]:
+        if part.__class__.__name__ != 'Plain':
+            continue
+        text = part.text
+        cleaned = clean_reply(text)
+        if cleaned == text.strip():
+            continue
+        removed = True
+        if cleaned:
+            part.text = cleaned
+        else:
+            chain.remove(part)
+    return removed
 
 
 _PARTIAL_MARKER = re.compile(r"</?(?:[｜|]+(?:D(?:S(?:M(?:L)?)?)?)?)?\Z", re.I)
@@ -13,7 +63,6 @@ _RETRY_PROMPT = (
     "请重新处理当前用户请求。需要使用工具时，通过 API 提供的工具结构实际调用，使用它当前的参数定义。"
     "不要把工具名称、标签、参数或 JSON 指令写进用户可见正文。"
 )
-_MANAGED_TOOLS = {"ffa_manage": "管理指令", WEB_SEARCH_TOOL: "联网搜索", READ_URL_TOOL: "网页阅读"}
 logger = logging.getLogger(__name__)
 
 
@@ -21,13 +70,12 @@ def private_tool_log(record):
     if not record.pathname.replace("\\", "/").endswith("/tool_loop_agent_runner.py"):
         return True
     text = record.getMessage()
-    return not any(text.startswith((f"使用工具：{name}，参数：", f"Tool `{name}` Result:"))
-                   for name in _MANAGED_TOOLS)
+    return not text.startswith(("使用工具：", "Tool `"))
 
 
 def enforce_offered_tools(response, offered, event):
     unavailable = {name for name in response.tools_call_name
-                   if name in RETIRED_WEB_TOOLS or (name in _MANAGED_TOOLS and name not in offered)}
+                   if name not in offered}
     if not unavailable:
         return
     calls = [(name, args, ident) for name, args, ident in zip(
@@ -38,20 +86,15 @@ def enforce_offered_tools(response, offered, event):
     if not calls:
         response.role = "assistant"
         response.result_chain = None
-        features = "、".join(sorted({_MANAGED_TOOLS.get(name, "联网工具") for name in unavailable}))
-        response.completion_text = user_feedback(event, f"本轮无法使用{features}，请求未执行。")
-    logger.info("FFA ignored unoffered native tool names=%s", ",".join(sorted(unavailable)))
+        response.completion_text = user_feedback(event, "本轮无法使用该工具，请求未执行。")
+    logger.info("FFA ignored %d unoffered native tool names", len(unavailable))
 
 
 def clean_assistant_history(messages):
-    """Remove retired web tool calls and replies while preserving other tool pairs."""
-    retired_ids = {call.id for message in messages if message.role == "assistant"
-                   for call in message.tool_calls or () if call.function.name in RETIRED_WEB_TOOLS}
+    """Normalize assistant protocol and omit empty tool arrays."""
     clean = []
     for message in messages:
         content = message.content
-        if message.role == "tool" and message.tool_call_id in retired_ids:
-            continue
         if message.role != "assistant":
             clean.append(message)
             continue
@@ -66,8 +109,6 @@ def clean_assistant_history(messages):
                     parts.append(part.model_copy(update={"text": body}))
             content = parts
         calls = message.tool_calls or None
-        if retired_ids and calls:
-            calls = [call for call in calls if call.id not in retired_ids] or None
         if content or calls:
             clean.append(message.model_copy(update={"content": content, "tool_calls": calls})
                          if content is not message.content or calls is not message.tool_calls else message)
@@ -115,7 +156,7 @@ def install_deepseek_tool_output():
 
         toolset = runner._func_tool_for_provider()
         offered = set(toolset.names()) if toolset else set()
-        managed = sorted(offered & _MANAGED_TOOLS.keys())
+        managed = sorted(offered & event.get_extra("_ffa_native_tools", {}).keys())
         modalities = runner.provider.provider_config.get("modalities")
         tool_capability = not isinstance(modalities, list) or not modalities or "tool_use" in modalities
         manifest = tuple(managed), tool_capability
