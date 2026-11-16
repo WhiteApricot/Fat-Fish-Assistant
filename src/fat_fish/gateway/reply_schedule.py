@@ -3,14 +3,13 @@ import asyncio
 import random
 
 
-MIN_REPLY_SECONDS = 4.0
-MAX_REPLY_SECONDS = 6.5
+DEFAULT_REPLY_WINDOW = (4.0, 6.5)
 WEB_PROGRESS_TYPE = "ffa_web_progress"
 
 
 class ReplySchedule:
-    def __init__(self, arrived, *, sample=random.uniform):
-        self.delay = sample(MIN_REPLY_SECONDS, MAX_REPLY_SECONDS)
+    def __init__(self, arrived, *, window=DEFAULT_REPLY_WINDOW, sample=random.uniform):
+        self.delay = sample(*window)
         self.update(arrived)
 
     def update(self, arrived, *, latest=None):

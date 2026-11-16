@@ -31,7 +31,7 @@ from fat_fish.reminders.dispatch import ReminderAccess
 from fat_fish.memory.gateway_bridge import GatewayMemory
 from fat_fish.gateway.media_ingress import UnsupportedMedia, prepare_media
 from fat_fish.gateway.chat_turn import ChatTurns
-from fat_fish.gateway.reply_schedule import ReplySchedule, WEB_PROGRESS_TYPE
+from fat_fish.gateway.reply_schedule import DEFAULT_REPLY_WINDOW, ReplySchedule, WEB_PROGRESS_TYPE
 
 
 IDENTITY_REQUEST = re.compile(r"^/(owner|invite|link|unlink)(?:\s|$)", re.I)
@@ -1137,12 +1137,13 @@ class PlatformGateway:
                 event.stop_event()
                 completed = True
                 return None
+            window = getattr(slot.provider, "reply_window", DEFAULT_REPLY_WINDOW)
             if item is not None:
-                turn = self.chat_turns.admit(item, admission.principal_id)
+                turn = self.chat_turns.admit(item, admission.principal_id, reply_window=window)
                 event.set_extra("_ffa_chat_turn", turn)
                 event.set_extra("_ffa_latest_arrival", turn.items[-1].arrived)
             if getattr(self.context, "get_registered_star", None) and not event.get_extra("_ffa_reply_is_command"):
-                schedule = turn.schedule if turn else ReplySchedule(arrived)
+                schedule = turn.schedule if turn else ReplySchedule(arrived, window=window)
             if turn is not None and len(turn.items) > 1:
                 from astrbot.api.message_components import Plain
 

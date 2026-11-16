@@ -183,6 +183,59 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
                         restore()
                 self.assertIs(astr_main_agent.MAIN_AGENT_HOOKS, original)
 
+    async def test_deepseek_text_tool_protocol_is_retried_as_a_native_call(self):
+        from astrbot.core.agent.message import Message, TextPart
+        from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+        from astrbot.core.provider.entities import LLMResponse
+        from fat_fish.integrations.deepseek_tool_output import (
+            ToolText, clean_assistant_history, install_deepseek_tool_output,
+        )
+        from fat_fish.integrations.web_search import clean_reply
+        from test_communication import NativeEvent
+
+        fragment = '<｜｜DSML｜｜ parameter name="query" string="true">internal</｜｜DSML｜｜ parameter>'
+        self.assertEqual(clean_reply("答复\n" + fragment), "答复")
+        stream = ToolText()
+        self.assertEqual(stream.consume("答复<｜｜DS"), "答复")
+        self.assertEqual(stream.consume("ML｜｜ parameter>internal"), "")
+        self.assertEqual(stream.consume("tail"), "")
+        user = Message(role="user", content=fragment)
+        assistant = Message(role="assistant", content=[TextPart(text=fragment)])
+        self.assertEqual(clean_assistant_history([assistant, user]), [user])
+
+        async def fake_responses(runner, *, include_model):
+            runner.calls += 1
+            if runner.calls == 1 or not runner.recover:
+                yield LLMResponse(role="assistant", completion_text=fragment)
+            else:
+                self.assertIn("API", runner.run_context.messages[0].content)
+                yield LLMResponse(role="tool", tools_call_name=[runner.name],
+                                  tools_call_args=[{"arg": "example"}], tools_call_ids=["call_test"])
+
+        cases = (("ffa_manage", True, True), ("web_search_deepseek", True, True),
+                 ("web_search_deepseek", True, False), ("ffa_manage", False, False))
+        for name, enabled, recover in cases:
+            with self.subTest(name=name, enabled=enabled, recover=recover):
+                event = NativeEvent()
+                event.set_extra("_ffa_platform_admission", True)
+                context = SimpleNamespace(context=SimpleNamespace(event=event), messages=[user])
+                runner = SimpleNamespace(run_context=context, name=name, recover=recover, calls=0,
+                                         provider=SimpleNamespace(provider_config={"api_base": "https://api.deepseek.com/v1"}),
+                                         _func_tool_for_provider=lambda: enabled)
+                with patch.object(ToolLoopAgentRunner, "_iter_llm_responses", fake_responses):
+                    restore = install_deepseek_tool_output()
+                    try:
+                        responses = [response async for response in ToolLoopAgentRunner._iter_llm_responses(runner)]
+                    finally:
+                        restore()
+                self.assertEqual(runner.calls, 2 if enabled else 1)
+                self.assertEqual(context.messages, [user])
+                self.assertEqual(len(responses), 1)
+                self.assertEqual(responses[0].tools_call_name, [name] if recover else [])
+                self.assertNotIn("internal", responses[0].completion_text or "")
+                if not recover:
+                    self.assertIn("没能完成", responses[0].completion_text)
+
     async def test_search_timeout_notice_and_review_keep_existing_pipeline(self):
         from fat_fish.integrations.web_chat import note_search_timeout
         from fat_fish.integrations.web_search import offer_search

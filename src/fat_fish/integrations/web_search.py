@@ -252,12 +252,15 @@ _DIAGNOSTIC = re.compile(
     r'Traceback \(most recent call last\)|.*DSML.*(?:invoke|calls))', re.I)
 _SYSTEM_REMINDER = re.compile(r'<system_reminder\b[^>]*>.*?(?:</system_reminder\s*>|\Z)', re.I | re.S)
 _DSML_CALLS = re.compile(
-    r'<[｜|]DSML[｜|](function_calls|tool_calls|invoke)\b[^>]*>.*?(?:</[｜|]DSML[｜|]\1\s*>|\Z)',
+    r'<[｜|]+DSML[｜|]+\s*(function_calls|tool_calls|invoke|parameter)\b[^>]*>.*?'
+    r'(?:</[｜|]+DSML[｜|]+\s*\1\s*>|\Z)',
     re.I | re.S)
+DSML_MARKER = re.compile(r'</?[｜|]+DSML[｜|]+', re.I)
 
 
 def clean_reply(text):
     text = _DSML_CALLS.sub('', text)
+    text = re.sub(r'</?[｜|]+DSML[｜|]+[^>]*(?:>|\Z)', '', text, flags=re.I)
     text = _SYSTEM_REMINDER.sub('', text)
     text = re.sub(r'</?system_reminder\s*>', '', text, flags=re.I)
     visible = []

@@ -93,6 +93,7 @@ class LarkCommunication(AstrBotCommunication):
         Capability.MEDIA, Capability.IMAGE, Capability.FILE, Capability.RETRACT,
     }
     guard_stream = staticmethod(guard_stream)
+    reply_window = (1.0, 3.5)
     transcribe_group_voice = staticmethod(transcribe)
     group_voice_error = VOICE_UNAVAILABLE
 

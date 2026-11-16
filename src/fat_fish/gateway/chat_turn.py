@@ -2,7 +2,7 @@
 import asyncio
 from dataclasses import dataclass, field
 
-from fat_fish.gateway.reply_schedule import ReplySchedule
+from fat_fish.gateway.reply_schedule import DEFAULT_REPLY_WINDOW, ReplySchedule
 
 
 class Superseded(asyncio.CancelledError):
@@ -19,7 +19,7 @@ class Input:
 
 
 class Turn:
-    def __init__(self, coordinator, item, principal, previous):
+    def __init__(self, coordinator, item, principal, previous, reply_window):
         self.coordinator = coordinator
         self.key = item.key
         self.principal = principal
@@ -30,7 +30,7 @@ class Turn:
         self.version = previous.version + 1 if previous else 1
         self.items = sorted([*previous.items, item] if previous else [item], key=lambda part: part.arrived)
         self.limit = self.items[0].arrived + coordinator.maximum
-        self.schedule = previous.schedule if previous else ReplySchedule(item.arrived)
+        self.schedule = previous.schedule if previous else ReplySchedule(item.arrived, window=reply_window)
         self.schedule.update(self.items[-1].arrived, latest=self.limit)
 
     def check(self):
@@ -81,14 +81,14 @@ class ChatTurns:
             self.pending.pop(item.key)
         item.resolved.set()
 
-    def admit(self, item, principal):
+    def admit(self, item, principal, *, reply_window=DEFAULT_REPLY_WINDOW):
         previous = self.active.get(item.key)
         if (previous and (previous.committed or previous.principal != principal
                           or asyncio.get_running_loop().time() >= previous.limit
                           or len(previous.items) >= 16
                           or sum(len(part.message.text) for part in previous.items) + len(item.message.text) > 8000)):
             previous = None
-        turn = Turn(self, item, principal, previous)
+        turn = Turn(self, item, principal, previous, reply_window)
         self.active[item.key] = turn
         if previous:
             previous.superseded = True

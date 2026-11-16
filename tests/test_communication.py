@@ -249,6 +249,15 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fresh.version, 1)
         self.assertFalse(turn.superseded)
 
+    def test_reply_window_can_be_selected_by_provider(self):
+        from fat_fish.adapters.lark_communication import LarkCommunication
+        from fat_fish.gateway.reply_schedule import ReplySchedule
+
+        self.assertEqual(ReplySchedule(10, sample=max).deadline, 16.5)
+        window = LarkCommunication.reply_window
+        self.assertEqual(ReplySchedule(10, window=window, sample=min).deadline, 11)
+        self.assertEqual(ReplySchedule(10, window=window, sample=max).deadline, 13.5)
+
     async def test_management_commit_prevents_regeneration_and_repeat_write(self):
         from unittest.mock import AsyncMock
 
