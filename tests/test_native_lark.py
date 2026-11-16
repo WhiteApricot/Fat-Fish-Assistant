@@ -220,8 +220,8 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
                 event.set_extra("_ffa_platform_admission", True)
                 context = SimpleNamespace(context=SimpleNamespace(event=event), messages=[user])
                 runner = SimpleNamespace(run_context=context, name=name, recover=recover, calls=0,
-                                         provider=SimpleNamespace(provider_config={"api_base": "https://api.deepseek.com/v1"}),
-                                         _func_tool_for_provider=lambda: enabled)
+                                         provider=SimpleNamespace(provider_config={"api_base": "https://proxy.example/v1"}),
+                                         _func_tool_for_provider=lambda: SimpleNamespace(names=lambda: [name]) if enabled else None)
                 with patch.object(ToolLoopAgentRunner, "_iter_llm_responses", fake_responses):
                     restore = install_deepseek_tool_output()
                     try:
@@ -235,6 +235,23 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("internal", responses[0].completion_text or "")
                 if not recover:
                     self.assertIn("没能完成", responses[0].completion_text)
+
+    def test_stale_native_tools_are_blocked_independently(self):
+        from astrbot.core.provider.entities import LLMResponse
+        from fat_fish.integrations.deepseek_tool_output import enforce_offered_tools
+        from test_communication import NativeEvent
+
+        event = NativeEvent()
+        for name, other in (("ffa_manage", "web_search_deepseek"), ("web_search_deepseek", "ffa_manage")):
+            with self.subTest(name=name):
+                response = LLMResponse(role="tool", completion_text="不可信的成功声明",
+                                       tools_call_name=[name], tools_call_args=[{"internal": "value"}],
+                                       tools_call_ids=["call_test"])
+                enforce_offered_tools(response, {other}, event)
+                self.assertEqual(response.role, "assistant")
+                self.assertEqual(response.tools_call_name, [])
+                self.assertIn("请求未执行", response.completion_text)
+                self.assertNotIn("不可信", response.completion_text)
 
     async def test_search_timeout_notice_and_review_keep_existing_pipeline(self):
         from fat_fish.integrations.web_chat import note_search_timeout

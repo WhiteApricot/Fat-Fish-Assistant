@@ -40,10 +40,23 @@ ROUTES = {
 }
 
 LOOKUP_ACTIONS = {
-    "reminder": {"list", "show"},
-    "persona": {"list"}, "globalpersona": {"list"},
-    "memory": {"search", "archive", "history"}, "groupmemory": {"search"},
+    "help": {"", "*"}, "history": {"", "all"}, "reminder": {"", "list", "show", "audio"},
+    "persona": {"", "list"}, "globalpersona": {"", "list"},
+    "role": {"", "list"}, "globaladmin": {"list"}, "blacklist": {"", "list"}, "whitelist": {"", "list"},
+    "memory": {"search", "archive", "history", "status"}, "groupmemory": {"search", "status"},
+    "personal": {""}, "groupmode": {""}, "groupsettings": {""},
+    "naturalcommand": {""}, "websearch": {""},
 }
+
+
+def is_lookup(command):
+    if command.name not in ROUTES:
+        return False
+    if command.args == ("help",) or command.name == "help":
+        return True
+    if command.name in {"naturalcommand", "websearch"} and command.args == ("global",):
+        return True
+    return (command.args[0] if command.args else "") in LOOKUP_ACTIONS.get(command.name, ())
 
 
 @dataclass(frozen=True)

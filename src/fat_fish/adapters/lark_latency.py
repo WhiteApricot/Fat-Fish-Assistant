@@ -42,6 +42,7 @@ class LarkLatency:
         self.native_observed = native_observed
         self.attempts = []
         self.route = None
+        self.management_receipt = None
 
     def mark(self, step):
         if step not in self.times:
@@ -56,6 +57,8 @@ class LarkLatency:
                   "category": self.category, "status": self.outcome or "no_submission"}
         if self.route:
             fields["route"] = self.route
+        if self.management_receipt:
+            fields["management_receipt"] = self.management_receipt
         if self.attempts:
             fields["im_attempts"] = self.attempts
         if self.error:

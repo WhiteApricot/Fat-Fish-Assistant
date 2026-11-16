@@ -14,7 +14,7 @@ from contextlib import nullcontext
 
 from fat_fish.adapters.astrbot_communication import convert
 from fat_fish.adapters.group_media import GroupMedia
-from fat_fish.communication.model import Account, Capability, ChatKind, Conversation, MessageRetraction, ProviderId
+from fat_fish.communication.model import Account, Capability, ChatKind, Conversation, MessageRetraction, NotSubmitted, ProviderId
 from fat_fish.communication.registry import ProviderContext, ProviderRegistry
 from fat_fish.communication.runtime import CommunicationRuntime
 from fat_fish.core.identity import IdentityDirectory, Role
@@ -370,18 +370,33 @@ class PlatformGateway:
             return "指令执行失败，无法确认结果。"
 
     async def _send_command_receipt(self, event, command, receipt, *, management=False):
-        split = command.name in {"remind", "reminder"} and command.args[-1:] != ("help",)
+        split = command is not None and command.name in {"remind", "reminder"} and command.args[-1:] != ("help",)
+        sent = False
         for line in receipt.splitlines() if split else (receipt,):
             if not line.strip():
                 continue
             result = event.plain_result("【系统】" + line)
             if management:
                 event.set_extra("_ffa_management_receipt_result", result)
+                event.set_extra("_ffa_management_receipt_acked", False)
             try:
                 await event.send(result)
+                if management and not event.get_extra("_ffa_management_receipt_acked"):
+                    return "partial" if sent else "not_submitted"
+                sent = True
+            except NotSubmitted:
+                if not management:
+                    raise
+                return "partial" if sent else "not_submitted"
+            except Exception as exc:
+                if not management:
+                    raise
+                logger.warning("FFA management receipt delivery uncertain (%s)", type(exc).__name__)
+                return "partial" if sent else "unknown"
             finally:
                 if management:
                     event.set_extra("_ffa_management_receipt_result", None)
+        return "submitted" if sent else "not_submitted"
 
     def _bind_management(self, runtime, message, admission, event, allowed, explicit_reminder, pending):
         room = message.conversation
@@ -409,15 +424,21 @@ class PlatformGateway:
                 receipt = "\n".join(filter(None, (*command_event.replies, reply))) or "程序没有返回可确认的执行结果。"
             if not visible:
                 return receipt[:4000]
-            self._record_command(receipt_key, ["/" + command.name, *command.args], receipt)
-            event.set_extra("_ffa_management_done", True)
-            await self._send_command_receipt(event, command, receipt, management=True)
             return receipt
+
+        async def deliver(command, receipt):
+            self._record_command(receipt_key, ["/" + command.name, *command.args], receipt)
+            delivery = await self._send_command_receipt(event, command, receipt, management=True)
+            event.set_extra("_ffa_management_done", delivery != "not_submitted")
+            timeline = event.get_extra("_ffa_lark_latency")
+            if timeline is not None:
+                timeline.management_receipt = delivery
+            return delivery
 
         event.set_extra("_ffa_management_turn", ManagementTurn(
             event, self.commands, message, allowed,
             lambda: feature_enabled(self.chat_settings.read(), "naturalcommand", scope),
-            execute, explicit_reminder=explicit_reminder,
+            execute, explicit_reminder=explicit_reminder, deliver=deliver,
         ))
 
     async def _memory_command(self, runtime, message, admission, words, event):
@@ -1055,7 +1076,7 @@ class PlatformGateway:
 
             from fat_fish.integrations.web_search import clean_message, is_intermediate_message
 
-            if hasattr(result, "chain") and getattr(result, "type", None) != WEB_PROGRESS_TYPE:
+            if not (receipt or progress) and hasattr(result, "chain"):
                 if is_intermediate_message(event, result):
                     native_result = event.get_result()
                     result_type = getattr(native_result, "result_content_type", None)
@@ -1071,6 +1092,8 @@ class PlatformGateway:
                 native_reply = getattr(slot.provider, "reply_native", None)
                 response = (await native_reply(event, message.conversation, result, original_send)
                             if native_reply else await original_send(result))
+                if receipt:
+                    event.set_extra("_ffa_management_receipt_acked", response is not False)
                 text = result.get_plain_text() if hasattr(result, "get_plain_text") else result
                 if isinstance(text, str) and text.startswith("【系统】") and event.get_extra("_ffa_reply_is_command"):
                     words = message.text.strip().split()
@@ -1292,6 +1315,9 @@ class PlatformGateway:
             if timeline is not None:
                 timeline.mark("ready")
             result = await downstream()
+            management = event.get_extra("_ffa_management_turn")
+            if not submitted and management is not None and management.feedback and await asyncio.to_thread(allowed):
+                await self._send_command_receipt(event, None, management.feedback, management=True)
             completed = True
             return result
         except (ConnectionError, TimeoutError):

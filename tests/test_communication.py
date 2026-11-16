@@ -258,6 +258,99 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ReplySchedule(10, window=window, sample=min).deadline, 11)
         self.assertEqual(ReplySchedule(10, window=window, sample=max).deadline, 13.5)
 
+    async def test_native_management_receipt_during_agent_and_failed_delivery(self):
+        from unittest.mock import AsyncMock
+
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        handler = AsyncMock(return_value="程序实际执行完毕")
+        self.gateway.commands.register("sample", routes={"write": {1}}, help="/sample write",
+                                       authorize=lambda _: True, handle=handler)
+
+        for failed in (False, True):
+            event = NativeEvent(sender=owner.subject, ident=f"management-{failed}", text="请执行测试操作")
+            event.plain_result = lambda body: SimpleNamespace(chain=[body], get_plain_text=lambda: body)
+            event.get_result = lambda: None
+            if failed:
+                event.send = AsyncMock(side_effect=ConnectionError("uncertain"))
+
+            async def agent():
+                event.set_extra("_ffa_agent_running", True)
+                turn = event.get_extra("_ffa_management_turn")
+                first = await turn.call("sample", ["write"])
+                self.assertEqual(first["delivery"], "unknown" if failed else "submitted")
+                self.assertEqual(first, await turn.call("sample", ["write"]))
+
+            await self.gateway.run(event, agent)
+            if failed:
+                event.send.assert_awaited_once()
+            else:
+                self.assertEqual([item.get_plain_text() for item in event.sent], ["【系统】程序实际执行完毕"])
+        self.assertEqual(handler.await_count, 2)
+        self.assertIn("程序实际执行完毕", (await self.event(owner, "/history all")).sent[0])
+
+    async def test_read_only_help_and_bad_proposal_do_not_use_management_write_slot(self):
+        from unittest.mock import AsyncMock
+
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        handler = AsyncMock(return_value="唯一一次写入")
+        self.gateway.commands.register("sample", routes={"write": {1}}, help="/sample write",
+                                       authorize=lambda _: True, handle=handler)
+        event = NativeEvent(sender=owner.subject, ident="read-then-write", text="请执行测试操作")
+
+        async def agent():
+            turn = event.get_extra("_ffa_management_turn")
+            self.assertEqual((await turn.call("reminder", ["add", "+90s", "内容"]))["status"], "clarify")
+            self.assertEqual((await turn.call("help", []))["delivery"], "submitted")
+            self.assertIsNone(turn.command)
+            self.assertEqual((await turn.call("sample", ["write"]))["delivery"], "submitted")
+
+        await self.gateway.run(event, agent)
+        handler.assert_awaited_once()
+        self.assertIn("唯一一次写入", event.sent[-1])
+
+    async def test_management_clarification_fills_an_empty_agent_reply(self):
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        event = NativeEvent(sender=owner.subject, ident="clarify-empty", text="帮我改一下")
+
+        async def agent():
+            turn = event.get_extra("_ffa_management_turn")
+            self.assertEqual((await turn.call("reminder", ["delete"]))["status"], "clarify")
+
+        await self.gateway.run(event, agent)
+        self.assertEqual(event.sent, ["【系统】请明确要执行的操作、参数和目标。"])
+
+    async def test_management_switch_rechecks_global_and_current_private_scope(self):
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        member = Account(self.providers[0], "32")
+        self.ids.observe(member)
+        self.ids.provision(owner, member, Role.MEMBER)
+        await self.event(owner, "/naturalcommand off")
+        for account, expected in ((owner, False), (member, True)):
+            event = NativeEvent(sender=account.subject, ident=f"scope-{account.subject}", text="查询")
+
+            async def agent():
+                turn = event.get_extra("_ffa_management_turn")
+                self.assertEqual(turn.available(), expected)
+
+            await self.gateway.run(event, agent)
+        await self.event(owner, "/naturalcommand on")
+        event = NativeEvent(sender=owner.subject, ident="switch-on", text="查询")
+
+        async def in_flight():
+            turn = event.get_extra("_ffa_management_turn")
+            self.assertTrue(turn.available())
+            await self.event(owner, "/naturalcommand global off")
+            self.assertFalse(turn.available())
+            denied = await turn.call("help", [])
+            self.assertEqual(denied["status"], "denied")
+
+        await self.gateway.run(event, in_flight)
+        self.assertEqual(event.sent, ["【系统】当前消息的管理权限或来源不满足要求。"])
+
     async def test_management_commit_prevents_regeneration_and_repeat_write(self):
         from unittest.mock import AsyncMock
 
