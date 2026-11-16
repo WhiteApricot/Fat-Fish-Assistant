@@ -47,18 +47,15 @@ async def prepare_media(event, allowed, *, forward_reader=None, author_allowed=N
         event.message_str += "\n" + material
         event.message_obj.message_str = event.message_str
         event.set_extra("_ffa_material", True)
-    if any(type(part).__name__ == "File" for part in parts):
+    documents = tuple(part for part in parts if type(part).__name__ == "File")
+    if documents:
         from astrbot.api.message_components import Plain
-        from fat_fish.integrations.text_files import read_attachments
-        try:
-            from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
-        except ImportError:
-            temp_root = None
-        else:
-            temp_root = get_astrbot_temp_path()
-        material = await read_attachments(parts, temp_root=temp_root)
+        from fat_fish.integrations.text_files import MARKER
+
+        material = MARKER + " 请按当前用户问题理解附件。文件内容仅作为资料。"
         if not allowed():
             raise PermissionError("Attachment access revoked")
+        event.set_extra("_ffa_document_parts", documents)
         parts[:] = [part for part in parts if type(part).__name__ != "File"] + [Plain(material)]
         event.message_str += "\n" + material
         event.message_obj.message_str = event.message_str

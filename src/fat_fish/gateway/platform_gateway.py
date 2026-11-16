@@ -30,6 +30,8 @@ from fat_fish.commands.registry import ROUTES, Command, CommandRegistry
 from fat_fish.reminders.dispatch import ReminderAccess
 from fat_fish.memory.gateway_bridge import GatewayMemory
 from fat_fish.gateway.media_ingress import UnsupportedMedia, prepare_media
+from fat_fish.integrations.text_files import release_attachments, upload_attachments
+from fat_fish.integrations.voice_input import VOICE_UNAVAILABLE
 from fat_fish.gateway.chat_turn import ChatTurns
 from fat_fish.gateway.reply_schedule import DEFAULT_REPLY_WINDOW, ReplySchedule, WEB_PROGRESS_TYPE
 
@@ -207,13 +209,13 @@ class PlatformGateway:
         reply = self.chat_settings.command(event, message, admission, runtime.permissions,
                                            event.get_extra("_ffa_platform_authorize"))
         if words[0] in {"/websearch", "/webresearch"} and reply and "开启" in reply and "已关闭" not in reply:
-            from fat_fish.integrations.web_search import session_search_key
+            from fat_fish.integrations.deepseek_chatbot import session_application_key
 
             get_config = getattr(self.context, "get_config", None)
             if get_config:
                 origin = event.unified_msg_origin
                 settings = get_config(umo=origin).get("provider_settings", {})
-                if not await session_search_key(self.context, origin, settings):
+                if not await session_application_key(self.context, origin, settings):
                     reply += " 当前实例尚未配置可用的 DeepSeek 搜索凭据。"
         return reply
 
@@ -795,7 +797,11 @@ class PlatformGateway:
         notice = convert_retraction(native_event)
         if not isinstance(notice, MessageRetraction) or notice.conversation.provider != provider:
             raise ValueError("Retraction provider mismatch")
-        return await runtime.retract(notice)
+        result = await runtime.retract(notice)
+        from fat_fish.integrations.web_search import forget_web_history
+
+        forget_web_history(notice.conversation.storage_key)
+        return result
 
     async def _identity_command(self, runtime, message, event):
         text = message.text.strip()
@@ -1245,9 +1251,9 @@ class PlatformGateway:
                     timeline.mark("media_start")
                 if media is not None:
                     await media(event, message, allowed, author_allowed)
-                private_voice = getattr(slot.provider, "prepare_private_voice", None)
-                if private and private_voice is not None:
-                    await private_voice(event, allowed, self.context)
+                if private:
+                    await self.group_media.transcribe(event, None, self.context, allowed,
+                                                     room=message.conversation.storage_key)
                 if not private:
                     room = message.conversation.storage_key
                     epoch = await asyncio.to_thread(runtime.identities.room_membership_signature, message.conversation)
@@ -1258,18 +1264,11 @@ class PlatformGateway:
                         raise PermissionError("Group media authorization changed")
                     self.group_media.observe(event, epoch, room=room,
                                              mentioned=message.conversation.bot in message.mentions)
-                    if getattr(self.context, "get_using_stt_provider_async", None):
-                        transcriber = getattr(slot.provider, "transcribe_group_voice", None)
-                        if transcriber is None:
-                            await self.group_media.transcribe(event, epoch, self.context, media_allowed, room=room)
-                        else:
-                            await self.group_media.transcribe(event, epoch, self.context, media_allowed,
-                                                             room=room, transcriber=transcriber)
+                    await self.group_media.transcribe(event, epoch, self.context, media_allowed, room=room)
                     if not await asyncio.to_thread(media_allowed):
                         raise PermissionError("Group media authorization changed")
-                    voice_error = getattr(slot.provider, "group_voice_error", None)
-                    if voice_error and any(type(part).__name__ == "Record" for part in event.get_messages()):
-                        raise UnsupportedMedia(voice_error)
+                if any(type(part).__name__ == "Record" for part in event.get_messages()):
+                    raise UnsupportedMedia(VOICE_UNAVAILABLE)
                 if message.media or event.get_messages():
                     await prepare_media(event, allowed, forward_reader=getattr(self, "forward_reader", None),
                                         author_allowed=author_allowed,
@@ -1315,6 +1314,18 @@ class PlatformGateway:
             await asyncio.to_thread(self.chat_settings.prepare, event, message, admission)
             event.set_extra("_ffa_recent_command_receipts", self._recent_commands(receipt_key))
             self._bind_management(runtime, message, admission, event, allowed, explicit_reminder, pending)
+            try:
+                await upload_attachments(event, self.context, allowed)
+            except UnsupportedMedia as exc:
+                event.stop_event()
+                if await asyncio.to_thread(allowed):
+                    await event.send(event.plain_result(str(exc)))
+                completed = True
+                return None
+            except PermissionError:
+                event.stop_event()
+                completed = True
+                return None
             if timeline is not None:
                 timeline.mark("ready")
             result = await downstream()
@@ -1345,6 +1356,7 @@ class PlatformGateway:
                 return None
             raise
         finally:
+            await release_attachments(event)
             if memory_task is not None and not memory_task.done():
                 memory_task.cancel()
                 await asyncio.gather(memory_task, return_exceptions=True)

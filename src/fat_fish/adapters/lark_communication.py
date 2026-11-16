@@ -12,7 +12,6 @@ from fat_fish.adapters.astrbot_communication import AstrBotCommunication
 from fat_fish.adapters.lark_forwards import message_type, read_forward
 from fat_fish.adapters.lark_latency import attach_native_ingress, ensure_trace, submitted, trace
 from fat_fish.adapters.lark_retraction import LarkRetractions
-from fat_fish.adapters.lark_voice import VOICE_UNAVAILABLE, transcribe
 from fat_fish.communication.model import Capability, ChatKind, MessageRetraction, NotSubmitted
 from fat_fish.gateway.reply_schedule import WEB_PROGRESS_TYPE
 
@@ -94,8 +93,6 @@ class LarkCommunication(AstrBotCommunication):
     }
     guard_stream = staticmethod(guard_stream)
     reply_window = (1.0, 3.5)
-    transcribe_group_voice = staticmethod(transcribe)
-    group_voice_error = VOICE_UNAVAILABLE
 
     def ingress_trace(self, event, arrived):
         return ensure_trace(event, self.context.private_dir, arrived)
@@ -180,24 +177,6 @@ class LarkCommunication(AstrBotCommunication):
         record = Record(file=None)
         parts.append(record)
         return record
-
-    async def prepare_private_voice(self, event, allowed, context):
-        if message_type(event) != "audio":
-            return
-        from astrbot.api.message_components import Plain
-        from fat_fish.gateway.media_ingress import UnsupportedMedia
-
-        lookup = getattr(context, "get_using_stt_provider_async", None)
-        provider = await lookup(event.unified_msg_origin) if lookup else None
-        record = self._voice_record(event)
-        text = await transcribe(record, provider, allowed) if provider is not None else ""
-        if not allowed():
-            raise PermissionError("Voice authorization revoked")
-        if not text:
-            raise UnsupportedMedia(VOICE_UNAVAILABLE)
-        event.message_str = event.message_obj.message_str = text
-        parts = event.get_messages()
-        parts[:] = [Plain(text) if part is record else part for part in parts]
 
     @staticmethod
     def is_external_material(event):

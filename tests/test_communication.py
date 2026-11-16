@@ -734,12 +734,12 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
 
         components = SimpleNamespace(Plain=Plain)
 
-        async def read(parts, *, temp_root):
-            self.assertIsInstance(parts[0], File)
-            return "[FFA_FILE_MATERIAL] fixture"
+        async def upload(event, context, allowed):
+            self.assertTrue(allowed())
+            self.assertIsInstance(event.get_extra("_ffa_document_parts")[0], File)
 
         with patch.dict(sys.modules, {"astrbot.api.message_components": components}), patch(
-            "fat_fish.integrations.text_files.read_attachments", read
+            "fat_fish.gateway.platform_gateway.upload_attachments", upload
         ):
             for account in (owner, qq):
                 address = account.provider
@@ -994,22 +994,18 @@ class SharedMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rendered[0], rendered[1])
 
     async def test_local_attachment_is_restricted_to_native_temporary_storage(self):
-        from fat_fish.integrations.text_files import read_attachments
+        from fat_fish.integrations.text_files import read_materialized
 
         with tempfile.TemporaryDirectory() as directory:
             native = Path(directory) / "native"
             native.mkdir()
             allowed = native / "sample.txt"
-            allowed.write_text("可读文件", encoding="utf-8")
+            allowed.write_bytes(b"fixture")
             outside = Path(directory) / "external.txt"
-            outside.write_text("外部私有文件", encoding="utf-8")
-            file_type = type("File", (), {"name": "sample.txt"})
-            good, bad = file_type(), file_type()
-            good.file_, bad.file_ = str(allowed), str(outside)
-            material = await read_attachments([good, bad], temp_root=native)
-            self.assertIn("可读文件", material)
-            self.assertNotIn("外部私有文件", material)
-            self.assertIn("未能读取", material)
+            outside.write_bytes(b"private fixture")
+            self.assertEqual(read_materialized(allowed, native, 64), b"fixture")
+            with self.assertRaises(ValueError):
+                read_materialized(outside, native, 64)
 
 
 class PersonaScopeTests(unittest.TestCase):

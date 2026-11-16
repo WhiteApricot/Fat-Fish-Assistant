@@ -42,50 +42,47 @@ class GroupMedia:
             self.speech.pop(key,None)
             self.pending.pop(key,None)
 
-    async def transcribe(self,event,epoch,context,allowed,*,room=None,transcriber=None):
+    async def transcribe(self,event,epoch,context,allowed,*,room=None):
         """Make authorized voice visible before smart decisions and memory capture."""
-        from astrbot.api.message_components import Plain
         key=(room or str(event.get_group_id()),epoch,str(event.get_sender_id()))
         parts=event.get_messages()
         records=[(i,p) for i,p in enumerate(parts) if p.__class__.__name__=='Record']
         mentioned=event.get_extra('_ffa_group_mentioned',False)
         body=''.join(p.text for p in parts if p.__class__.__name__=='Plain').strip()
-        cached=self.speech.get(key)
+        cached=self.speech.get(key) if epoch is not None else None
         if not records:
             if mentioned and not body and not any(p.__class__.__name__=='Reply' for p in parts) and cached and self.clock()-cached[0]<=90:
+                from astrbot.api.message_components import Plain
+
                 if not allowed():raise asyncio.CancelledError()
                 text='[接续本人刚才的语音，请回应其内容]\n'+cached[2]
                 parts.append(Plain(text));event.message_str+='\n'+text
                 event.message_obj.message_str+='\n'+text
                 return True
             return False
-        if context is None:return False
-        provider=await context.get_using_stt_provider_async(event.unified_msg_origin)
+        from astrbot.api.message_components import Plain
+        from fat_fish.integrations.voice_input import transcribe_record
+
         if not allowed():raise asyncio.CancelledError()
-        if provider is None:return False
         changed=False
         for index,record in records:
             ref=(record.file,record.url,record.path)
-            cached=self.speech.get(key)
+            cached=self.speech.get(key) if epoch is not None else None
             if cached and self.clock()-cached[0]<=90 and cached[1]==ref:
                 text=cached[2]
             else:
-                try:
-                    if transcriber is None:
-                        path=await record.convert_to_file_path()
-                        async with asyncio.timeout(25):text=await provider.get_text(audio_url=path)
-                    else:
-                        text=await transcriber(record,provider,allowed)
-                except Exception:
-                    continue
+                text=await transcribe_record(record,context,event,allowed)
             if not allowed():raise asyncio.CancelledError()
             if not isinstance(text,str) or not text.strip():continue
             text=text.strip()[:4000]
-            self.speech[key]=(self.clock(),ref,text)
-            while len(self.speech)>256:self.speech.pop(next(iter(self.speech)))
-            rendered=('[接续本人刚才的语音，请回应其内容]\n' if mentioned and not body else '[语音转写]\n')+text
+            if epoch is not None:
+                self.speech[key]=(self.clock(),ref,text)
+                while len(self.speech)>256:self.speech.pop(next(iter(self.speech)))
+            rendered = text
+            if epoch is not None:
+                rendered=('[接续本人刚才的语音，请回应其内容]\n' if mentioned and not body else '[语音转写]\n')+text
             parts[index]=Plain(rendered)
-            event.message_str+='\n'+rendered
-            event.message_obj.message_str+='\n'+rendered
+            event.message_str = (event.message_str + '\n' if event.message_str else '') + rendered
+            event.message_obj.message_str = event.message_str
             changed=True
         return changed

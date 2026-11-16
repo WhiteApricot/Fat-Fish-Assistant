@@ -1,8 +1,6 @@
 """Use the active AstrBot conversation for web reply phrasing and progress."""
 
 import asyncio
-from contextlib import contextmanager
-from contextvars import ContextVar
 import logging
 import random
 import time
@@ -14,44 +12,6 @@ from fat_fish.memory.experience import contains_secret
 _log = logging.getLogger(__name__)
 PROGRESS_JITTER = 0.5
 PROGRESS_SECONDS = 6
-_timeouts = ContextVar("ffa_web_timeouts", default=None)
-
-
-@contextmanager
-def observe_search_timeouts():
-    observed = []
-    token = _timeouts.set(observed)
-    try:
-        yield observed
-    finally:
-        _timeouts.reset(token)
-
-
-def note_search_timeout():
-    observed = _timeouts.get()
-    if observed is not None:
-        observed.append(True)
-
-
-async def notify_search_timeout(event, *, continuing):
-    from astrbot.api.event import MessageChain
-    from fat_fish.persona.private_persona import apply_affix
-
-    key = "_ffa_search_timeout_continuing" if continuing else "_ffa_search_timeout_stopped"
-    allowed = event.get_extra("_ffa_platform_authorize")
-    if not allowed or not await asyncio.to_thread(allowed) or event.get_extra(key):
-        return
-    event.set_extra(key, True)
-    await finish_web_progress(event)
-    text = ("有一项资料等得太久，我会继续核对已经拿到的内容。" if continuing
-            else "这次查资料等得太久，暂时没能完成核对。")
-    try:
-        await event.send(MessageChain(type=WEB_PROGRESS_TYPE).message(
-            apply_affix(text, event.get_extra("_ffa_persona_notes", ""))))
-    except (OSError, RuntimeError) as exc:
-        _log.info("Web timeout notice unavailable: %s", type(exc).__name__)
-
-
 def start_web_progress(event, proposed):
     managed = event.get_extra('_ffa_platform_admission') is not None
     if not managed or event.get_extra('_ffa_web_progress_task'):

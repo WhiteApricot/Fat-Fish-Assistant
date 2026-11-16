@@ -32,6 +32,32 @@ class NativeMediaTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(PermissionError):
                 await prepare_media(event, lambda: True, author_allowed=lambda account: account != "42")
 
+    async def test_deepseek_file_ids_only_enter_active_provider_payload(self):
+        from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
+        from fat_fish.integrations.text_files import MARKER, file_request, install_deepseek_files
+
+        selected = SimpleNamespace(provider_config={"api_base": "https://api.deepseek.com/v1"})
+        another = SimpleNamespace(provider_config=selected.provider_config)
+        old = {"role": "user", "content": MARKER + " previous"}
+        current = {"role": "user", "content": MARKER + " current"}
+
+        async def prepare(_provider):
+            messages = [dict(old), dict(current)]
+            return {"model": "deepseek-flash", "messages": messages}, messages
+
+        with patch.object(ProviderOpenAIOfficial, "_prepare_chat_payload", prepare):
+            restore = install_deepseek_files()
+            self.addCleanup(restore)
+            token = file_request.set((selected, ("file-api-fixture",), lambda: True))
+            try:
+                _, messages = await ProviderOpenAIOfficial._prepare_chat_payload(selected)
+                self.assertEqual(messages[0], old)
+                self.assertEqual(messages[1]["content"][-1], {"type": "file", "file_id": "file-api-fixture"})
+                _, messages = await ProviderOpenAIOfficial._prepare_chat_payload(another)
+                self.assertEqual(messages, [old, current])
+            finally:
+                file_request.reset(token)
+
     async def test_provider_fixtures_reach_native_media_consumers(self):
         from PIL import Image as PillowImage
 
@@ -94,6 +120,6 @@ class NativeMediaTests(unittest.IsolatedAsyncioTestCase):
                 elif kind == "video":
                     self.assertTrue(any("movie.mp4" in text for text in extras))
                 elif kind == "file":
-                    self.assertIn('"正文": "fixture"', prompt)
+                    self.assertIn("[FFA_FILE_MATERIAL]", prompt)
                 elif kind == "forward":
                     self.assertIn("转发正文", prompt)

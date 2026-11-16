@@ -87,6 +87,7 @@ class ToolText:
 def install_deepseek_tool_output():
     from astrbot.core.agent.message import SystemMessageSegment
     from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+    from fat_fish.integrations.text_files import file_request
 
     original = ToolLoopAgentRunner._iter_llm_responses
     native_logger = logging.getLogger("astrbot")
@@ -149,10 +150,31 @@ def install_deepseek_tool_output():
         finally:
             context.messages[:] = [message for message in context.messages if message is not notice]
 
-    ToolLoopAgentRunner._iter_llm_responses = boundary
+    async def turn_boundary(runner, *, include_model=True):
+        event = getattr(runner.run_context.context, "event", None)
+        uploads = event.get_extra("_ffa_document_uploads") if event is not None else None
+        async with aclosing(boundary(runner, include_model=include_model)) as responses:
+            while True:
+                token = None
+                if uploads and uploads[2]:
+                    provider, _, ids = uploads
+                    if runner.provider is not provider:
+                        raise RuntimeError("File input requires the selected official DeepSeek provider")
+                    allowed = event.get_extra("_ffa_platform_authorize")
+                    token = file_request.set((provider, tuple(ids), allowed))
+                try:
+                    response = await anext(responses)
+                except StopAsyncIteration:
+                    return
+                finally:
+                    if token is not None:
+                        file_request.reset(token)
+                yield response
+
+    ToolLoopAgentRunner._iter_llm_responses = turn_boundary
 
     def restore():
-        if ToolLoopAgentRunner._iter_llm_responses is boundary:
+        if ToolLoopAgentRunner._iter_llm_responses is turn_boundary:
             ToolLoopAgentRunner._iter_llm_responses = original
             native_logger.removeFilter(private_tool_log)
 

@@ -253,58 +253,59 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("请求未执行", response.completion_text)
                 self.assertNotIn("不可信", response.completion_text)
 
-    async def test_search_timeout_notice_and_review_keep_existing_pipeline(self):
-        from fat_fish.integrations.web_chat import note_search_timeout
+    async def test_native_link_replays_signed_state_only_in_same_conversation(self):
+        from fat_fish.integrations.web_search import forget_web_history, offer_search
+        from test_communication import NativeEvent
+
+        url = "https://example.org/"
+        first = {"role": "assistant", "content": "example documentation",
+                 "server_tool_calls": [{"calls": [{"status": "completed", "kind": "read_link",
+                                                  "page": {"url": url}, "signature": "fixture"}]}]}
+        followup = {"role": "assistant", "content": "followup from source"}
+
+        async def read(text, actor="fixture", query="summarize the page"):
+            event = NativeEvent(text=text)
+            message = convert(event)
+            event.set_extra("_ffa_platform_admission", SimpleNamespace(principal_id=actor))
+            event.set_extra("_ffa_message_event", message)
+            request = SimpleNamespace(func_tool=None, system_prompt="")
+            offer_search(event, request, {}, may_search=lambda: True, resolved_key="fixture")
+            run = SimpleNamespace(context=SimpleNamespace(event=event))
+            return await request.func_tool.get_tool("web_search_deepseek").call(
+                run, mode="read_url", query=query)
+
+        with patch("fat_fish.integrations.web_search.DeepSeekChatBot.web",
+                   new=AsyncMock(side_effect=(first, followup))) as native:
+            self.assertEqual(json.loads(await read(url + " What does the page describe?", query=url))["来源"][0]["url"],
+                             url)
+            initial = native.await_args.args[0][0]["content"]
+            self.assertIn("What does the page describe?", initial)
+            self.assertEqual(initial.count(url), 1)
+            self.assertIn("请发送", await read("more?", actor="other"))
+            self.assertEqual(json.loads(await read("more?", query=f"Read {url} again"))["资料"],
+                             "followup from source")
+            self.assertIs(native.await_args.args[0][1], first)
+            self.assertNotIn(url, native.await_args.args[0][-1]["content"])
+            forget_web_history(convert(NativeEvent()).conversation.storage_key)
+            self.assertIn("请发送", await read("more?"))
+            self.assertEqual(native.await_count, 2)
+
+    async def test_native_web_failure_is_reported_without_repeat(self):
+        from fat_fish.integrations.deepseek_chatbot import DeepSeekError
         from fat_fish.integrations.web_search import offer_search
         from test_communication import NativeEvent
 
         event = NativeEvent(text="核对公开产品文档")
         event.set_extra("_ffa_platform_admission", True)
-        event.set_extra("_ffa_platform_authorize", lambda: True)
         request = SimpleNamespace(func_tool=None, system_prompt="")
         offer_search(event, request, {}, may_search=lambda: True, resolved_key="fixture")
-        search = request.func_tool.get_tool("web_search_deepseek")
-        run = SimpleNamespace(context=SimpleNamespace(event=event, context=None))
-
-        async def timed_out(*_args, **_kwargs):
-            note_search_timeout()
-            return []
-
-        with patch("fat_fish.integrations.web_search.search", side_effect=timed_out) as lookup:
-            for query in ("official source", "official guide"):
-                result = await search.call(run, query=query)
-                self.assertEqual(json.loads(result)["status"], "insufficient")
-            self.assertEqual(lookup.await_count, 2)
-        self.assertEqual(len(event.sent), 1)
-        self.assertIn("没能完成", event.sent[0].get_plain_text())
-
-    async def test_real_review_logic_checks_evidence_after_supplemental_search(self):
-        from fat_fish.integrations.web_answer_review import DRAFT_PROMPT, REVIEW_PROMPT, review_web_evidence
-        from test_communication import NativeEvent
-
-        event = NativeEvent(text="核对发行范围")
-        first = {"url": "https://example.org/initial", "host": "example.org", "snippet": "Initial announcement only."}
-        later = {"url": "https://example.org/catalog", "host": "example.org", "content": "The current release has three editions."}
-        def reply(text):
-            return SimpleNamespace(completion_text=text)
-
-        draft = reply("候选答案")
-        unusable = reply(json.dumps({"findings": "wrong", "references": [{"id": 1, "quote": "fabricated quote"}],
-                                     "queries": ["official catalog"]}))
-        verified = reply(json.dumps({"findings": "有三个版本", "references": [
-            {"id": 1, "quote": "The current release has three editions."}], "queries": []}))
-        provider = SimpleNamespace(text_chat=AsyncMock(side_effect=(draft, unusable, verified)))
-        context = SimpleNamespace(get_using_provider_async=AsyncMock(return_value=provider))
-        event.set_extra("_ffa_web_include_sources", True)
-        with patch("fat_fish.integrations.web_answer_review.search", new=AsyncMock(return_value=[later])) as search:
-            result = await review_web_evidence(context, event, [first], "fixture", question="发行多少个版本",
-                                               claim=None, may_search=lambda: True)
-        self.assertEqual(result["status"], "verified")
-        self.assertEqual(result["sources"][0]["url"], later["url"])
-        self.assertIn("三个版本", result["findings"])
-        search.assert_awaited_once_with("official catalog", "fixture", read_content=True)
-        self.assertEqual([call.kwargs["system_prompt"] for call in provider.text_chat.await_args_list],
-                         [DRAFT_PROMPT, REVIEW_PROMPT, REVIEW_PROMPT])
+        tool = request.func_tool.get_tool("web_search_deepseek")
+        run = SimpleNamespace(context=SimpleNamespace(event=event))
+        with patch("fat_fish.integrations.web_search.DeepSeekChatBot.web",
+                   new=AsyncMock(side_effect=DeepSeekError("timeout"))) as lookup:
+            self.assertIn("搜索失败", await tool.call(run, mode="search", query="official source"))
+            self.assertIn("已请求", await tool.call(run, mode="search", query="official guide"))
+            lookup.assert_awaited_once()
 
     async def test_merge_forward_uses_sdk_tree_and_partial_results(self):
         from fat_fish.adapters.lark_forwards import read_forward
@@ -396,15 +397,19 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(ffmpeg, "Put the locked runtime's FFmpeg on PATH")
             subprocess.run([ffmpeg, "-nostdin", "-loglevel", "error", "-i", str(wav), str(opus)], check=True)
 
-            async def recognize(*, audio_url):
-                with wave.open(audio_url, "rb") as audio:
-                    self.assertEqual(audio.getsampwidth(), 2)
-                    self.assertGreater(audio.getnframes(), 0)
+            async def recognize(audio_url, *, allowed):
+                with Path(audio_url).open("rb") as audio:
+                    self.assertIn(b"OpusHead", audio.read(64))
                 return "识别语音样本"
 
-            service = SimpleNamespace(get_text=AsyncMock(side_effect=recognize))
+            speech = AsyncMock(side_effect=recognize)
+            for patcher in (
+                patch("fat_fish.integrations.voice_input.DeepSeekChatBot.transcribe", new=speech),
+                patch("fat_fish.integrations.voice_input.session_application_key", new=AsyncMock(return_value="fixture")),
+            ):
+                patcher.start()
+                self.addCleanup(patcher.stop)
             gateway = PlatformGateway(private=root)
-            gateway.context = SimpleNamespace(get_using_stt_provider_async=AsyncMock(return_value=service))
             runtime = gateway.communication()
             ids = runtime.identities
             ids.confirm_owner_challenge(owner, ids.issue_owner_challenge(owner))
@@ -424,21 +429,21 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
 
             private = event("om_private", voice=True)
             await gateway.run(private, AsyncMock())
-            self.assertEqual(private.message_str, "识别语音样本")
+            self.assertIn("识别语音样本", private.message_str)
             voice = event("om_group_voice", room=group, voice=True)
             ids.set_room(owner, convert(voice).conversation, "mention", [owner])
             downstream = AsyncMock()
             await gateway.run(voice, downstream)
             downstream.assert_not_awaited()
-            self.assertEqual(service.get_text.await_count, 1)
+            self.assertEqual(speech.await_count, 1)
             other = event("om_other", room=group, author="ou_bob", mentioned=True)
             await gateway.run(other, AsyncMock())
             self.assertNotIn("识别语音样本", other.message_str)
             followup = event("om_followup", room=group, mentioned=True)
             await gateway.run(followup, AsyncMock())
             self.assertIn("识别语音样本", followup.message_str)
-            self.assertEqual(service.get_text.await_count, 2)
-            service.get_text.side_effect = OSError("test")
+            self.assertEqual(speech.await_count, 2)
+            speech.side_effect = OSError("test")
             failed = event("om_fail", voice=True)
             await gateway.run(failed, AsyncMock())
             self.assertIn("没能转写", failed.sent[0])
@@ -446,7 +451,8 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             await runtime.stop_all()
 
     async def test_shared_web_search_uses_current_admission(self):
-        from fat_fish.integrations.web_search import clean_reply, offer_search, session_search_key
+        from fat_fish.integrations.deepseek_chatbot import session_application_key
+        from fat_fish.integrations.web_search import clean_reply, offer_search
         from test_communication import NativeEvent
 
         self.assertEqual(clean_reply("答复\n<｜DSML｜function_calls>\n<｜DSML｜invoke>参数</｜DSML｜invoke>\n</｜DSML｜function_calls>"), "答复")
@@ -458,31 +464,32 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             provider = SimpleNamespace(provider_config={"api_base": "https://api.deepseek.com/v1"},
                                        get_current_key=Mock(return_value="fixture"))
             context = SimpleNamespace(get_using_provider_async=AsyncMock(return_value=provider))
-            key = await session_search_key(context, event.unified_msg_origin, {})
+            key = await session_application_key(context, event.unified_msg_origin, {})
             context.get_using_provider_async.assert_awaited_once_with(event.unified_msg_origin)
             offer_search(event, request, {}, may_search=permission, resolved_key=key)
             tool = request.func_tool.get_tool("web_search_deepseek")
             usage = SimpleNamespace(context=SimpleNamespace(event=event, context=None))
-            rows = [{"title": "Docs", "url": "https://docs.python.org", "host": "docs.python.org", "snippet": "official"}]
-            with patch("fat_fish.integrations.web_search.search", new=AsyncMock(return_value=rows)) as search, \
-                 patch("fat_fish.integrations.web_answer_review.review_web_evidence",
-                       new=AsyncMock(return_value={"status": "verified"})):
-                result = await tool.call(usage, query="python docs")
-                self.assertEqual(json.loads(result)["status"], "verified")
-                search.assert_awaited_once_with("python docs", "fixture", read_content=False)
+            rows = [{"title": "Docs", "url": "https://docs.python.org"}]
+            reply = {"content": "official", "server_tool_calls": [
+                {"calls": [{"kind": "search", "status": "completed", "sources": rows}]}]}
+            with patch("fat_fish.integrations.web_search.DeepSeekChatBot.web",
+                       new=AsyncMock(return_value=reply)) as search:
+                result = await tool.call(usage, mode="search", query="python docs")
+                self.assertEqual(json.loads(result)["来源"], rows)
+                self.assertTrue(search.await_args.args[0][0]["content"].endswith("python docs"))
                 permission.return_value = False
-                await tool.call(usage, query="second query")
+                await tool.call(usage, mode="search", query="second query")
                 search.assert_awaited_once()
 
     async def test_search_rejects_nonofficial_chat_credential_sources(self):
-        from fat_fish.integrations.web_search import session_search_key
+        from fat_fish.integrations.deepseek_chatbot import session_application_key
 
         provider = SimpleNamespace(provider_config={}, get_current_key=Mock(return_value="unrelated"))
         context = SimpleNamespace(get_using_provider_async=AsyncMock(return_value=provider))
         for endpoint in ("http://api.deepseek.com/v1", "https://api.deepseek.com.example.org/v1",
                          "https://api.deepseek.com@proxy.example.org/v1", "https://api.deepseek.com:8443/v1"):
             provider.provider_config["api_base"] = endpoint
-            key = await session_search_key(context, "lark:FriendMessage:fixture",
+            key = await session_application_key(context, "lark:FriendMessage:fixture",
                                            {"websearch_deepseek_key": ["dedicated"]})
             self.assertEqual(key, "dedicated")
         provider.get_current_key.assert_not_called()
