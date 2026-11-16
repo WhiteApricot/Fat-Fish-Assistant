@@ -187,6 +187,8 @@ class FatFishGuard(Star):
         from astrbot.api.event import MessageChain
         text=response.completion_text or ''
         clean=clean_reply(text)
+        if event.get_extra("_ffa_management_followup"):
+            event.set_extra("_ffa_management_persona_text", clean)
         timeline = event.get_extra("_ffa_lark_latency")
         if timeline is not None and clean.strip():
             timeline.mark("T7")

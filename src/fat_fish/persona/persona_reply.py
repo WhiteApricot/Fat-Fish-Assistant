@@ -16,6 +16,18 @@ def reply_segments(text):
     return [line.strip() for line in lines.splitlines() if line.strip()]
 
 
+def management_reply(text, *, notes, previous_notes):
+    """Use the Agent's reaction to a delivered system receipt."""
+    from fat_fish.integrations.web_search import clean_reply
+
+    reply = clean_reply(text or "").strip()
+    if not reply or len(reply) > 240 or "【系统】" in reply:
+        reply = "嗯，结果就在上面那条回执里。"
+    elif notes != previous_notes:
+        reply = apply_affix(reply, previous_notes, remove=True)
+    return apply_affix(reply, notes)
+
+
 async def render(context, origin, platform, data, *, notes, instructions):
     if context is None or not hasattr(context, "persona_manager"):
         return None

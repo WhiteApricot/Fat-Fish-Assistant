@@ -289,6 +289,37 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handler.await_count, 2)
         self.assertIn("程序实际执行完毕", (await self.event(owner, "/history all")).sent[0])
 
+    async def test_management_sends_one_persona_reply_using_updated_preferences(self):
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        event = NativeEvent(sender=owner.subject, ident="persona-after", text="从现在起每句话开头加喵")
+        event.plain_result = lambda body: SimpleNamespace(chain=[body], get_plain_text=lambda: body)
+
+        async def agent():
+            event.set_extra("_ffa_agent_running", True)
+            turn = event.get_extra("_ffa_management_turn")
+            receipt = await turn.call("persona", ["add", "每句话前面加喵"])
+            self.assertEqual(receipt["delivery"], "submitted")
+            event.set_extra("_ffa_agent_finished", True)
+            event.set_extra("_ffa_management_persona_text", "好呀，听你的。")
+            await event.send(event.plain_result("这段交给回执后的统一发送。"))
+
+        await self.gateway.run(event, agent)
+        sent = [item.get_plain_text() for item in event.sent]
+        self.assertEqual(len(sent), 2)
+        self.assertTrue(sent[0].startswith("【系统】"))
+        self.assertEqual(sent[1], "喵好呀，听你的。")
+
+    async def test_reminder_targeting_the_authenticated_sender_normalizes_to_self(self):
+        from fat_fish.reminders.reminders import ReminderStore
+
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        self.gateway.reminders = ReminderStore(self.gateway.path.with_name("reminders.sqlite"))
+        event = await self.event(owner, "90秒后提醒我", proposal=("reminder", "addto-exact", "31", "+90s", "once", "喝水"))
+        self.assertIn("已创建提醒", event.sent[0])
+        self.assertEqual(self.gateway.reminders.rows()[0]["target"], owner.subject)
+
     async def test_read_only_help_and_bad_proposal_do_not_use_management_write_slot(self):
         from unittest.mock import AsyncMock
 
@@ -349,7 +380,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(denied["status"], "denied")
 
         await self.gateway.run(event, in_flight)
-        self.assertEqual(event.sent, ["【系统】当前消息的管理权限或来源不满足要求。"])
+        self.assertEqual(event.sent, ["【系统】当前会话的自然语言指令已关闭。"])
 
     async def test_management_commit_prevents_regeneration_and_repeat_write(self):
         from unittest.mock import AsyncMock

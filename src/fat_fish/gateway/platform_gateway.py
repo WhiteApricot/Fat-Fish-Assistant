@@ -22,7 +22,7 @@ from fat_fish.memory.experience import contains_secret, sensitive_information
 from fat_fish.participation.participation import DEFAULT_COOLDOWN, Participation
 from fat_fish.persona.chat_settings import ChatSettings, feature_enabled
 from fat_fish.persona.persona_settings import effective_notes
-from fat_fish.persona.persona_reply import render
+from fat_fish.persona.persona_reply import management_reply, render
 from fat_fish.commands.confirmation import PendingActions
 from fat_fish.commands.agent_tool import ManagementTurn
 from fat_fish.commands.command_help import platform_help
@@ -430,6 +430,7 @@ class PlatformGateway:
             self._record_command(receipt_key, ["/" + command.name, *command.args], receipt)
             delivery = await self._send_command_receipt(event, command, receipt, management=True)
             event.set_extra("_ffa_management_done", delivery != "not_submitted")
+            event.set_extra("_ffa_management_followup", delivery == "submitted")
             timeline = event.get_extra("_ffa_lark_latency")
             if timeline is not None:
                 timeline.management_receipt = delivery
@@ -438,7 +439,7 @@ class PlatformGateway:
         event.set_extra("_ffa_management_turn", ManagementTurn(
             event, self.commands, message, allowed,
             lambda: feature_enabled(self.chat_settings.read(), "naturalcommand", scope),
-            execute, explicit_reminder=explicit_reminder, deliver=deliver,
+            execute, explicit_reminder=explicit_reminder, deliver=deliver, confirmation_pending=pending is not None,
         ))
 
     async def _memory_command(self, runtime, message, admission, words, event):
@@ -1040,6 +1041,7 @@ class PlatformGateway:
         turn = None
         schedule = None
         memory_task = None
+        persona_result = None
 
         async def ready_to_submit():
             await turn.ready()
@@ -1066,9 +1068,10 @@ class PlatformGateway:
             nonlocal sequence
             progress = getattr(result, "type", None) == WEB_PROGRESS_TYPE
             receipt = result is event.get_extra("_ffa_management_receipt_result")
-            if event.get_extra("_ffa_management_done") and not (progress or receipt or event.get_extra("_ffa_web_material")):
+            persona = persona_result is not None and result is persona_result
+            if event.get_extra("_ffa_management_done") and not (progress or receipt or persona or event.get_extra("_ffa_web_material")):
                 return None
-            if not progress and not receipt:
+            if not (progress or receipt or persona):
                 await before_reply()
             if event.get_extra("_ffa_reply_superseded", False):
                 return None
@@ -1076,7 +1079,7 @@ class PlatformGateway:
 
             from fat_fish.integrations.web_search import clean_message, is_intermediate_message
 
-            if not (receipt or progress) and hasattr(result, "chain"):
+            if not (receipt or progress or persona) and hasattr(result, "chain"):
                 if is_intermediate_message(event, result):
                     native_result = event.get_result()
                     result_type = getattr(native_result, "result_content_type", None)
@@ -1316,7 +1319,16 @@ class PlatformGateway:
                 timeline.mark("ready")
             result = await downstream()
             management = event.get_extra("_ffa_management_turn")
-            if not submitted and management is not None and management.feedback and await asyncio.to_thread(allowed):
+            if (event.get_extra("_ffa_management_followup") and event.get_extra("_ffa_agent_finished")
+                    and not event.get_extra("_ffa_web_material") and await asyncio.to_thread(allowed)):
+                config = await asyncio.to_thread(self.chat_settings.read)
+                notes = effective_notes(config, admission.principal_id, "" if private else message.conversation.storage_key)
+                persona_result = event.plain_result(management_reply(
+                    event.get_extra("_ffa_management_persona_text"), notes=notes,
+                    previous_notes=event.get_extra("_ffa_persona_notes", ""),
+                ))
+                await checked_send(persona_result)
+            elif not submitted and management is not None and management.feedback and await asyncio.to_thread(allowed):
                 await self._send_command_receipt(event, None, management.feedback, management=True)
             completed = True
             return result
