@@ -120,13 +120,36 @@ class AstrBotCommunication:
         self.context = context
         self.routes = {}
         self.origins = {}
+        self._detach_ingress_clock = None
 
     async def start(self):
         if not await self.healthy():
             raise ConnectionError("Native adapter unavailable")
+        adapter = self.context.platform_instance()
+        commit = getattr(adapter, "commit_event", None)
+        if callable(commit) and self._detach_ingress_clock is None:
+            previous = vars(adapter).get("commit_event")
+
+            def observed(event):
+                if event.get_extra("_ffa_ingress_monotonic") is None:
+                    event.set_extra("_ffa_ingress_monotonic", time.monotonic())
+                return commit(event)
+
+            def detach():
+                if getattr(adapter, "commit_event", None) is observed:
+                    if previous is None:
+                        del adapter.commit_event
+                    else:
+                        adapter.commit_event = previous
+
+            adapter.commit_event = observed
+            self._detach_ingress_clock = detach
 
     async def stop(self):
         # The FFA gate stops dispatch; AstrBot owns the physical connection.
+        if self._detach_ingress_clock is not None:
+            self._detach_ingress_clock()
+            self._detach_ingress_clock = None
         self.routes.clear()
         self.origins.clear()
 

@@ -84,6 +84,14 @@ class ManagementTurn:
                 if command == self.command and self.receipt is not None:
                     return self.receipt
                 return {"status": "denied", "receipt": "这一条消息已经提交过管理操作，请单独发送下一项操作。"}
+            turn = self.event.get_extra("_ffa_chat_turn")
+            if turn is not None:
+                while True:
+                    await turn.ready()
+                    if not await asyncio.to_thread(self.available):
+                        return {"status": "denied", "receipt": "当前消息的管理权限或来源不满足要求。"}
+                    if turn.commit():
+                        break
             self.command = command
             self.event.set_extra("_ffa_mutating_tool_started", True)
             start = time.monotonic()

@@ -13,8 +13,9 @@ class ReplySchedule:
         self.delay = sample(MIN_REPLY_SECONDS, MAX_REPLY_SECONDS)
         self.update(arrived)
 
-    def update(self, arrived):
-        self.deadline = arrived + self.delay
+    def update(self, arrived, *, latest=None):
+        deadline = arrived + self.delay
+        self.deadline = min(deadline, latest) if latest is not None else deadline
 
     async def wait(self):
         remaining = self.deadline - asyncio.get_running_loop().time()

@@ -23,7 +23,9 @@ class LarkRetractions:
         self.dispatcher = self.processor = None
         self.tasks = set()
         self.verified = set()
+        self.applying = {}
         self.history_checks = OrderedDict()
+        self.history_flights = {}
         with closing(self.connect()) as db, db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("""CREATE TABLE IF NOT EXISTS lark_retractions (
@@ -60,6 +62,7 @@ class LarkRetractions:
             task.cancel()
         self.verified.clear()
         self.history_checks.clear()
+        self.history_flights.clear()
 
     def message_key(self, chat, message):
         if not isinstance(chat, str) or not re.fullmatch(r"oc_[A-Za-z0-9_-]+", chat):
@@ -88,6 +91,20 @@ class LarkRetractions:
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
 
+    def has_recalled(self, inputs):
+        keys = []
+        for item in inputs:
+            raw = getattr(item.native.message_obj, "raw_message", None)
+            ident = self.message_key(getattr(raw, "chat_id", None), item.message.message_id)
+            if ident is not None:
+                keys.append(ident)
+        if not keys:
+            return False
+        params = ",".join("?" for _ in keys)
+        with closing(self.connect()) as db:
+            return bool(db.execute(f"SELECT 1 FROM lark_retractions WHERE recalled<>0 AND id IN ({params}) LIMIT 1",
+                                   keys).fetchone())
+
     async def apply(self, event):
         try:
             await self.apply_recall(event.event.chat_id, event.event.message_id)
@@ -101,7 +118,11 @@ class LarkRetractions:
             return
         if message.conversation.kind is ChatKind.GROUP and chat != message.conversation.peer:
             return
-        from lark_oapi.api.im.v1 import ListMessageRequest
+        while flight := self.history_flights.get(chat):
+            task, forced = flight
+            await asyncio.shield(task)
+            if not force or forced:
+                return
         now = time.monotonic()
         if not force and now - self.history_checks.get(chat, -30) < 30:
             return
@@ -109,6 +130,23 @@ class LarkRetractions:
         self.history_checks.move_to_end(chat)
         if len(self.history_checks) > 256:
             self.history_checks.popitem(last=False)
+
+        async def run():
+            try:
+                await self._reconcile_history(event, chat, force)
+            finally:
+                flight = self.history_flights.get(chat)
+                if flight and flight[0] is asyncio.current_task():
+                    del self.history_flights[chat]
+
+        task = asyncio.create_task(run())
+        self.history_flights[chat] = task, force
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        await asyncio.shield(task)
+
+    async def _reconcile_history(self, event, chat, force):
+        from lark_oapi.api.im.v1 import ListMessageRequest
 
         try:
             api = event.bot.im.v1.message
@@ -134,8 +172,30 @@ class LarkRetractions:
         ident = self.message_key(chat, message_id)
         if ident is None or self.dispatcher is None:
             return
+        original = await asyncio.to_thread(self._mark_recalled, ident, tracked_only)
+        if not original or original[0] is None:
+            return
+        sender, kind, peer, _ = original
+        room = Conversation(self.address, self.bot, ChatKind(kind), peer, peer)
+        notice = MessageRetraction(room, Account(self.address, sender), message_id)
+        active = self.applying.get(notice)
+        if active is not None:
+            await active.wait()
+            return
+        finished = self.applying[notice] = asyncio.Event()
+        self.verified.add(notice)
+        try:
+            await self.retract(self.address, notice)
+            await asyncio.to_thread(self._finish_recall, ident)
+        finally:
+            self.verified.discard(notice)
+            del self.applying[notice]
+            finished.set()
+
+    def _mark_recalled(self, ident, tracked_only):
         now = time.time()
         with closing(self.connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute("DELETE FROM lark_retractions WHERE observed < ?", (now - RETENTION,))
             original = db.execute("SELECT sender, kind, peer, recalled FROM lark_retractions WHERE id=?",
                                   (ident,)).fetchone()
@@ -143,17 +203,8 @@ class LarkRetractions:
                 return
             db.execute("""INSERT INTO lark_retractions VALUES (?, NULL, NULL, NULL, 1, ?)
                           ON CONFLICT(id) DO UPDATE SET recalled=1, observed=excluded.observed""", (ident, now))
-        if not original or original[0] is None:
-            return
-        sender, kind, peer, _ = original
-        room = Conversation(self.address, self.bot, ChatKind(kind), peer, peer)
-        notice = MessageRetraction(room, Account(self.address, sender), message_id)
-        if notice in self.verified:
-            return
-        self.verified.add(notice)
-        try:
-            await self.retract(self.address, notice)
-            with closing(self.connect()) as db, db:
-                db.execute("UPDATE lark_retractions SET recalled=? WHERE id=?", (RECALL_APPLIED_WITH_REPLY, ident))
-        finally:
-            self.verified.discard(notice)
+            return original
+
+    def _finish_recall(self, ident):
+        with closing(self.connect()) as db, db:
+            db.execute("UPDATE lark_retractions SET recalled=? WHERE id=?", (RECALL_APPLIED_WITH_REPLY, ident))

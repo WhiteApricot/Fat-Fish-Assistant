@@ -155,27 +155,6 @@ def create_test_provider(address, bot, context, config):
 
 
 class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
-    async def test_batch_restarts_from_last_message_and_moves_shared_deadline(self):
-        from fat_fish.gateway.reply_schedule import ReplySchedule
-        from fat_fish.gateway.text_batch import TextBatch
-
-        schedule = ReplySchedule(0, sample=lambda *_: 5)
-        arrivals = []
-        def arrived(when):
-            arrivals.append(when)
-            schedule.update(when)
-
-        batch = TextBatch(window=60)
-        first = asyncio.create_task(batch.collect("room-and-sender", "第一句", on_arrival=arrived))
-        await asyncio.sleep(0)
-        original = batch.pending["room-and-sender"].timer
-        self.assertIsNone(await batch.collect("room-and-sender", "第二句"))
-        self.assertTrue(original.cancelled())
-        self.assertEqual(len(arrivals), 2)
-        self.assertEqual(schedule.deadline, arrivals[-1] + 5)
-        batch.flush("room-and-sender")
-        self.assertEqual(await first, "第一句\n第二句")
-
     async def asyncSetUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -220,20 +199,94 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("简短", receipts[0])
         self.assertIn("标准", receipts[1])
 
-    async def test_text_batch_preserves_order_and_isolates_route_and_sender(self):
-        from fat_fish.gateway.text_batch import TextBatch
+    async def test_new_input_supersedes_unsent_reply_and_moves_ingress_deadline(self):
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        first = NativeEvent(sender=owner.subject, ident="turn1", text="第一句")
+        latest = NativeEvent(sender=owner.subject, ident="turn2", text="第二句")
+        ready = asyncio.Event()
 
-        batch = TextBatch(window=60)
-        first = asyncio.create_task(batch.collect(("room", "alice"), "第一句"))
-        await asyncio.sleep(0)
-        self.assertIsNone(await batch.collect(("room", "alice"), "第二句"))
-        other = asyncio.create_task(batch.collect(("room", "bob"), "另一人"))
-        await asyncio.sleep(0)
-        batch.flush(("room", "alice"))
-        self.assertEqual(await first, "第一句\n第二句")
-        self.assertFalse(other.done())
-        batch.flush(("room", "bob"))
-        self.assertEqual(await other, "另一人")
+        async def draft():
+            self.assertEqual(first.message_str, "第一句")
+            ready.set()
+            try:
+                await asyncio.Future()
+            finally:
+                await first.send("过期回复")
+
+        async def regenerate():
+            turn = latest.get_extra("_ffa_chat_turn")
+            self.assertEqual(turn.version, 2)
+            self.assertEqual(latest.message_str, "第一句\n第二句")
+            self.assertEqual(turn.schedule.deadline, min(turn.items[-1].arrived + turn.schedule.delay, turn.limit))
+            await latest.send("合并回复")
+
+        components = SimpleNamespace(Plain=lambda text: SimpleNamespace(text=text))
+        with patch.dict(sys.modules, {"astrbot.api.message_components": components}):
+            old = asyncio.create_task(self.gateway.run(first, draft))
+            await asyncio.wait_for(ready.wait(), 5)
+            await self.gateway.run(latest, regenerate)
+            await old
+        self.assertEqual(first.sent, [])
+        self.assertEqual(latest.sent, ["合并回复"])
+        self.assertEqual(self.runtime.seen.delivery("ingress", convert(first).event_id), "completed")
+
+    async def test_pending_ingress_blocks_commit_until_admission_resolves(self):
+        from fat_fish.gateway.chat_turn import ChatTurns
+
+        coordinator = ChatTurns()
+        event = NativeEvent(sender="31", ident="arrived")
+        loop = asyncio.get_running_loop()
+        item = coordinator.receive(convert(event), event, loop.time())
+        turn = coordinator.admit(item, "same-principal")
+        following = coordinator.receive(convert(event), event, loop.time())
+        self.assertFalse(turn.commit())
+        coordinator.resolve(following)
+        await turn.ready()
+        self.assertTrue(turn.commit())
+        following = coordinator.receive(convert(event), event, loop.time())
+        fresh = coordinator.admit(following, "same-principal")
+        self.assertEqual(fresh.version, 1)
+        self.assertFalse(turn.superseded)
+
+    async def test_management_commit_prevents_regeneration_and_repeat_write(self):
+        from unittest.mock import AsyncMock
+
+        owner = Account(self.providers[0], "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        first = NativeEvent(sender=owner.subject, ident="manage-1", text="运行测试管理工具")
+        latest = NativeEvent(sender=owner.subject, ident="manage-2", text="另一个问题")
+        writing, release = asyncio.Event(), asyncio.Event()
+
+        async def command(*_args):
+            writing.set()
+            await release.wait()
+            return "已执行测试写入"
+
+        handler = AsyncMock(side_effect=command)
+        self.gateway.commands.register("sample", routes={"write": {1}}, help="/sample write",
+                                       authorize=lambda _: True, handle=handler)
+
+        async def agent():
+            turn = first.get_extra("_ffa_management_turn")
+            value = await turn.call("sample", ["write"])
+            self.assertEqual(value, await turn.call("sample", ["write"]))
+
+        async def next_agent():
+            self.assertEqual(latest.get_extra("_ffa_chat_turn").version, 1)
+            self.assertEqual(latest.message_str, "另一个问题")
+            await latest.send("另一轮")
+
+        old = asyncio.create_task(self.gateway.run(first, agent))
+        await asyncio.wait_for(writing.wait(), 5)
+        try:
+            await self.gateway.run(latest, next_agent)
+        finally:
+            release.set()
+        await old
+        handler.assert_awaited_once()
+        self.assertEqual(first.sent, ["【系统】已执行测试写入"])
+        self.assertEqual(latest.sent, ["另一轮"])
 
     async def test_managed_gateway_and_reminder_share_delivery_boundary(self):
         from fat_fish.gateway.platform_gateway import PlatformGateway

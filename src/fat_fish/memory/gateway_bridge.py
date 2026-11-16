@@ -176,10 +176,12 @@ class GatewayMemory:
         await event.send(event.plain_result("【系统】" + reply))
         return True
 
-    async def prepare(self, event):
+    async def prepare(self, event, *, media_ready=None):
         try:
             options = self.options()
-            message = event.get_extra("_ffa_message_event")
+            memory_command = self.command(event)
+            message = ((None if memory_command else event.get_extra("_ffa_original_input"))
+                       or event.get_extra("_ffa_message_event"))
             if not options or message is None:
                 return
             event.set_extra("_ffa_unified_memory", True)
@@ -187,7 +189,6 @@ class GatewayMemory:
             if not await asyncio.to_thread(self.memory().scope_enabled, access.scope):
                 return
             text = "收到消息"
-            memory_command = self.command(event)
             command = memory_command or message.text.lstrip().startswith("/")
             words = message.text.strip().lower().split(maxsplit=2)
             lookup = memory_command and len(words) > 1 and words[1] in {
@@ -197,8 +198,10 @@ class GatewayMemory:
                 runtime = self.gateway.communication()
                 slot = runtime.connections.get(message.conversation.provider)
                 reconcile = getattr(slot.provider, "reconcile_retractions", None) if slot and slot.enabled else None
-                if reconcile and access.verify():
+                if reconcile and await asyncio.to_thread(access.verify):
                     await reconcile(event, message, force=lookup)
+            if media_ready is not None:
+                await media_ready.wait()
             event.set_extra("_ffa_memory_command", command)
             safe_input = (access.scope.kind == "private" and not command and not message.reply_to
                     and not message.media and not event.get_extra("_ffa_material")
@@ -212,6 +215,20 @@ class GatewayMemory:
             admission = event.get_extra("_ffa_platform_admission")
             owner = admission.role == Role.OWNER
             direct = access.scope.kind == "private" or message.conversation.bot in message.mentions
+            turn = event.get_extra("_ffa_chat_turn")
+            if turn is not None and len(turn.items) > 1 and not command:
+                for part in turn.items:
+                    previous = part.message
+                    if previous.event_id == message.event_id:
+                        continue
+                    body = "收到消息"
+                    if options.get("capture_text") and not sensitive_information(previous.text):
+                        body = previous.text[:1500]
+                    previous_activity = Activity("in:" + previous.event_id, ActivityKind.MESSAGE_RECEIVED,
+                                                 ActivityState.OBSERVED, previous.timestamp, body,
+                                                 "native-message:" + previous.event_id)
+                    await asyncio.to_thread(self.memory().record, access, previous_activity,
+                                            turn_id=previous.event_id)
             ref, _ = await asyncio.to_thread(self.memory().record, access, activity, turn_id=message.event_id,
                                              card_capture=(owner, direct) if not command else None)
             event.set_extra("_ffa_memory_access", access)
@@ -271,6 +288,7 @@ class GatewayMemory:
             options = self.options()
             is_command = event.get_extra("_ffa_memory_command", False) or self.command(event)
             if (options and options.get("capture_text") and not is_command
+                    and event.get_extra("_ffa_original_input") is None
                     and not event.get_extra("_ffa_material")):
                 text = result.get_plain_text() if hasattr(result, "get_plain_text") else streamed_text
                 if isinstance(text, str) and text.strip() and not sensitive_information(text):

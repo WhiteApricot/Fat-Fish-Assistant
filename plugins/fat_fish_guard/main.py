@@ -38,6 +38,10 @@ class FatFishGuard(Star):
             await self.memory_bridge.stop_maintenance()
         if getattr(self, "platform_gateway", None) is not None:
             await self.platform_gateway.stop_configured()
+
+    @filter.on_platform_loaded()
+    async def platform_loaded(self):
+        await self.platform_gateway.start_configured()
     @filter.event_message_type(filter.EventMessageType.ALL,priority=10001)
     async def unavailable_voice(self,event:AstrMessageEvent):
         # Native preprocessing replaces successfully transcribed Record parts.
@@ -194,6 +198,10 @@ class FatFishGuard(Star):
     @filter.on_agent_begin(priority=-99999)
     async def track_chat_request(self,event,run_context):
         if event.get_extra('_ffa_platform_admission') is not None:
+            if event.get_extra("_ffa_original_input") is not None:
+                messages = run_context.messages
+                end = -1 if messages and messages[-1].role == "user" else len(messages)
+                event.set_extra("_ffa_history_before_merge", tuple(messages[:end]))
             timeline = event.get_extra("_ffa_lark_latency")
             if timeline is not None:
                 timeline.mark("T6")
@@ -202,6 +210,11 @@ class FatFishGuard(Star):
 
     @filter.on_agent_done(priority=-99999)
     async def track_usage(self, event, run_context, response):
+        history = event.get_extra("_ffa_history_before_merge")
+        if history is not None:
+            # Composite prompts can depend on several independently revocable
+            # source messages. Persist each input via FFA, with its own ID.
+            run_context.messages[:] = history
         timeline = event.get_extra("_ffa_lark_latency")
         if timeline is None:
             return

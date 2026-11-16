@@ -30,7 +30,7 @@ from fat_fish.commands.registry import ROUTES, Command, CommandRegistry
 from fat_fish.reminders.dispatch import ReminderAccess
 from fat_fish.memory.gateway_bridge import GatewayMemory
 from fat_fish.gateway.media_ingress import UnsupportedMedia, prepare_media
-from fat_fish.gateway.text_batch import TextBatch
+from fat_fish.gateway.chat_turn import ChatTurns
 from fat_fish.gateway.reply_schedule import ReplySchedule, WEB_PROGRESS_TYPE
 
 
@@ -102,7 +102,7 @@ class PlatformGateway:
         self._command_receipts = OrderedDict()
         self._reminder_undo = OrderedDict()
         self._admin_undo = OrderedDict()
-        self.text_batch = TextBatch()
+        self.chat_turns = ChatTurns()
 
     async def render_reminder(self, room, principal, body):
         kind = "FriendMessage" if room.kind is ChatKind.PRIVATE else "GroupMessage"
@@ -159,7 +159,8 @@ class PlatformGateway:
                 self.participation.rooms.pop((oldest, 0), None)
         if message.text.lstrip().startswith("/"):
             return room.bot in message.mentions
-        text = event.message_str
+        original = event.get_extra("_ffa_original_input")
+        text = original.text if original else event.message_str
         if event.get_extra("_ffa_material", False) or sensitive_information(text):
             return room.bot in message.mentions
         speaker = self.participation.label(room.storage_key, admission.principal_id)
@@ -745,8 +746,10 @@ class PlatformGateway:
             configured = self.registry.configured()
             if configured:
                 runtime = self.communication()
-                await asyncio.gather(*(self.registry.start(runtime, address, instance, self._provider_context(address))
-                                       for address, instance in configured.items()))
+                await asyncio.gather(*(self._configured_provider(runtime, address, instance[1])
+                                       for address, instance in configured.items()
+                                       if instance[0].provider_id != "astrbot"
+                                       or self.context.get_platform_inst(address.instance) is not None))
         except (AttributeError, KeyError, OSError, PermissionError, TypeError, ValueError, sqlite3.Error) as exc:
             logger.warning("FFA provider initialization skipped (%s)", type(exc).__name__)
 
@@ -881,35 +884,60 @@ class PlatformGateway:
         return True
 
     async def run(self, event, downstream):
+        arrived = event.get_extra("_ffa_ingress_monotonic")
+        if arrived is None:
+            arrived = asyncio.get_running_loop().time()
+        try:
+            message = convert(event)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            event.stop_event()
+            return None
+        text = message.text.strip()
+        item = None
+        if (text and not text.startswith("/") and not message.media and not message.reply_to
+                and not event.get_extra("_ffa_external_envelope")):
+            item = self.chat_turns.receive(message, event, arrived)
+        try:
+            return await self._run(event, downstream, message, arrived, item)
+        finally:
+            self.chat_turns.resolve(item)
+
+    async def _observe_new_account(self, runtime, message):
+        if not runtime.accepts(message) or await asyncio.to_thread(runtime.identities.principal_id, message.sender):
+            return False
+        if message.conversation.kind is ChatKind.GROUP:
+            await asyncio.to_thread(runtime.identities.observe, message.sender, room=message.conversation)
+            return True
+        account = await runtime.verify_account(message)
+        if account is None:
+            return False
+        await asyncio.to_thread(runtime.identities.observe, account)
+        return True
+
+    async def _run(self, event, downstream, message, arrived, item):
         if self._stopping:
             event.stop_event()
             return None
         admission = None
-        arrived = asyncio.get_running_loop().time()
         timeline = event.get_extra("_ffa_lark_latency", None)
         if timeline is not None:
             timeline.mark("T2")
         try:
-            message = convert(event)
             runtime = self.communication()
             await self._configured_provider(runtime, message.conversation.provider, message.conversation.bot)
+            slot = runtime.connections.get(message.conversation.provider)
+            observe_trace = getattr(slot.provider, "ingress_trace", None) if slot else None
+            if observe_trace is not None:
+                timeline = observe_trace(event, arrived)
             if await self._identity_command(runtime, message, event):
                 return None
             if await self._group_whitelist_command(runtime, message, event):
                 return None
-            if runtime.accepts(message) and not await asyncio.to_thread(
-                    runtime.identities.principal_id, message.sender):
-                if message.conversation.kind is ChatKind.GROUP:
-                    # Registered native ingress authenticates the sender of a group event.
-                    await asyncio.to_thread(runtime.identities.observe, message.sender, room=message.conversation)
-                else:
-                    account = await runtime.verify_account(message)
-                    if account is not None:
-                        await asyncio.to_thread(runtime.identities.observe, account)
             if runtime.accepts(message):
                 provider = runtime.connections[message.conversation.provider].provider
                 cache_voice = getattr(provider, "cache_unmentioned_voice", None)
                 if cache_voice and cache_voice(event, message):
+                    await self._observe_new_account(runtime, message)
                     room = message.conversation
                     if (runtime.permissions.conversation(message.sender, room)
                             and runtime.seen.begin_delivery("ingress", message.event_id)):
@@ -929,6 +957,8 @@ class PlatformGateway:
                         timeline.log()
                     return None
             admission = await runtime.admit_async(message)
+            if admission is None and await self._observe_new_account(runtime, message):
+                admission = await runtime.admit_async(message)
             if admission is not None:
                 slot = runtime.connections[message.conversation.provider]
                 observe = getattr(slot.provider, "observe", None)
@@ -962,6 +992,8 @@ class PlatformGateway:
         is_material = getattr(slot.provider, "is_external_material", None)
         if is_material and is_material(event):
             event.set_extra("_ffa_material", True)
+            self.chat_turns.resolve(item)
+            item = None
         if timeline is not None:
             if message.text.lstrip().startswith("/"):
                 timeline.category = "B"
@@ -972,23 +1004,28 @@ class PlatformGateway:
                                     message.conversation.storage_key)
         original_send = event.send
         original_stream = getattr(event, "send_streaming", None)
+        recalled_inputs = getattr(slot.provider, "recalled_inputs", None)
 
         def allowed():
             current = runtime.authorize(message)
-            return current is not None and current.principal_id == admission.principal_id
+            return (current is not None and current.principal_id == admission.principal_id
+                    and not (turn and len(turn.items) > 1 and recalled_inputs and recalled_inputs(turn.items)))
 
         event.set_extra("_ffa_platform_authorize", allowed)
 
         submitted = False
         completed = False
         sequence = 0
-        schedule = (ReplySchedule(arrived) if getattr(self.context, "get_registered_star", None)
-                    and not event.get_extra("_ffa_reply_is_command") else None)
+        turn = None
+        schedule = None
+        memory_task = None
 
-        def batch_arrival(when):
-            event.set_extra("_ffa_latest_arrival", when)
-            if schedule is not None:
-                schedule.update(when)
+        async def ready_to_submit():
+            await turn.ready()
+            if len(turn.items) > 1 and recalled_inputs:
+                if await asyncio.to_thread(recalled_inputs, turn.items):
+                    raise asyncio.CancelledError("FFA reply source was recalled")
+                await turn.ready()
 
         async def before_reply():
             if schedule is not None:
@@ -997,8 +1034,12 @@ class PlatformGateway:
                 await schedule.wait()
                 if timeline is not None:
                     timeline.mark("pace_end")
+        async def before_stream_reply():
+            await before_reply()
+            if turn is not None:
+                await ready_to_submit()
 
-        event.set_extra("_ffa_wait_reply", before_reply)
+        event.set_extra("_ffa_wait_reply", before_stream_reply)
 
         async def checked_send(result):
             nonlocal sequence
@@ -1037,11 +1078,14 @@ class PlatformGateway:
                         self._record_command(receipt_key, words, text.removeprefix("【系统】"))
                 if not (receipt or progress):
                     await self.memory_bridge.sent(event, result)
-                    self._record_group_reply(message, admission, event,
-                                             result.get_plain_text() if hasattr(result, "get_plain_text") else "")
+                    if event.get_extra("_ffa_original_input") is None:
+                        self._record_group_reply(message, admission, event,
+                                                 result.get_plain_text() if hasattr(result, "get_plain_text") else "")
                 return response
 
-            return await runtime.reply(message, admission, sequence, send)
+            return await runtime.reply(message, admission, sequence, send,
+                                       ready=ready_to_submit if turn else None,
+                                       commit=turn.commit if turn else None)
 
         async def checked_stream(generator, *args, **kwargs):
             nonlocal sequence
@@ -1064,7 +1108,7 @@ class PlatformGateway:
                         if event.get_extra("_ffa_management_done") and not event.get_extra("_ffa_web_material"):
                             continue
                         if not guard and not streamed:
-                            await before_reply()
+                            await before_stream_reply()
                         check_submission(not guard)
                         text = part if isinstance(part, str) else (
                             part.get_plain_text() if hasattr(part, "get_plain_text") else "")
@@ -1078,10 +1122,12 @@ class PlatformGateway:
                     result = await original_stream(guarded(), *args, **kwargs)
                 if streamed:
                     await self.memory_bridge.sent(event, streamed_text=preview)
-                    self._record_group_reply(message, admission, event, preview)
+                    if event.get_extra("_ffa_original_input") is None:
+                        self._record_group_reply(message, admission, event, preview)
                 return result
 
-            return await runtime.reply(message, admission, sequence, send, check_on_submit=True)
+            return await runtime.reply(message, admission, sequence, send, check_on_submit=True,
+                                       commit=turn.commit if turn else None)
 
         event.send = checked_send
         if original_stream is not None:
@@ -1091,29 +1137,34 @@ class PlatformGateway:
                 event.stop_event()
                 completed = True
                 return None
-            batch_key = (message.conversation.storage_key, message.sender.storage_key, admission.principal_id)
-            text = message.text.strip()
-            if text.startswith("/") or message.media or message.reply_to or event.get_extra("_ffa_material"):
-                self.text_batch.flush(batch_key)
-            elif text and schedule is not None:
+            if item is not None:
+                turn = self.chat_turns.admit(item, admission.principal_id)
+                event.set_extra("_ffa_chat_turn", turn)
+                event.set_extra("_ffa_latest_arrival", turn.items[-1].arrived)
+            if getattr(self.context, "get_registered_star", None) and not event.get_extra("_ffa_reply_is_command"):
+                schedule = turn.schedule if turn else ReplySchedule(arrived)
+            if turn is not None and len(turn.items) > 1:
                 from astrbot.api.message_components import Plain
 
-                merged = await self.text_batch.collect(batch_key, text, on_arrival=batch_arrival)
-                if merged is None or not await asyncio.to_thread(allowed):
-                    event.stop_event()
-                    completed = True
-                    return None
-                if merged != text:
-                    message = replace(message, text=merged)
-                    event.message_str = merged
-                    event.message_obj.message_str = merged
-                    event.message_obj.message = [Plain(merged)] + [
-                        part for part in event.get_messages() if type(part).__name__ == "At"]
-                    event.set_extra("_ffa_message_event", message)
+                merged = "\n".join(part.message.text.strip() for part in turn.items)
+                mentions = tuple(dict.fromkeys(mention for part in turn.items for mention in part.message.mentions))
+                event.set_extra("_ffa_original_input", message)
+                message = replace(message, text=merged, mentions=mentions)
+                event.message_str = event.message_obj.message_str = merged
+                parts = event.get_messages()
+                seen_mentions = set()
+                merged_parts = [Plain(merged)]
+                for source in turn.items:
+                    for part in source.native.get_messages():
+                        if type(part).__name__ == "At" and part.qq not in seen_mentions:
+                            seen_mentions.add(part.qq)
+                            merged_parts.append(part)
+                parts[:] = merged_parts
+                event.set_extra("_ffa_message_event", message)
             if timeline is not None:
                 timeline.mark("T4")
             private = message.conversation.kind is ChatKind.PRIVATE
-            if not await asyncio.to_thread(allowed):
+            if turn is not None and len(turn.items) > 1 and not await asyncio.to_thread(allowed):
                 event.stop_event()
                 completed = True
                 return None
@@ -1149,9 +1200,8 @@ class PlatformGateway:
                     return None
             if timeline is not None:
                 timeline.mark("memory_start")
-            await self.memory_bridge.prepare(event)
-            if timeline is not None:
-                timeline.mark("memory_end")
+            media_ready = asyncio.Event()
+            memory_task = asyncio.create_task(self.memory_bridge.prepare(event, media_ready=media_ready))
             media = getattr(slot.provider, "prepare_media", None)
             def author_allowed(subject):
                 if subject == message.conversation.bot:
@@ -1177,7 +1227,7 @@ class PlatformGateway:
                     def media_allowed():
                         return allowed() and runtime.identities.room_membership_signature(message.conversation) == epoch
 
-                    if not media_allowed():
+                    if not await asyncio.to_thread(media_allowed):
                         raise PermissionError("Group media authorization changed")
                     self.group_media.observe(event, epoch, room=room,
                                              mentioned=message.conversation.bot in message.mentions)
@@ -1188,7 +1238,7 @@ class PlatformGateway:
                         else:
                             await self.group_media.transcribe(event, epoch, self.context, media_allowed,
                                                              room=room, transcriber=transcriber)
-                    if not media_allowed():
+                    if not await asyncio.to_thread(media_allowed):
                         raise PermissionError("Group media authorization changed")
                     voice_error = getattr(slot.provider, "group_voice_error", None)
                     if voice_error and any(type(part).__name__ == "Record" for part in event.get_messages()):
@@ -1199,7 +1249,7 @@ class PlatformGateway:
                                         resolve_forward=getattr(slot.provider, "resolve_forward", None))
             except UnsupportedMedia as exc:
                 event.stop_event()
-                if allowed():
+                if await asyncio.to_thread(allowed):
                     await event.send(event.plain_result(str(exc)))
                 completed = True
                 return None
@@ -1210,11 +1260,11 @@ class PlatformGateway:
             finally:
                 if timeline is not None:
                     timeline.mark("media_end")
-            if not allowed() or not await self._participate(message, admission, event):
-                event.stop_event()
-                completed = True
-                return None
-            if not allowed():
+            media_ready.set()
+            await memory_task
+            if timeline is not None:
+                timeline.mark("memory_end")
+            if not await asyncio.to_thread(allowed) or not await self._participate(message, admission, event):
                 event.stop_event()
                 completed = True
                 return None
@@ -1222,7 +1272,7 @@ class PlatformGateway:
                 roster = getattr(slot.provider, "group_members", None)
                 if roster:
                     members = await roster(event, message)
-                    if members and allowed():
+                    if members and await asyncio.to_thread(allowed):
                         event.set_extra("_ffa_group_native_roles", json.dumps([
                             {"发言者": self.participation.label(message.conversation.storage_key, current.principal_id),
                              "昵称": member["name"], "平台群身份": member["role"]}
@@ -1231,7 +1281,7 @@ class PlatformGateway:
                             and (current := runtime.permissions.conversation(
                                 Account(message.conversation.provider, subject), message.conversation))
                         ], ensure_ascii=False))
-            if not allowed():
+            if not await asyncio.to_thread(allowed):
                 event.stop_event()
                 completed = True
                 return None
@@ -1249,10 +1299,19 @@ class PlatformGateway:
             return None
         except asyncio.CancelledError:
             event.stop_event()
+            if turn is not None and turn.superseded:
+                completed = True
+                return None
             raise
         finally:
+            if memory_task is not None and not memory_task.done():
+                memory_task.cancel()
+                await asyncio.gather(memory_task, return_exceptions=True)
+            if turn is not None:
+                self.chat_turns.finish(turn)
             event.set_extra("_ffa_platform_authorize", None)
             event.set_extra("_ffa_management_turn", None)
+            event.set_extra("_ffa_chat_turn", None)
             event.send = original_send
             if original_stream is not None:
                 event.send_streaming = original_stream

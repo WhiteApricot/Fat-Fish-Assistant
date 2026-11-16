@@ -5,11 +5,12 @@ import json
 from pathlib import Path
 import re
 import time
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fat_fish.adapters.astrbot_communication import AstrBotCommunication
 from fat_fish.adapters.lark_forwards import message_type, read_forward
-from fat_fish.adapters.lark_latency import attach_native_ingress, submitted
+from fat_fish.adapters.lark_latency import attach_native_ingress, ensure_trace, submitted, trace
 from fat_fish.adapters.lark_retraction import LarkRetractions
 from fat_fish.adapters.lark_voice import VOICE_UNAVAILABLE, transcribe
 from fat_fish.communication.model import Capability, ChatKind, MessageRetraction, NotSubmitted
@@ -94,9 +95,70 @@ class LarkCommunication(AstrBotCommunication):
     guard_stream = staticmethod(guard_stream)
     transcribe_group_voice = staticmethod(transcribe)
     group_voice_error = VOICE_UNAVAILABLE
+
+    def ingress_trace(self, event, arrived):
+        return ensure_trace(event, self.context.private_dir, arrived)
+
     async def reply_native(self, event, target, result, original_send):
+        timeline = trace(event)
+        if timeline is not None:
+            timeline.mark("route_start")
+        chat = self._trusted_private_chat(event, target, result)
+        if timeline is not None:
+            timeline.route = "native_chat_id" if chat else "native_route"
+            timeline.mark("route_end")
         with submitted(event, progress=getattr(result, "type", None) == WEB_PROGRESS_TYPE):
+            if chat:
+                return await self._reply_to_private_chat(event, target, result, chat)
             return await super().reply_native(event, target, result, original_send)
+
+    def _trusted_private_chat(self, event, target, result):
+        if (target.kind is not ChatKind.PRIVATE or target.provider != self.address or target.bot != self.bot
+                or target.peer != event.get_sender_id() or target.peer != target.thread
+                or not hasattr(result, "chain") or not result.chain):
+            return None
+        obj = event.message_obj
+        raw = getattr(obj, "raw_message", None)
+        chat = getattr(raw, "chat_id", None)
+        adapter = self.context.platform_instance()
+        if (not isinstance(chat, str) or not re.fullmatch(r"oc_[A-Za-z0-9_-]+", chat)
+                or getattr(raw, "chat_type", None) != "p2p" or getattr(raw, "message_id", None) != obj.message_id
+                or event.bot is not getattr(adapter, "lark_api", None)
+                or not all(type(part).__name__ in {"Plain", "At"} or
+                           type(part).__name__ == "Reply" and str(part.id) == str(obj.message_id)
+                           for part in result.chain)):
+            return None
+        return chat
+
+    @staticmethod
+    async def _reply_to_private_chat(event, target, result, chat):
+        from astrbot.core.platform.astr_message_event import AstrMessageEvent
+        from astrbot.core.platform.sources.lark.lark_event import LarkMessageEvent
+        from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+
+        result = result.derive([part for part in result.chain if type(part).__name__ != "Reply"])
+        if not result.chain:
+            return
+        api = event.bot.im.v1.message
+
+        async def create(request):
+            response = await api.acreate(request)
+            # 230002 is an explicit rejection of the chat route. An ambiguous
+            # API error or transport failure keeps the existing unknown state.
+            if response.success() or response.code != 230002:
+                return response
+            allowed = event.get_extra("_ffa_platform_authorize")
+            if allowed is None or not await asyncio.to_thread(allowed):
+                return response
+            body = request.request_body
+            return await api.acreate(CreateMessageRequest.builder().receive_id_type("open_id").request_body(
+                CreateMessageRequestBody.builder().receive_id(target.peer).content(body.content)
+                .msg_type(body.msg_type).uuid(body.uuid).build()
+            ).build())
+
+        client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(acreate=create))))
+        await LarkMessageEvent.send_message_chain(result, client, receive_id=chat, receive_id_type="chat_id")
+        await AstrMessageEvent.send(event, result)
 
     @staticmethod
     def cache_unmentioned_voice(event, message):
@@ -204,6 +266,9 @@ class LarkCommunication(AstrBotCommunication):
     async def reconcile_retractions(self, event, message, *, force=False):
         if self.retractions is not None:
             await self.retractions.reconcile(event, message, force=force)
+
+    def recalled_inputs(self, inputs):
+        return bool(self.retractions and self.retractions.has_recalled(inputs))
 
     def convert_retraction(self, notice):
         if not isinstance(notice, MessageRetraction):

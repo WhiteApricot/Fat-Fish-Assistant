@@ -27,6 +27,76 @@ except ModuleNotFoundError as exc:
 
 @unittest.skipIf(LarkPlatformAdapter is None, "Requires pinned AstrBot test runtime")
 class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_verified_private_reply_uses_chat_id_and_reuses_uuid_on_rejection(self):
+        from astrbot.api.event import MessageChain
+        from fat_fish.adapters.lark_latency import LarkLatency
+        from test_communication import NativeEvent
+
+        adapter = self.adapter()
+        address = ProviderId("lark", "lark-a")
+        provider = create_provider(address, "ou_bot", ProviderContext(lambda: adapter, AsyncMock()), {})
+        raw = SimpleNamespace(chat_type="p2p", chat_id="oc_fixture", message_id="om_in")
+        event = NativeEvent(instance="lark-a", sender="ou_alice", bot="ou_bot", ident="om_in", raw=raw)
+        event.bot = adapter.lark_api
+        event.set_extra("_ffa_platform_authorize", lambda: True)
+        timeline = LarkLatency(raw, (time.time(), time.monotonic()))
+        event.set_extra("_ffa_lark_latency", timeline)
+        result = MessageChain().message("回复")
+        target = convert(event).conversation
+        api = adapter.lark_api.im.v1.message
+        rejected = SimpleNamespace(success=lambda: False, code=230002)
+        acknowledged = SimpleNamespace(success=lambda: True, code=0)
+        with patch.object(api, "acreate", side_effect=(rejected, acknowledged)) as create, \
+             patch.object(AstrMessageEvent, "send", new=AsyncMock()):
+            await provider.start()
+            try:
+                await provider.reply_native(event, target, result, AsyncMock())
+                first, retry = [call.args[0] for call in create.await_args_list]
+                self.assertEqual((first.receive_id_type, first.request_body.receive_id), ("chat_id", "oc_fixture"))
+                self.assertEqual((retry.receive_id_type, retry.request_body.receive_id), ("open_id", "ou_alice"))
+                self.assertEqual(first.request_body.uuid, retry.request_body.uuid)
+                self.assertEqual([attempt["status"] for attempt in timeline.attempts], [230002, "ok"])
+                create.reset_mock(side_effect=True)
+                create.side_effect = TimeoutError("ambiguous")
+                with self.assertRaises(TimeoutError):
+                    await provider.reply_native(event, target, result, AsyncMock())
+                create.assert_awaited_once()
+            finally:
+                await provider.stop()
+
+    async def test_recall_history_is_single_flight_and_survives_waiter_cancellation(self):
+        from fat_fish.adapters.lark_retraction import LarkRetractions
+        from test_communication import NativeEvent
+
+        adapter = self.adapter()
+        address = ProviderId("lark", "lark-a")
+        event = NativeEvent(instance="lark-a", sender="ou_alice", bot="ou_bot", ident="om_in",
+                            raw=SimpleNamespace(chat_id="oc_fixture"))
+        event.bot = adapter.lark_api
+        started, released = asyncio.Event(), asyncio.Event()
+
+        async def history(_):
+            started.set()
+            await released.wait()
+            return SimpleNamespace(success=lambda: True, data=SimpleNamespace(items=[], has_more=False))
+
+        with tempfile.TemporaryDirectory() as directory:
+            recalls = LarkRetractions(address, "ou_bot", Path(directory) / "recall.db", AsyncMock())
+            recalls.attach(adapter)
+            with patch.object(event.bot.im.v1.message, "alist", side_effect=history) as lookup:
+                one = asyncio.create_task(recalls.reconcile(event, convert(event), force=True))
+                await started.wait()
+                two = asyncio.create_task(recalls.reconcile(event, convert(event), force=True))
+                await asyncio.sleep(0)
+                one.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await one
+                self.assertFalse(two.done())
+                released.set()
+                await two
+                lookup.assert_awaited_once()
+            recalls.detach()
+
     async def test_native_ingress_does_not_wait_for_optional_display_profile(self):
         from fat_fish.adapters.lark_latency import attach_native_ingress
 
@@ -45,11 +115,19 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             finished.set()
             return SimpleNamespace(success=lambda: True, data=SimpleNamespace(user=SimpleNamespace(name="Fixture")))
 
-        with patch.object(adapter.lark_api.contact.v3.user, "aget", side_effect=full_profile), \
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(adapter.lark_api.contact.v3.user, "aget", side_effect=full_profile), \
              patch("astrbot.core.platform.sources.lark.lark_adapter.sp.put_async", new=AsyncMock()):
-            restore = attach_native_ingress(adapter, None)
+            private = Path(directory)
+            (private / "ffa-lark-latency").touch()
+            restore = attach_native_ingress(adapter, private)
             try:
                 await asyncio.wait_for(adapter.convert_msg(raw), 2)
+                event = adapter._event_queue.get_nowait()
+                timeline = event.get_extra("_ffa_lark_latency")
+                self.assertTrue(timeline.native_observed)
+                self.assertEqual(timeline.times["T1"], event.get_extra("_ffa_ingress_monotonic"))
+                self.assertGreaterEqual(timeline.times["native_queued"], timeline.times["T1"])
                 self.assertEqual(adapter._user_name_cache["ou_alice"][0], "ou_alice")
                 self.assertFalse(finished.is_set())
                 signal.set()
@@ -703,11 +781,20 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
                 original = AsyncMock()
                 reply = event.plain_result("ordinary reply")
                 reply.chain.insert(0, Reply(id="om_sample"))
-                with patch.object(AstrMessageEvent, "send", new_callable=AsyncMock) as recorded:
+                with patch.object(AstrMessageEvent, "send", new_callable=AsyncMock) as recorded, \
+                     patch.object(adapter.lark_api.im.v1.message, "acreate", new_callable=AsyncMock) as api:
+                    api.return_value = SimpleNamespace(success=lambda: True)
                     await provider.reply_native(event, message.conversation, reply, original)
                     recorded.assert_awaited_once()
-                origin, direct = send.await_args.args
-                self.assertEqual(origin, native_session)
-                self.assertEqual([type(part).__name__ for part in direct.chain], ["Plain"])
+                if group:
+                    origin, direct = send.await_args.args
+                    self.assertEqual(origin, native_session)
+                    self.assertEqual([type(part).__name__ for part in direct.chain], ["Plain"])
+                    api.assert_not_awaited()
+                else:
+                    send.assert_not_awaited()
+                    api.assert_awaited_once()
+                    request = api.await_args.args[0]
+                    self.assertEqual((request.receive_id_type, request.request_body.receive_id), ("chat_id", room))
                 original.assert_not_awaited()
         self.assertEqual(len(reached), 5)

@@ -203,7 +203,8 @@ class CommunicationRuntime:
                 return None
             return await submit()
 
-    async def reply(self, event, admission, sequence, submit, *, check_on_submit=False):
+    async def reply(self, event, admission, sequence, submit, *, check_on_submit=False,
+                    ready=None, commit=None):
         """Dispatch a native envelope without losing its media or quote information."""
         target = event.conversation
         slot = self.connections[target.provider]
@@ -225,11 +226,19 @@ class CommunicationRuntime:
             if current is None or current.principal_id != admission.principal_id:
                 raise asyncio.CancelledError("FFA reply authorization revoked")
             if mark_submitted:
+                if commit is not None and not commit():
+                    raise asyncio.CancelledError("FFA reply admission changed")
                 submitted = True
 
         try:
             if not check_on_submit:
-                await asyncio.to_thread(authorize)
+                while True:
+                    if ready is not None:
+                        await ready()
+                    await asyncio.to_thread(authorize, False)
+                    if commit is None or commit():
+                        submitted = True
+                        break
             result = await submit(authorize)
         except BaseException:
             await asyncio.to_thread(self.seen.finish_delivery, scope, operation, "unknown" if submitted else "retryable")

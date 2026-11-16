@@ -8,9 +8,13 @@ import logging
 import time
 
 logger = logging.getLogger(__name__)
+_sending = ContextVar("ffa_lark_sending", default=None)
+_MARKER = "ffa-lark-latency"
 _INTERVALS = {
     "native_ms": ("T1", "T2"), "authority_ms": ("T2", "T3"),
-    "batch_ms": ("T3", "T4"), "gateway_prepare_ms": ("T2", "ready"),
+    "native_conversion_ms": ("T1", "native_queued"), "native_queue_ms": ("native_queued", "T2"),
+    "route_validation_ms": ("route_start", "route_end"),
+    "gateway_prepare_ms": ("T2", "ready"),
     "pre_agent_ms": ("T2", "T6"), "agent_ms": ("T6", "T7"),
     "agent_completion_ms": ("T6", "agent_finished"),
     "memory_ms": ("memory_start", "memory_end"), "media_ms": ("media_start", "media_end"),
@@ -21,7 +25,7 @@ _INTERVALS = {
 
 
 class LarkLatency:
-    def __init__(self, raw, received):
+    def __init__(self, raw, received, *, native_observed=True):
         try:
             self.server = int(raw.create_time) / 1000
         except (AttributeError, TypeError, ValueError):
@@ -29,12 +33,15 @@ class LarkLatency:
         self.arrival_wall, mono = received
         self.times = {"T1": mono}
         self.ident = hashlib.sha256(str(raw.message_id).encode()).hexdigest()[:16]
-        self.kind = "group" if raw.chat_type == "group" else "private"
+        self.kind = "group" if getattr(raw, "chat_type", None) == "group" else "private"
         self.category = "D"
         self.outcome = None
         self.error = None
         self.tools = 0.0
         self.tokens = None
+        self.native_observed = native_observed
+        self.attempts = []
+        self.route = None
 
     def mark(self, step):
         if step not in self.times:
@@ -45,7 +52,12 @@ class LarkLatency:
 
     def log(self):
         fields = {"id": self.ident, "platform": "lark", "kind": self.kind,
+                  "native_observed": self.native_observed,
                   "category": self.category, "status": self.outcome or "no_submission"}
+        if self.route:
+            fields["route"] = self.route
+        if self.attempts:
+            fields["im_attempts"] = self.attempts
         if self.error:
             fields["error"] = self.error
         if self.tools:
@@ -53,7 +65,8 @@ class LarkLatency:
         if self.tokens is not None:
             fields["agent_tokens"] = self.tokens
         fields.update({name: round((self.times[end] - self.times[start]) * 1000, 1)
-                       for name, (start, end) in _INTERVALS.items() if start in self.times and end in self.times})
+                       for name, (start, end) in _INTERVALS.items() if start in self.times and end in self.times
+                       and (self.native_observed or start != "T1")})
         if self.server is not None:
             if "T9" in self.times:
                 elapsed = self.times["T9"] - self.times["T1"]
@@ -61,12 +74,25 @@ class LarkLatency:
             if "first_api_result" in self.times:
                 elapsed = self.times["first_api_result"] - self.times["T1"]
                 fields["server_to_first_api_result_ms"] = round((self.arrival_wall - self.server + elapsed) * 1000, 1)
-            fields["server_to_receive_ms"] = round((self.arrival_wall - self.server) * 1000, 1)
-        logger.info("FFA Lark latency %s", json.dumps(fields, separators=(",", ":")))
+            name = "server_to_receive_ms" if self.native_observed else "server_to_gateway_ms"
+            fields[name] = round((self.arrival_wall - self.server) * 1000, 1)
+        logging.getLogger("astrbot").info("FFA Lark latency %s", json.dumps(fields, separators=(",", ":")))
 
 
 def trace(event):
     return event.get_extra("_ffa_lark_latency", None)
+
+
+def ensure_trace(event, private_dir, arrived):
+    timeline = trace(event)
+    raw = getattr(event.message_obj, "raw_message", None)
+    if (timeline is None and getattr(raw, "message_id", None) and private_dir is not None
+            and (private_dir / _MARKER).is_file()):
+        timeline = LarkLatency(raw, (time.time(), arrived), native_observed=False)
+        event.set_extra("_ffa_lark_latency", timeline)
+    if timeline is not None:
+        timeline.times.setdefault("T2", arrived)
+    return timeline
 
 
 @contextmanager
@@ -78,6 +104,7 @@ def submitted(event, *, streaming=False, progress=False):
     if streaming:
         timeline.category = "G"
     started = time.monotonic()
+    token = _sending.set(timeline)
     try:
         yield
     except BaseException as exc:
@@ -85,13 +112,55 @@ def submitted(event, *, streaming=False, progress=False):
             timeline.outcome, timeline.error = "failed", type(exc).__name__
         raise
     else:
-        timeline.mark("first_api_result")
+        timeline.mark("first_submission_return")
         if not progress:
             timeline.outcome, timeline.error = "submitted", None
     finally:
+        _sending.reset(token)
         if not progress:
             timeline.times["T8"] = started
             timeline.times["T9"] = time.monotonic()
+
+
+def attach_send_api(adapter):
+    """Measure individual SDK IM attempts, including retries in the native adapter."""
+    api = getattr(getattr(getattr(getattr(adapter, "lark_api", None), "im", None), "v1", None),
+                  "message", None)
+    original = {}
+
+    def instrument(method, kind):
+        async def send(request, *args, **kwargs):
+            timeline = _sending.get()
+            started = time.monotonic()
+            status = "exception"
+            try:
+                response = await method(request, *args, **kwargs)
+                status = "ok" if response.success() else getattr(response, "code", None)
+                if status == "ok" and timeline is not None:
+                    timeline.mark("first_api_result")
+                return response
+            finally:
+                if timeline is not None and len(timeline.attempts) < 32:
+                    route = getattr(request, "receive_id_type", None) if kind == "create" else "reply"
+                    if route not in {"chat_id", "open_id", "reply"}:
+                        route = kind
+                    timeline.attempts.append({"route": route, "status": status,
+                                              "ms": round((time.monotonic() - started) * 1000, 1)})
+        return send
+
+    for name, kind in (("acreate", "create"), ("areply", "reply")):
+        method = getattr(api, name, None)
+        if callable(method):
+            wrapper = instrument(method, kind)
+            original[name] = method, wrapper
+            setattr(api, name, wrapper)
+
+    def detach():
+        for name, (method, wrapper) in original.items():
+            if getattr(api, name, None) is wrapper:
+                setattr(api, name, method)
+
+    return detach
 
 
 def attach_native_ingress(adapter, private_dir):
@@ -148,8 +217,7 @@ def attach_native_ingress(adapter, private_dir):
         task.add_done_callback(profile_tasks.discard)
 
     async def timed_convert(event):
-        clock = ((time.time(), time.monotonic()) if private_dir is not None
-                 and (private_dir / "ffa-lark-latency").is_file() else None)
+        clock = (time.time(), asyncio.get_running_loop().time())
         token = received.set(clock)
         try:
             if hasattr(adapter, "_user_name_cache"):
@@ -161,8 +229,15 @@ def attach_native_ingress(adapter, private_dir):
     def timed_create(native):
         event = create(native)
         clock = received.get()
-        if clock is not None and native.raw_message is not None:
-            event.set_extra("_ffa_lark_latency", LarkLatency(native.raw_message, clock))
+        if clock is not None:
+            event.set_extra("_ffa_ingress_monotonic", clock[1])
+        raw = native.raw_message
+        if getattr(raw, "message_type", None) == "merge_forward":
+            event.set_extra("_ffa_external_envelope", True)
+        if clock is not None and raw is not None and private_dir is not None and (private_dir / _MARKER).is_file():
+            timeline = LarkLatency(raw, clock)
+            timeline.mark("native_queued")
+            event.set_extra("_ffa_lark_latency", timeline)
         return event
 
     async def parse_components(*, message_id, message_type, content, at_map):
@@ -182,8 +257,12 @@ def attach_native_ingress(adapter, private_dir):
     previous = {name: vars(adapter)[name] for name in hooks if name in vars(adapter)}
     for name, hook in hooks.items():
         setattr(adapter, name, hook)
+    detach_send = attach_send_api(adapter)
+    if private_dir is not None and (private_dir / _MARKER).is_file():
+        logging.getLogger("astrbot").info("FFA Lark latency hooks attached")
 
     def detach():
+        detach_send()
         for task in profile_tasks:
             task.cancel()
         for name, hook in hooks.items():
