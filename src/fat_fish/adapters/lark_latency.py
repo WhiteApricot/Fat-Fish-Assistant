@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from pathlib import PureWindowsPath
 import time
 
 logger = logging.getLogger(__name__)
@@ -230,11 +231,18 @@ def attach_native_ingress(adapter, private_dir):
             received.reset(token)
 
     def timed_create(native):
+        raw = native.raw_message
+        if getattr(raw, "message_type", None) == "post" and any(
+            type(part).__name__ == "File" for part in native.message
+        ):
+            native.message_str = adapter._build_message_str_from_components(
+                [part for part in native.message if type(part).__name__ != "File"],
+                bot_self_id=adapter.bot_open_id, bot_name=adapter.bot_name, preserve_whitespace=True,
+            )
         event = create(native)
         clock = received.get()
         if clock is not None:
             event.set_extra("_ffa_ingress_monotonic", clock[1])
-        raw = native.raw_message
         if getattr(raw, "message_type", None) == "merge_forward":
             event.set_extra("_ffa_external_envelope", True)
         if clock is not None and raw is not None and private_dir is not None and (private_dir / _MARKER).is_file():
@@ -247,7 +255,7 @@ def attach_native_ingress(adapter, private_dir):
         if message_type == "merge_forward":
             return list(at_map.values())
         try:
-            return await parse(message_id=message_id, message_type=message_type, content=content, at_map=at_map)
+            components = await parse(message_id=message_id, message_type=message_type, content=content, at_map=at_map)
         except Exception as exc:
             if message_type != "audio":
                 raise
@@ -255,6 +263,31 @@ def attach_native_ingress(adapter, private_dir):
             # can report the failure. The exception may contain resource URLs.
             logger.debug("Lark native voice preparation failed (%s)", type(exc).__name__)
             return list(at_map.values())
+
+        files = content.get("files") if message_type == "post" else None
+        if isinstance(files, list) and files:
+            from astrbot.api.message_components import File
+            from fat_fish.integrations.text_files import MAX_FILES
+
+            async def parse_file(item):
+                metadata = item if isinstance(item, dict) else {}
+                key = metadata.get("file_key")
+                name = PureWindowsPath(str(metadata.get("file_name") or "附件")).name[:120]
+                if isinstance(key, str) and key.strip() and not metadata.get("is_folder"):
+                    try:
+                        async with asyncio.timeout(12):
+                            parsed = await parse(message_id=message_id, message_type="file",
+                                                 content={"file_key": key, "file_name": name}, at_map={})
+                        if parsed:
+                            return parsed[0]
+                    except Exception as exc:
+                        logger.info("Lark post attachment unavailable (%s)", type(exc).__name__)
+                # Keep an unresolved file so admission can report the failed attachment.
+                return File(name=name)
+
+            components.extend(await asyncio.gather(*(parse_file(item) for item in files[:MAX_FILES])))
+            components.extend(File(name="附件") for _ in files[MAX_FILES:])
+        return components
 
     hooks = {"convert_msg": timed_convert, "create_event": timed_create, "_parse_message_components": parse_components}
     previous = {name: vars(adapter)[name] for name in hooks if name in vars(adapter)}

@@ -3,7 +3,9 @@ from contextlib import aclosing
 import logging
 import re
 
-from fat_fish.integrations.web_search import DSML_MARKER, clean_message, clean_reply
+from fat_fish.integrations.web_search import (
+    DSML_MARKER, READ_URL_TOOL, RETIRED_WEB_TOOLS, WEB_SEARCH_TOOL, clean_message, clean_reply,
+)
 
 
 _PARTIAL_MARKER = re.compile(r"</?(?:[｜|]+(?:D(?:S(?:M(?:L)?)?)?)?)?\Z", re.I)
@@ -11,7 +13,7 @@ _RETRY_PROMPT = (
     "请重新处理当前用户请求。需要使用工具时，通过 API 提供的工具结构实际调用，使用它当前的参数定义。"
     "不要把工具名称、标签、参数或 JSON 指令写进用户可见正文。"
 )
-_MANAGED_TOOLS = {"ffa_manage": "管理指令", "web_search_deepseek": "联网搜索", "deepseek_fetch_web_page": "联网搜索"}
+_MANAGED_TOOLS = {"ffa_manage": "管理指令", WEB_SEARCH_TOOL: "联网搜索", READ_URL_TOOL: "网页阅读"}
 logger = logging.getLogger(__name__)
 
 
@@ -24,7 +26,8 @@ def private_tool_log(record):
 
 
 def enforce_offered_tools(response, offered, event):
-    unavailable = {name for name in response.tools_call_name if name in _MANAGED_TOOLS and name not in offered}
+    unavailable = {name for name in response.tools_call_name
+                   if name in RETIRED_WEB_TOOLS or (name in _MANAGED_TOOLS and name not in offered)}
     if not unavailable:
         return
     calls = [(name, args, ident) for name, args, ident in zip(
@@ -35,16 +38,20 @@ def enforce_offered_tools(response, offered, event):
     if not calls:
         response.role = "assistant"
         response.result_chain = None
-        features = "、".join(sorted({_MANAGED_TOOLS[name] for name in unavailable}))
+        features = "、".join(sorted({_MANAGED_TOOLS.get(name, "联网工具") for name in unavailable}))
         response.completion_text = user_feedback(event, f"本轮无法使用{features}，请求未执行。")
     logger.info("FFA ignored unoffered native tool names=%s", ",".join(sorted(unavailable)))
 
 
 def clean_assistant_history(messages):
-    """Remove stale protocol from assistant history while preserving real tool pairs."""
+    """Remove retired web tool calls and replies while preserving other tool pairs."""
+    retired_ids = {call.id for message in messages if message.role == "assistant"
+                   for call in message.tool_calls or () if call.function.name in RETIRED_WEB_TOOLS}
     clean = []
     for message in messages:
         content = message.content
+        if message.role == "tool" and message.tool_call_id in retired_ids:
+            continue
         if message.role != "assistant":
             clean.append(message)
             continue
@@ -58,8 +65,12 @@ def clean_assistant_history(messages):
                 elif body := clean_reply(part.text):
                     parts.append(part.model_copy(update={"text": body}))
             content = parts
-        if content or message.tool_calls:
-            clean.append(message.model_copy(update={"content": content}) if content is not message.content else message)
+        calls = message.tool_calls
+        if retired_ids and calls:
+            calls = [call for call in calls if call.id not in retired_ids]
+        if content or calls:
+            clean.append(message.model_copy(update={"content": content, "tool_calls": calls})
+                         if content is not message.content or calls is not message.tool_calls else message)
     return clean
 
 

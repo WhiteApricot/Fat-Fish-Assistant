@@ -6,8 +6,8 @@ AstrBot 接收 QQ 或飞书的原生事件，FFA 的通信核心检查身份、�
 
 | 能力 | 通过准入后的执行链路 |
 | --- | --- |
-| 联网搜索 | Main Agent 选择 `web_search_deepseek` 的 `search` 模式。统一客户端调用 `POST /chat/completions`，仅声明 `deepseek_web_search`，关闭深度思考并启用内容安全检查。助手答复、引用和首选来源作为资料交还 Main Agent。 |
-| 阅读链接 | 同一工具的 `read_url` 模式调用同一端点，仅声明 `deepseek_read_url`。链接须来自当前用户提交的公开地址。工具状态保留 DeepSeek 的原始 `server_tool_calls` 与签名，在同一会话、同一发言者再次选择阅读时回传。 |
+| 联网搜索 | Main Agent 选择 `ffa_web_search`。统一客户端调用 `POST /chat/completions`，仅声明 `deepseek_web_search`，关闭深度思考并启用内容安全检查。助手答复、引用和首选来源作为资料交还 Main Agent。 |
+| 阅读链接 | Main Agent 选择 `ffa_read_url`。客户端调用同一端点，仅声明 `deepseek_read_url`。链接须来自当前用户提交的公开地址。工具状态保留 DeepSeek 的原始 `server_tool_calls` 与签名，在同一会话、同一发言者再次选择阅读时回传。 |
 | 文件输入 | 获取经平台下载边界验证的附件，使用 `POST /files` 上传。PDF、Word 和 PowerPoint 采用 `text_recognition`。纯文本、Excel 和电子书采用 `user_data`。AstrBot OpenAI Provider 在 Main Agent 当前请求的用户消息中加入 `{"type":"file","file_id":"…"}`。 |
 | 语音输入 | QQ、飞书共用本地媒体定位和格式转换，调用 `POST /v1/tools/asr`。转写文本继续进入原有参与判断、记忆和 Main Agent。QQ SILK 使用 AstrBot 的解码能力。 |
 
@@ -50,6 +50,12 @@ Web 费用由 DeepSeek 返回的输入、缓存命中和输出 Token，加上计
 TXT、CSV、标准 PDF、DOCX 都提取了预置值。锁定的 AstrBot Provider 实际发送了包含 `file_id` 的当前用户消息，PDF、DOCX 和 CSV 均只需一次主模型请求理解正文。损坏 PDF 和无效音频触发了网关的失败提示。极简手写 PDF 虽获上传成功响应，正文提取却为空，标准 PDF 的一次验证也出现空正文，后续复测通过。
 
 本地 QQ SILK 和飞书 Ogg Opus 事件样本经过网关、真实 DeepSeek ASR 与 AstrBot Provider，最终都回答了语音中的数字 42。平台侧使用隔离的原生事件夹具，实机机器人登录、消息上传及客户端展示仍待现场验收。另完成 135 项核心回归和 22 项锁定 AstrBot 飞书及媒体契约测试，覆盖权限、管理指令、记忆、人格、联网开关和媒体边界。
+
+### 飞书混发与联网回归
+
+飞书客户端将混发附件放在富文本的外层 `files` 字段，适配器复用平台的文件资源读取并保留正文。故障记录中的 PPTX 资源端点返回 HTTP 200，合成的文字加 PPTX 原生事件在真实 DeepSeek API 复验中读出了预置编号。
+
+搜索与网页阅读使用独立的原生 API 工具入口，历史中的旧调用和对应结果在发送给模型前过滤。真实 Flash 请求选择了新搜索工具并返回 SQLite 官方来源。修复发布通过 24 项飞书与媒体契约测试。
 
 ## 修改范围
 

@@ -170,7 +170,9 @@ class FatFishGuard(Star):
 
     @filter.on_using_llm_tool(priority=-100000)
     async def mark_web_material(self,event,tool,_args):
-        if tool.name in {'web_search_deepseek','deepseek_fetch_web_page'}:
+        from fat_fish.integrations.web_search import READ_URL_TOOL, WEB_SEARCH_TOOL
+
+        if tool.name in {WEB_SEARCH_TOOL, READ_URL_TOOL}:
             event.set_extra('_ffa_web_material',True)
             timeline = event.get_extra("_ffa_lark_latency")
             if timeline is not None and timeline.category != "G":

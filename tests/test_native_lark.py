@@ -136,6 +136,52 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 restore()
 
+    async def test_native_post_keeps_text_and_materializes_top_level_files(self):
+        from fat_fish.adapters.lark_latency import attach_native_ingress
+
+        adapter = self.adapter()
+        content = {"title": "", "content": [[{"tag": "text", "text": "请读取文件中的编号"}]],
+                   "files": [{"file_key": "file_v2_fixture", "file_name": "report.docx", "is_folder": False}]}
+        raw = lark.im.v1.P2ImMessageReceiveV1({"event": {
+            "sender": {"sender_id": {"open_id": "ou_alice"}, "sender_type": "user"},
+            "message": {"message_id": "om_fixture", "chat_id": "oc_test", "chat_type": "p2p",
+                        "create_time": "1771000000000", "message_type": "post", "content": json.dumps(content)},
+        }})
+        restore = attach_native_ingress(adapter, None)
+        self.addCleanup(restore)
+        with patch.object(adapter, "_download_file_resource_to_temp", new=AsyncMock(return_value="fixture.docx")) as download, \
+             patch.object(adapter.lark_api.contact.v3.user, "aget",
+                          new=AsyncMock(return_value=SimpleNamespace(success=lambda: False))), \
+             patch("astrbot.core.platform.sources.lark.lark_adapter.sp.put_async", new=AsyncMock()):
+            await adapter.convert_msg(raw)
+        event = adapter._event_queue.get_nowait()
+        self.assertEqual(convert(event).text, "请读取文件中的编号")
+        self.assertEqual([(m.kind, m.filename) for m in convert(event).media], [("file", "report.docx")])
+        download.assert_awaited_once_with(message_id="om_fixture", file_key="file_v2_fixture",
+                                          message_type="file", file_name="report.docx")
+        with patch.object(adapter, "_download_file_resource_to_temp", new=AsyncMock(return_value=None)):
+            failed = await adapter._parse_message_components(message_id="om_fixture", message_type="post",
+                                                             content=content, at_map={})
+        self.assertEqual([type(p).__name__ for p in failed], ["Plain", "File"])
+        self.assertFalse(failed[-1].file_)
+
+    def test_retired_web_calls_are_removed_from_model_history(self):
+        from astrbot.core.agent.message import Message
+        from fat_fish.integrations.deepseek_tool_output import clean_assistant_history
+
+        history = [
+            Message.model_validate({"role": "assistant", "tool_calls": [
+                {"id": "old", "type": "function", "function": {"name": "web_search_deepseek", "arguments": "{}"}},
+                {"id": "current", "type": "function", "function": {"name": "ffa_manage", "arguments": "{}"}},
+            ]}),
+            Message(role="tool", content="old result", tool_call_id="old"),
+            Message(role="tool", content="management result", tool_call_id="current"),
+            Message(role="assistant", content="答复保留"),
+        ]
+        cleaned = clean_assistant_history(history)
+        self.assertEqual([x.id for x in cleaned[0].tool_calls], ["current"])
+        self.assertEqual(cleaned[1:], history[2:])
+
     async def test_agent_capabilities_are_independent_at_native_tool_boundary(self):
         from astrbot.core import astr_main_agent
         from fat_fish.commands.agent_tool import ManagementTurn, install_native_tool_boundary, offer_management
@@ -158,7 +204,7 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
                 offer_search(event, request, {}, enabled=search, may_search=lambda: search, resolved_key="fixture")
                 names = {tool.name for tool in request.func_tool.tools} if request.func_tool else set()
                 self.assertEqual(names, ({"ffa_manage"} if management else set()) |
-                                 ({"web_search_deepseek"} if search else set()))
+                                 ({"ffa_web_search", "ffa_read_url"} if search else set()))
                 if not management:
                     continue
                 native = request.func_tool.get_tool("ffa_manage")
@@ -212,8 +258,8 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
                 yield LLMResponse(role="tool", tools_call_name=[runner.name],
                                   tools_call_args=[{"arg": "example"}], tools_call_ids=["call_test"])
 
-        cases = (("ffa_manage", True, True), ("web_search_deepseek", True, True),
-                 ("web_search_deepseek", True, False), ("ffa_manage", False, False))
+        cases = (("ffa_manage", True, True), ("ffa_web_search", True, True),
+                 ("ffa_web_search", True, False), ("ffa_manage", False, False))
         for name, enabled, recover in cases:
             with self.subTest(name=name, enabled=enabled, recover=recover):
                 event = NativeEvent()
@@ -242,7 +288,7 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
         from test_communication import NativeEvent
 
         event = NativeEvent()
-        for name, other in (("ffa_manage", "web_search_deepseek"), ("web_search_deepseek", "ffa_manage")):
+        for name, other in (("ffa_manage", "ffa_web_search"), ("ffa_web_search", "ffa_manage")):
             with self.subTest(name=name):
                 response = LLMResponse(role="tool", completion_text="不可信的成功声明",
                                        tools_call_name=[name], tools_call_args=[{"internal": "value"}],
@@ -271,8 +317,8 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             request = SimpleNamespace(func_tool=None, system_prompt="")
             offer_search(event, request, {}, may_search=lambda: True, resolved_key="fixture")
             run = SimpleNamespace(context=SimpleNamespace(event=event))
-            return await request.func_tool.get_tool("web_search_deepseek").call(
-                run, mode="read_url", query=query)
+            return await request.func_tool.get_tool("ffa_read_url").call(
+                run, query=query)
 
         with patch("fat_fish.integrations.web_search.DeepSeekChatBot.web",
                    new=AsyncMock(side_effect=(first, followup))) as native:
@@ -299,12 +345,12 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
         event.set_extra("_ffa_platform_admission", True)
         request = SimpleNamespace(func_tool=None, system_prompt="")
         offer_search(event, request, {}, may_search=lambda: True, resolved_key="fixture")
-        tool = request.func_tool.get_tool("web_search_deepseek")
+        tool = request.func_tool.get_tool("ffa_web_search")
         run = SimpleNamespace(context=SimpleNamespace(event=event))
         with patch("fat_fish.integrations.web_search.DeepSeekChatBot.web",
                    new=AsyncMock(side_effect=DeepSeekError("timeout"))) as lookup:
-            self.assertIn("搜索失败", await tool.call(run, mode="search", query="official source"))
-            self.assertIn("已请求", await tool.call(run, mode="search", query="official guide"))
+            self.assertIn("搜索失败", await tool.call(run, query="official source"))
+            self.assertIn("已请求", await tool.call(run, query="official guide"))
             lookup.assert_awaited_once()
 
     async def test_merge_forward_uses_sdk_tree_and_partial_results(self):
@@ -467,18 +513,18 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             key = await session_application_key(context, event.unified_msg_origin, {})
             context.get_using_provider_async.assert_awaited_once_with(event.unified_msg_origin)
             offer_search(event, request, {}, may_search=permission, resolved_key=key)
-            tool = request.func_tool.get_tool("web_search_deepseek")
+            tool = request.func_tool.get_tool("ffa_web_search")
             usage = SimpleNamespace(context=SimpleNamespace(event=event, context=None))
             rows = [{"title": "Docs", "url": "https://docs.python.org"}]
             reply = {"content": "official", "server_tool_calls": [
                 {"calls": [{"kind": "search", "status": "completed", "sources": rows}]}]}
             with patch("fat_fish.integrations.web_search.DeepSeekChatBot.web",
                        new=AsyncMock(return_value=reply)) as search:
-                result = await tool.call(usage, mode="search", query="python docs")
+                result = await tool.call(usage, query="python docs")
                 self.assertEqual(json.loads(result)["来源"], rows)
                 self.assertTrue(search.await_args.args[0][0]["content"].endswith("python docs"))
                 permission.return_value = False
-                await tool.call(usage, mode="search", query="second query")
+                await tool.call(usage, query="second query")
                 search.assert_awaited_once()
 
     async def test_search_rejects_nonofficial_chat_credential_sources(self):
