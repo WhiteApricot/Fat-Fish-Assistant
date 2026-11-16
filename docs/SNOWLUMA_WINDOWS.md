@@ -1,6 +1,8 @@
 # Windows SnowLuma 官方接入
 
-SnowLuma 是当前 Windows x64 的临时 QQ 兼容方案。FFA 使用 2.4.2 Full 官方 ZIP，单独放置。Full 已包含 Node，桌面 QQ 由腾讯官方渠道提供。 [发行锁](../manifests/snowluma/windows-x64.json) · [官方 Windows 指南](https://snowluma.github.io/en/docs/guide/deploy/windows)
+SnowLuma 是 Windows x64 的 QQ 兼容方案。FFA 固定使用 2.4.2 Full 官方 ZIP，单独放置。Full 已包含 Node，桌面 QQ 由腾讯官方渠道提供。 [固定文件名、来源和 SHA256](../manifests/snowluma/windows-x64.json)
+
+本次文档核对时，固定发行页和下载地址均不可访问。已有原版 ZIP 的用户可用下面的离线入口，安装器会核对文件大小和 SHA256。首次接入且没有该原版 ZIP 时，需先取得与清单匹配的官方发布资产。
 
 ## 获取程序与打开窗口
 
@@ -26,7 +28,7 @@ SnowLuma 是当前 Windows x64 的临时 QQ 兼容方案。FFA 使用 2.4.2 Full
 4. 角色选 Universal，消息格式选 array，重连间隔填写 5000 毫秒，关闭上报自身消息与状态指令。保存并启用连接后清理剪贴板。
 5. 让 AstrBot 保持运行，然后执行 `verify`。读到反向连接、OneBot 服务、QQ 在线和绑定身份四层证据后，按[账号与权限](PERMISSIONS.md)完成主人验证或绑定，再发一条私聊检查实际回复。
 
-WebUI 可打开只说明本机管理页有响应。OneBot 在线和身份匹配来自 AstrBot 现有的已鉴权连接。真实模型回答和业务聊天通过实机消息验收。 [官方反向连接说明](https://snowluma.github.io/en/docs/guide/connect-bot)
+WebUI 可打开表明本机管理页有响应。OneBot 在线和身份匹配来自 AstrBot 现有的已鉴权连接。实际消息收发请在已接入的 QQ 客户端验证。
 
 ## 常见提示
 
