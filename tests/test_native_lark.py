@@ -176,11 +176,19 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             ]}),
             Message(role="tool", content="old result", tool_call_id="old"),
             Message(role="tool", content="management result", tool_call_id="current"),
+            Message.model_validate({"role": "assistant", "content": "搜索前的文字", "tool_calls": [
+                {"id": "only_old", "type": "function", "function": {"name": "web_search_deepseek", "arguments": "{}"}},
+            ]}),
+            Message(role="tool", content="another retired result", tool_call_id="only_old"),
+            Message(role="assistant", content="已存的普通答复", tool_calls=[]),
             Message(role="assistant", content="答复保留"),
         ]
         cleaned = clean_assistant_history(history)
         self.assertEqual([x.id for x in cleaned[0].tool_calls], ["current"])
-        self.assertEqual(cleaned[1:], history[2:])
+        self.assertEqual(cleaned[1], history[2])
+        self.assertEqual(cleaned[2].model_dump(), {"role": "assistant", "content": "搜索前的文字"})
+        self.assertEqual(cleaned[3].model_dump(), {"role": "assistant", "content": "已存的普通答复"})
+        self.assertEqual(cleaned[4], history[-1])
 
     async def test_agent_capabilities_are_independent_at_native_tool_boundary(self):
         from astrbot.core import astr_main_agent

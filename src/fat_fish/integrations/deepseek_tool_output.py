@@ -65,9 +65,9 @@ def clean_assistant_history(messages):
                 elif body := clean_reply(part.text):
                     parts.append(part.model_copy(update={"text": body}))
             content = parts
-        calls = message.tool_calls
+        calls = message.tool_calls or None
         if retired_ids and calls:
-            calls = [call for call in calls if call.id not in retired_ids]
+            calls = [call for call in calls if call.id not in retired_ids] or None
         if content or calls:
             clean.append(message.model_copy(update={"content": content, "tool_calls": calls})
                          if content is not message.content or calls is not message.tool_calls else message)
