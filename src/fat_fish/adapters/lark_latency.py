@@ -179,6 +179,7 @@ def attach_native_ingress(adapter, private_dir):
         return lambda: None
     convert, create, parse = adapter.convert_msg, adapter.create_event, adapter._parse_message_components
     received = ContextVar("ffa_lark_native_receive", default=None)
+    organization = ContextVar("ffa_lark_organization", default=None)
     profile_tasks = set()
 
     def defer_profile(envelope):
@@ -227,11 +228,20 @@ def attach_native_ingress(adapter, private_dir):
     async def timed_convert(event):
         clock = (time.time(), asyncio.get_running_loop().time())
         token = received.set(clock)
+        header = getattr(event, "header", None)
+        sender = getattr(getattr(event, "event", None), "sender", None)
+        identity = getattr(sender, "sender_id", None)
+        evidence = organization.set((
+            getattr(header, "app_id", None), getattr(header, "tenant_key", None),
+            getattr(sender, "tenant_key", None), getattr(sender, "sender_type", None),
+            getattr(identity, "open_id", None),
+        ))
         try:
             if hasattr(adapter, "_user_name_cache"):
                 defer_profile(getattr(event, "event", None))
             return await convert(event)
         finally:
+            organization.reset(evidence)
             received.reset(token)
 
     def timed_create(native):
@@ -244,6 +254,7 @@ def attach_native_ingress(adapter, private_dir):
                 bot_self_id=adapter.bot_open_id, bot_name=adapter.bot_name, preserve_whitespace=True,
             )
         event = create(native)
+        event.set_extra("_ffa_lark_organization", organization.get())
         clock = received.get()
         if clock is not None:
             event.set_extra("_ffa_ingress_monotonic", clock[1])

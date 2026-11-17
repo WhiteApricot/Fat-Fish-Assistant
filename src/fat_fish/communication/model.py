@@ -20,6 +20,10 @@ class NotSubmitted(PermissionError):
     """The trusted adapter confirms it stopped before external dispatch."""
 
 
+class ProviderUnavailable(ConnectionError):
+    """A provider cannot currently perform a transport-dependent check."""
+
+
 class ChatKind(str, Enum):
     PRIVATE = "private"
     GROUP = "group"

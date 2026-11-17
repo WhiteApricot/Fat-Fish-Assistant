@@ -1,6 +1,7 @@
 """FFA ingress and outbound dispatch. Each registered connection owns its lifecycle."""
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -31,6 +32,10 @@ class Connection:
     manifest: AdapterManifest | None = None
     state: str = "disabled"
     enabled: bool = False
+    start_attempts: int = 0
+    last_error: str | None = None
+    last_health_check: float | None = None
+    last_healthy_at: float | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -63,9 +68,11 @@ class CommunicationRuntime:
             if slot.state == "stop_failed":
                 return False
             try:
+                slot.start_attempts += 1
                 await slot.provider.start()
             except (Exception, asyncio.CancelledError) as exc:
                 slot.state = "start_failed"
+                slot.last_error = type(exc).__name__
                 try:
                     await slot.provider.stop()
                 except Exception as cleanup_error:
@@ -77,6 +84,7 @@ class CommunicationRuntime:
                 return False
             slot.enabled = True
             slot.state = "running"
+            slot.last_error = None
             return True
 
     async def disable(self, address):
@@ -90,6 +98,7 @@ class CommunicationRuntime:
                 await slot.provider.stop()
             except (Exception, asyncio.CancelledError) as exc:
                 slot.state = "stop_failed"
+                slot.last_error = type(exc).__name__
                 logger.warning("FFA provider stop failed (%s)", type(exc).__name__)
                 if isinstance(exc, asyncio.CancelledError):
                     raise
@@ -102,10 +111,27 @@ class CommunicationRuntime:
             if slot.enabled:
                 try:
                     healthy = await slot.provider.healthy()
-                except Exception:
+                except Exception as exc:
                     healthy = False
+                    slot.last_error = type(exc).__name__
+                slot.last_health_check = time.time()
+                if healthy:
+                    slot.last_healthy_at = slot.last_health_check
+                    slot.last_error = None
                 slot.state = "running" if healthy else "unhealthy"
             return "unhealthy" if slot.state in {"start_failed", "stop_failed"} else slot.state
+
+    async def health_snapshot(self, address):
+        await self.health(address)
+        slot = self.connections[address]
+        return {
+            "state": slot.state, "enabled": slot.enabled,
+            "start_attempts": slot.start_attempts,
+            "restart_attempts": max(0, slot.start_attempts - 1),
+            "last_error": slot.last_error,
+            "last_health_check": slot.last_health_check,
+            "last_healthy_at": slot.last_healthy_at,
+        }
 
     async def stop_all(self):
         await asyncio.gather(*(self.disable(address) for address in self.connections))
@@ -317,14 +343,12 @@ class CommunicationRuntime:
         if slot is None:
             return False
         probe = getattr(slot.provider, "ready_for_push", None)
-        if probe is None:
-            return True
         if target.bot != slot.provider.bot:
             return False
         if slot.state == "start_failed":
             await self.enable(target.provider)
         async with slot.lock:
-            return slot.enabled and await probe(target)
+            return slot.enabled and await (probe(target) if probe else slot.provider.healthy())
 
     def outbound_state(self, target, operation_id):
         return self.seen.delivery("outbound:" + target.storage_key, operation_id)

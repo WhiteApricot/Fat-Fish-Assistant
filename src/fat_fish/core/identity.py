@@ -313,6 +313,26 @@ class IdentityDirectory:
              verified_at,created_at,issued_by) VALUES (?,?,?,'verified',?,?,?,?)""",
                    (str(uuid4()), person, address, method, now, now, issuer))
 
+    def admit_native_member(self, account, room):
+        """Enroll a private contact after current provider membership verification."""
+        if (room.kind is not ChatKind.PRIVATE or room.peer != account.subject
+                or room.provider != account.provider or not self._native_permission(account, room)):
+            raise PermissionError("Verified native membership required")
+        with self.transaction(write=True) as db:
+            _, role, principal = self._lookup_identity(db, account)
+            if role == Role.BLOCKED or db.execute(
+                    "SELECT 1 FROM retired_accounts WHERE address=?", (account.storage_key,)).fetchone():
+                return principal
+            if principal is None:
+                principal = self._create_person(db, Role.MEMBER)
+                self._bind(db, account.storage_key, principal, "provider-native-member")
+            elif role == Role.VISITOR:
+                db.execute("UPDATE people SET role=? WHERE principal_id=?", (Role.MEMBER, principal))
+            else:
+                return principal
+            self._audit(db, "native-member", account.storage_key, principal=principal)
+            return principal
+
     @staticmethod
     def _lookup_identity(db, account):
         row = db.execute(

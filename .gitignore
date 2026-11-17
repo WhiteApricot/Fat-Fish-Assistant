@@ -34,6 +34,7 @@ models/
 !/tests/test_memory_service.py
 !/tests/test_native_media.py
 !/tests/test_native_lark.py
+!/tests/test_dual_platform.py
 .pytest_cache/
 .coverage
 *.sqlite

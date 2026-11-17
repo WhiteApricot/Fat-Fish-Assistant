@@ -4,6 +4,7 @@ import json
 import sqlite3
 import time
 import uuid
+from fat_fish.communication.model import ProviderUnavailable
 from datetime import datetime
 from contextlib import closing
 from fat_fish.reminders.timing import cycle_label, tomorrow_date, parse_exact_time, parse_natural_schedule, parse_time,next_time,display,TZ
@@ -204,6 +205,8 @@ class ReminderStore:
                 permitted=await authorize(row)
                 if permitted and ready is not None and not await ready(row):
                     continue
+            except ProviderUnavailable:
+                continue
             except Exception as exc:
                 with closing(self.connect()) as db:
                     db.execute('INSERT INTO authorization_failures VALUES(?,1,?,?) ON CONFLICT(id) DO UPDATE SET count=count+1,error=excluded.error,updated=excluded.updated',(row['id'],type(exc).__name__,now))

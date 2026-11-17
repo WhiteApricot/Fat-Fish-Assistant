@@ -45,6 +45,14 @@ if (instance/'private/dashboard-password.txt').exists():load_password(instance)
 async def run():
     # The pinned Lark SDK captures an asyncio loop when AstrBot imports it.
     # Import the host on the same running loop that owns the adapter.
+    # Load the large SDK before native listener tasks acquire startup deadlines.
+    # Its module-level loop must be the loop that will own the Lark connection.
+    config = json.loads((instance/'data/cmd_config.json').read_text(encoding='utf-8-sig'))
+    if any(row.get('enable') and row.get('type') == 'lark' for row in config.get('platform', [])):
+        try:
+            import lark_oapi
+        except ImportError:
+            logging.getLogger(__name__).warning('Lark SDK unavailable during host warmup')
     import main
 
     running=instance/'private/RUNNING'

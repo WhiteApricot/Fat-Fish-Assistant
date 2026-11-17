@@ -58,10 +58,14 @@ class ReminderDispatch:
                 and recipient.principal_id == row["target_principal"])
 
     async def authorize(self, row):
+        from fat_fish.communication.model import ProviderUnavailable
+
         room, actor = address(row)
         slot = self.runtime.connections.get(room.provider)
         refresh = getattr(slot.provider, "refresh_delivery_access", None) if slot else None
-        if refresh and slot.enabled and room.bot == slot.provider.bot:
+        if refresh and room.bot == slot.provider.bot:
+            if not await self.ready(row):
+                raise ProviderUnavailable("Provider is not ready for authorization")
             _, role = self.runtime.identities.resolve_principal(actor)
             await refresh(actor, room, self.runtime.identities,
                           delegated=row["target"] != actor.subject and role < Role.ADMIN)

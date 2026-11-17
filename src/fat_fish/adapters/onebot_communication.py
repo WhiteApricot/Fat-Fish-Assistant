@@ -123,6 +123,13 @@ class OneBotCommunication(AstrBotCommunication):
             return
         identities.set_native_access(account, room, allowed=allowed)
 
+    async def ready_for_push(self, target):
+        if not await self.healthy():
+            return False
+        bot = self.context.platform_instance().get_client()
+        return (self.bot in getattr(bot, "_wsr_api_clients", {})
+                and bool(getattr(bot, "_wsr_event_clients", ())))
+
     async def group_members(self, event, message):
         from fat_fish.adapters.group_platform import GroupPlatform
 

@@ -271,6 +271,25 @@ class LarkCommunication(AstrBotCommunication):
     async def ready_for_push(self, target):
         return await self.healthy()
 
+    async def refresh_native_access(self, event, message, identities):
+        """Grant private member access from the authenticated installation tenant."""
+        room = message.conversation
+        if room.kind is not ChatKind.PRIVATE:
+            return None
+        evidence = event.get_extra("_ffa_lark_organization")
+        adapter = self.context.platform_instance()
+        if (isinstance(evidence, tuple) and len(evidence) == 5
+                and isinstance(evidence[1], str) and evidence[1]
+                and evidence[0] == getattr(adapter, "appid", None)
+                and evidence[1] == evidence[2] and evidence[3] == "user"
+                and evidence[4] == message.sender.subject
+                and room.provider == self.address and room.bot == self.bot
+                and await self.healthy()):
+            identities.set_native_access(message.sender, room, allowed=True)
+            await asyncio.to_thread(identities.admit_native_member, message.sender, room)
+        # Existing explicit bindings retain their normal authorization path.
+        return True
+
     async def send_checked(self, target, message, allowed):
         if not message.media:
             return await super().send_checked(target, message, allowed)
