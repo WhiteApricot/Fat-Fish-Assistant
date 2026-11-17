@@ -160,8 +160,8 @@ def _backup_locked(instance, destination):
             if path.is_symlink() or path.is_junction():raise ValueError('Linked data requires an explicit migration adapter')
             if not path.is_file():continue
             parts=tuple(part.casefold() for part in rel.parts)
-            if path.is_symlink() or path.is_junction():raise ValueError('Linked data requires an explicit migration adapter')
             if '__pycache__' in parts or path.suffix=='.pyc':continue
+            if parts[:2]==('diagnostics','latency_probe') or parts==('latency-client.jsonl',):continue
             if parts==('bin','ffmpeg.exe'):
                 import imageio_ffmpeg
                 if digest(path)!=digest(Path(imageio_ffmpeg.get_ffmpeg_exe())):raise ValueError('Managed FFmpeg was modified; explicit compatibility review required')
@@ -172,7 +172,9 @@ def _backup_locked(instance, destination):
             if parts[:2] in {('private','config-history'),('private','index-repair-history'),('private','lifecycle-history')}:continue
             if parts[0]=='private' and path.suffix=='.log':continue
             if parts==('private','install-origin.json'):continue
-            if parts==('private','runtime-health.json'):continue
+            if len(parts)==2 and parts[0]=='private' and parts[1] in {
+                'runtime-health.json','ffa-lark-latency','latency-traces.jsonl','latency-client.jsonl'
+            }:continue
             if parts[0]=='private' and path.name.casefold() in {'embedding.process.json','embedding.process.json.pending'}:continue
             if parts[:2]==('data','plugins'):
                 plugin_relative=Path(*rel.parts[2:]).as_posix()

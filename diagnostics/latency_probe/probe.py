@@ -243,6 +243,7 @@ def install(writer):
             pass
 
     lark_latency.LarkLatency = ObservedLatency
+    lark_latency._probe_active = True
     submitted = lark_latency.submitted
 
     @contextmanager
@@ -286,8 +287,9 @@ def install(writer):
                 if not response.success():
                     trace.send_failed.add(kind)
                     op.status = "rejected"
+                    code = response.code
                     trace.emit("T19", "send_rejected", "point", up=op.ident, status="rejected",
-                               response_code=response.code, delivery_kind=kind)
+                               response_code=code if isinstance(code, int) else None, delivery_kind=kind)
                 else:
                     trace.send_failed.discard(kind)
                     if visible:

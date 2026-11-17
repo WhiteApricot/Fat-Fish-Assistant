@@ -92,7 +92,6 @@ class LarkCommunication(AstrBotCommunication):
         Capability.MEDIA, Capability.IMAGE, Capability.FILE, Capability.RETRACT,
     }
     guard_stream = staticmethod(guard_stream)
-    reply_window = (1.0, 3.5)
 
     def ingress_trace(self, event, arrived):
         return ensure_trace(event, self.context.private_dir, arrived)

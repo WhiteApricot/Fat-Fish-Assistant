@@ -29,7 +29,7 @@ except ModuleNotFoundError as exc:
 class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
     async def test_verified_private_reply_uses_chat_id_and_reuses_uuid_on_rejection(self):
         from astrbot.api.event import MessageChain
-        from fat_fish.adapters.lark_latency import LarkLatency
+        from fat_fish.adapters.lark_latency import LarkLatency, attach_send_api
         from test_communication import NativeEvent
 
         adapter = self.adapter()
@@ -49,6 +49,7 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(api, "acreate", side_effect=(rejected, acknowledged)) as create, \
              patch.object(AstrMessageEvent, "send", new=AsyncMock()):
             await provider.start()
+            detach_send = attach_send_api(adapter)
             try:
                 await provider.reply_native(event, target, result, AsyncMock())
                 first, retry = [call.args[0] for call in create.await_args_list]
@@ -62,6 +63,7 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
                     await provider.reply_native(event, target, result, AsyncMock())
                 create.assert_awaited_once()
             finally:
+                detach_send()
                 await provider.stop()
 
     async def test_recall_history_is_single_flight_and_survives_waiter_cancellation(self):
@@ -123,6 +125,10 @@ class NativeLarkTests(unittest.IsolatedAsyncioTestCase):
             restore = attach_native_ingress(adapter, private)
             try:
                 await asyncio.wait_for(adapter.convert_msg(raw), 2)
+                self.assertIsNone(adapter._event_queue.get_nowait().get_extra("_ffa_lark_latency"))
+                raw.event.message.message_id = "om_cold_probe"
+                with patch("fat_fish.adapters.lark_latency._probe_active", True):
+                    await asyncio.wait_for(adapter.convert_msg(raw), 2)
                 event = adapter._event_queue.get_nowait()
                 timeline = event.get_extra("_ffa_lark_latency")
                 self.assertTrue(timeline.native_observed)

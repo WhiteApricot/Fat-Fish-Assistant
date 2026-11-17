@@ -11,6 +11,7 @@ import time
 logger = logging.getLogger(__name__)
 _sending = ContextVar("ffa_lark_sending", default=None)
 _MARKER = "ffa-lark-latency"
+_probe_active = False
 _INTERVALS = {
     "native_ms": ("T1", "T2"), "authority_ms": ("T2", "T3"),
     "native_conversion_ms": ("T1", "native_queued"), "native_queue_ms": ("native_queued", "T2"),
@@ -23,6 +24,10 @@ _INTERVALS = {
     "submit_ms": ("T8", "T9"), "gateway_ms": ("T2", "T9"),
     "gateway_to_first_api_result_ms": ("T2", "first_api_result"),
 }
+
+
+def _diagnostics_enabled(private_dir):
+    return _probe_active and private_dir is not None and (private_dir / _MARKER).is_file()
 
 
 class LarkLatency:
@@ -90,8 +95,7 @@ def trace(event):
 def ensure_trace(event, private_dir, arrived):
     timeline = trace(event)
     raw = getattr(event.message_obj, "raw_message", None)
-    if (timeline is None and getattr(raw, "message_id", None) and private_dir is not None
-            and (private_dir / _MARKER).is_file()):
+    if timeline is None and getattr(raw, "message_id", None) and _diagnostics_enabled(private_dir):
         timeline = LarkLatency(raw, (time.time(), arrived), native_observed=False)
         event.set_extra("_ffa_lark_latency", timeline)
     if timeline is not None:
@@ -245,7 +249,7 @@ def attach_native_ingress(adapter, private_dir):
             event.set_extra("_ffa_ingress_monotonic", clock[1])
         if getattr(raw, "message_type", None) == "merge_forward":
             event.set_extra("_ffa_external_envelope", True)
-        if clock is not None and raw is not None and private_dir is not None and (private_dir / _MARKER).is_file():
+        if clock is not None and raw is not None and _diagnostics_enabled(private_dir):
             timeline = LarkLatency(raw, clock)
             timeline.mark("native_queued")
             event.set_extra("_ffa_lark_latency", timeline)
@@ -293,12 +297,14 @@ def attach_native_ingress(adapter, private_dir):
     previous = {name: vars(adapter)[name] for name in hooks if name in vars(adapter)}
     for name, hook in hooks.items():
         setattr(adapter, name, hook)
-    detach_send = attach_send_api(adapter)
-    if private_dir is not None and (private_dir / _MARKER).is_file():
+    diagnostics = _diagnostics_enabled(private_dir)
+    detach_send = attach_send_api(adapter) if diagnostics else None
+    if diagnostics:
         logging.getLogger("astrbot").info("FFA Lark latency hooks attached")
 
     def detach():
-        detach_send()
+        if detach_send is not None:
+            detach_send()
         for task in profile_tasks:
             task.cancel()
         for name, hook in hooks.items():

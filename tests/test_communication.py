@@ -249,14 +249,25 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fresh.version, 1)
         self.assertFalse(turn.superseded)
 
-    def test_reply_window_can_be_selected_by_provider(self):
+    async def test_lark_uses_shared_ingress_deadline(self):
         from fat_fish.adapters.lark_communication import LarkCommunication
-        from fat_fish.gateway.reply_schedule import ReplySchedule
+        from fat_fish.gateway.reply_schedule import DEFAULT_REPLY_WINDOW, ReplySchedule
 
+        self.assertFalse(hasattr(LarkCommunication, "reply_window"))
+        self.assertEqual(DEFAULT_REPLY_WINDOW, (4.0, 6.5))
+        schedule = ReplySchedule(10, sample=min)
+        self.assertEqual(schedule.deadline, 14)
         self.assertEqual(ReplySchedule(10, sample=max).deadline, 16.5)
-        window = LarkCommunication.reply_window
-        self.assertEqual(ReplySchedule(10, window=window, sample=min).deadline, 11)
-        self.assertEqual(ReplySchedule(10, window=window, sample=max).deadline, 13.5)
+        with patch("fat_fish.gateway.reply_schedule.asyncio.get_running_loop") as loop, \
+             patch("fat_fish.gateway.reply_schedule.asyncio.sleep", new_callable=unittest.mock.AsyncMock) as sleep:
+            # Generation has already consumed three seconds of the ingress window.
+            loop.return_value.time.return_value = 13
+            await schedule.wait()
+            sleep.assert_awaited_once_with(1)
+            sleep.reset_mock()
+            loop.return_value.time.return_value = 15
+            await schedule.wait()
+            sleep.assert_not_awaited()
 
     async def test_native_management_receipt_during_agent_and_failed_delivery(self):
         from unittest.mock import AsyncMock

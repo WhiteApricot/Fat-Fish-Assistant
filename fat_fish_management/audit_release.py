@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
-PAYLOADS=('.zip','.whl','.tar.gz','.tar.bz2','.nupkg','.onnx','.gguf','.db','.db-wal','.db-shm','.sqlite','.index','.exe','.dll','.pyd','.log')
+PAYLOADS=('.zip','.whl','.tar.gz','.tar.bz2','.nupkg','.onnx','.gguf','.db','.db-wal','.db-shm','.sqlite','.index','.exe','.dll','.pyd','.log','.jsonl')
 PATTERNS=[('credential-format',re.compile(rb'(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,})')),
           ('private-key',re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'))]
 FORBIDDEN={'Backup','private','instances','logs','models','cache','third_party/bootstrap-wheels'}

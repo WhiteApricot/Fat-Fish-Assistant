@@ -17,6 +17,8 @@ models/
 *.db-shm
 *.index
 *.log
+*.jsonl
+/diagnostics/latency_probe/fixtures/
 *.whl
 *.zip
 *.tar.gz

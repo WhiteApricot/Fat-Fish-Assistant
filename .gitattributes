@@ -1,1 +1,3 @@
 * -text
+/diagnostics export-ignore
+/diagnostics/** export-ignore

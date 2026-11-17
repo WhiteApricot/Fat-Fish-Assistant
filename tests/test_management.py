@@ -53,6 +53,27 @@ class ManagementTest(unittest.TestCase):
         with self.assertRaises(c.Fault):
             c.selection('work')
 
+    def test_snapshot_excludes_latency_probe_and_its_outputs(self):
+        from fat_fish_management.instance import backup
+
+        release = self.root / 'release'
+        release.mkdir()
+        c.atomic(release / 'release.json', {'vendor': []})
+        c.atomic(release / 'payload-manifest.json', [])
+        c.atomic(self.instance / 'instance.json', {'release': str(release)})
+        for name in ('private/ffa-lark-latency', 'private/latency-traces.jsonl',
+                     'latency-client.jsonl', 'diagnostics/latency_probe/probe.py',
+                     'diagnostics/keep.txt'):
+            path = self.instance / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('fixture', encoding='utf-8')
+        snapshot = self.root / 'snapshot'
+        with patch('fat_fish_management.data_integrity.validate', return_value={}):
+            backup(self.instance, snapshot)
+        manifest = json.loads((snapshot / 'manifest.json').read_text())
+        self.assertEqual({item['path'] for item in manifest['files']},
+                         {'private/onebot-token.txt', 'data/cmd_config.json', 'diagnostics/keep.txt'})
+
     def test_health_before_install_is_diagnostic(self):
         result = self.dispatch('health')
         self.assertEqual(result['connection']['model_call'], 'not_checked')

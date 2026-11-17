@@ -6,5 +6,5 @@
 
 - [快速开始](docs/QUICK_START.md) · [Windows QQ 接入](docs/SNOWLUMA_WINDOWS.md) · [飞书接入](docs/LARK.md) · [外部依赖](docs/DEPENDENCIES.md)
 - [功能总览](docs/FEATURES.md) · [聊天指令](docs/COMMAND_REFERENCE.md) · [账号与权限](docs/PERMISSIONS.md) · [长期记忆](docs/MEMORY.md)
-- [开发参考](docs/DEVELOPMENT.md) · [运维](docs/OPERATIONS.md) · [加密换机](docs/MIGRATION.md) · [故障排查](docs/TROUBLESHOOTING.md) · [数据与隐私](docs/DATA_AND_PRIVACY.md)
+- [运维](docs/OPERATIONS.md) · [加密换机](docs/MIGRATION.md) · [故障排查](docs/TROUBLESHOOTING.md) · [数据与隐私](docs/DATA_AND_PRIVACY.md)
 - [第三方声明](THIRD_PARTY_NOTICES.md) · [项目许可](LICENSE)

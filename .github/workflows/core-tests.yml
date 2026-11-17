@@ -26,7 +26,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Check Python syntax
-        run: python -c "import ast,pathlib; [ast.parse(p.read_bytes(),filename=str(p)) for d in ('src','plugins','fat_fish_management','tests') for p in pathlib.Path(d).rglob('*.py')]"
+        run: python -c "import ast,pathlib; [ast.parse(p.read_bytes(),filename=str(p)) for d in ('src','plugins','fat_fish_management','tests','diagnostics') for p in pathlib.Path(d).rglob('*.py')]"
+      - name: Check distribution source archive
+        run: python -c "import io,subprocess,tarfile; a=tarfile.open(fileobj=io.BytesIO(subprocess.check_output(['git','archive','HEAD']))); assert 'Install-Fat-Fish-Assistant.cmd' in a.getnames(); assert all(n != 'diagnostics' and not n.startswith('diagnostics/') for n in a.getnames())"
       - name: Install offline test dependencies
         run: |
           import json
