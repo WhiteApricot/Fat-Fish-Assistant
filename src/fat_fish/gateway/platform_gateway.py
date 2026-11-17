@@ -32,7 +32,7 @@ from fat_fish.memory.gateway_bridge import GatewayMemory
 from fat_fish.gateway.media_ingress import UnsupportedMedia, prepare_media
 from fat_fish.integrations.text_files import release_attachments, upload_attachments
 from fat_fish.integrations.voice_input import VOICE_UNAVAILABLE
-from fat_fish.gateway.chat_turn import ChatTurns
+from fat_fish.gateway.chat_turn import ChatTurns, Superseded
 from fat_fish.gateway.reply_schedule import DEFAULT_REPLY_WINDOW, ReplySchedule, WEB_PROGRESS_TYPE
 
 
@@ -166,9 +166,10 @@ class PlatformGateway:
         if event.get_extra("_ffa_material", False) or sensitive_information(text):
             return room.bot in message.mentions
         speaker = self.participation.label(room.storage_key, admission.principal_id)
-        self.participation.capture(room.storage_key, 0, speaker, text)
+        captured = self.participation.capture(room.storage_key, 0, speaker, text)
         def current_group():
-            return directory.room_membership_signature(room) == signature
+            return (self.participation.rooms.get((room.storage_key, 0)) is captured
+                    and directory.room_membership_signature(room) == signature)
 
         event.set_extra("_ffa_canonical_group_current", current_group)
         if admission.mode != "smart" or room.bot in message.mentions:
@@ -242,7 +243,8 @@ class PlatformGateway:
         config = await asyncio.to_thread(self.chat_settings.read)
         return platform_help(message.conversation.kind is ChatKind.PRIVATE, admission, words[1:],
                              reminders=self.reminders is not None, registry=self.commands,
-                             global_features=config.get("global_features"))
+                             global_features=config.get("global_features"),
+                             platform=message.conversation.provider.platform)
 
     async def _group_mode_command(self, runtime, message, admission, words, event):
         if message.conversation.kind is not ChatKind.GROUP or not runtime.permissions.can_moderate(admission):
@@ -423,6 +425,7 @@ class PlatformGateway:
                 command_event.set_extra("_ffa_expected_pending", pending)
                 reply = await self._dispatch_command(runtime, message, admission, selected, command_event, allowed,
                                                      pending=pending)
+                event.set_extra("_ffa_persona_changed", command_event.get_extra("_ffa_persona_changed", False))
                 receipt = "\n".join(filter(None, (*command_event.replies, reply))) or "程序没有返回可确认的执行结果。"
             if not visible:
                 return receipt[:4000]
@@ -432,7 +435,13 @@ class PlatformGateway:
             self._record_command(receipt_key, ["/" + command.name, *command.args], receipt)
             delivery = await self._send_command_receipt(event, command, receipt, management=True)
             event.set_extra("_ffa_management_done", delivery != "not_submitted")
-            event.set_extra("_ffa_management_followup", delivery == "submitted")
+            persona = command.name in {"persona", "globalpersona", "privatepersona", "grouppersona"} or (
+                command.name == "undo" and (not command.args or command.args[0] in {
+                    "persona", "globalpersona", "privatepersona", "grouppersona",
+                }))
+            applied = event.get_extra("_ffa_persona_changed")
+            event.set_extra("_ffa_persona_denied", bool(persona and not applied))
+            event.set_extra("_ffa_management_followup", delivery == "submitted" and (not persona or applied))
             timeline = event.get_extra("_ffa_lark_latency")
             if timeline is not None:
                 timeline.management_receipt = delivery
@@ -524,14 +533,19 @@ class PlatformGateway:
                 return "待确认操作已变化，请重新核对。"
         if command == "/role":
             if not args:
-                return f"当前角色：{Role(admission.role).label}。"
+                scope_role = " 本群具有机器人管理权限。" if admission.room_moderator else ""
+                return f"当前角色：{Role(admission.role).label}。" + scope_role
             if args == ["undo"]:
                 return await self._undo_admin(runtime, message, admission, "role")
             if args in (["help"], ["帮助"]):
                 return platform_help(message.conversation.kind is ChatKind.PRIVATE, admission, ["role"],
-                                     reminders=self.reminders is not None, registry=self.commands)
+                                     reminders=self.reminders is not None, registry=self.commands,
+                                     platform=message.conversation.provider.platform)
             if message.conversation.kind is ChatKind.GROUP and len(args) == 2 and args[0] in {"add", "remove"}:
                 return "获准群的成员可直接对话。限制成员请使用 /blacklist add 或 /blacklist remove。"
+            if message.conversation.provider.platform == "qq" and args[0] in {
+                    "add", "remove", "set", "moderator-add", "moderator-remove"}:
+                return "QQ 群机器人管理资格由 QQ 群主、群管理员和 FFA 全局管理员身份决定。"
             if args[0] in {"add", "remove", "set", "list"} and (
                     event.get_extra("_ffa_natural") or message.conversation.kind is ChatKind.PRIVATE
                     or args[0] == "set" or len(args) > 2):
@@ -598,6 +612,8 @@ class PlatformGateway:
             except PermissionError:
                 return "当前权限不足，记忆未清除。"
             return "已清除当前范围的长期记忆。"
+        if message.conversation.provider.platform == "qq" and pending[0] in {"group-moderator", "scoped-moderator"}:
+            return "QQ 群机器人管理资格随 QQ 或 FFA 全局管理身份更新。"
         if pending[0] == "group-moderator":
             target, grant = pending[1]
             try:
@@ -656,6 +672,10 @@ class PlatformGateway:
     async def _scoped_role(self, runtime, message, admission, actor, scope, args):
         room = message.conversation
         operation = args[0]
+        if room.provider.platform == "qq":
+            if operation == "list":
+                return "授权群由 QQ 群主、QQ 群管理员和 FFA 全局管理员管理。"
+            return "QQ 群机器人管理资格随 QQ 或 FFA 全局管理身份更新。"
         if operation == "list" and len(args) in {1, 2}:
             if len(args) == 1 and room.kind is ChatKind.PRIVATE:
                 return "请指定要查询的群号。"
@@ -761,6 +781,7 @@ class PlatformGateway:
         return ProviderContext(
             lambda: native.get_platform_inst(address.instance), send_native,
             private_dir=self.path.parent, retract_native=self.retract,
+            retraction_source=self.memory_bridge.retraction_source,
         )
 
     async def start_configured(self):
@@ -796,7 +817,16 @@ class PlatformGateway:
         notice = convert_retraction(native_event)
         if not isinstance(notice, MessageRetraction) or notice.conversation.provider != provider:
             raise ValueError("Retraction provider mismatch")
+        refresh = getattr(slot.provider, "refresh_delivery_access", None)
+        if refresh and notice.conversation.kind is ChatKind.PRIVATE:
+            if not await slot.provider.verify_retraction(notice):
+                raise PermissionError("Unverified provider recall")
+            await refresh(notice.actor, notice.conversation, runtime.identities)
         result = await runtime.retract(notice)
+        room_key = notice.conversation.storage_key
+        self.participation.rooms.pop((room_key, 0), None)
+        self.group_media.forget(room_key)
+        self.chat_turns.retract(notice)
         from fat_fish.integrations.web_search import forget_web_history
 
         forget_web_history(notice.conversation.storage_key)
@@ -921,13 +951,39 @@ class PlatformGateway:
             return None
         text = message.text.strip()
         item = None
-        if (text and not text.startswith("/") and not message.media and not message.reply_to
-                and not event.get_extra("_ffa_external_envelope")):
+        qq_material = message.conversation.provider.platform == "qq" and bool(message.media)
+        if ((text or qq_material) and not text.startswith("/") and (not message.media or qq_material)
+                and not message.reply_to and not event.get_extra("_ffa_external_envelope")):
             item = self.chat_turns.receive(message, event, arrived)
         try:
             return await self._run(event, downstream, message, arrived, item)
         finally:
             self.chat_turns.resolve(item)
+
+    async def _qq_friend_notice(self, runtime, event, message):
+        event.stop_event()
+        _, role = await asyncio.to_thread(runtime.identities.resolve_principal, message.sender)
+        if role == Role.BLOCKED or not runtime.accepts(message):
+            return
+        scope = "qq-friend-notice"
+        if not await asyncio.to_thread(runtime.seen.begin_delivery, scope, message.event_id):
+            return
+        state = "unknown"
+        try:
+            owners = await asyncio.to_thread(runtime.identities.accounts_with_role,
+                                              message.sender.provider, Role.OWNER)
+            contact = "。好友申请请联系主人 QQ：" + owners[0].subject if owners else ""
+            send = getattr(runtime.connections[message.conversation.provider].provider, "send_friend_notice", None)
+            text = "请先添加机器人为 QQ 好友" + contact + "。"
+            if send is None:
+                await event.send(event.plain_result(text))
+            else:
+                await send(event, message, text)
+            state = "completed"
+        except Exception as exc:
+            logger.info("QQ friend notice could not be delivered (%s)", type(exc).__name__)
+        finally:
+            await asyncio.to_thread(runtime.seen.finish_delivery, scope, message.event_id, state)
 
     async def _observe_new_account(self, runtime, message):
         if not runtime.accepts(message) or await asyncio.to_thread(runtime.identities.principal_id, message.sender):
@@ -956,6 +1012,14 @@ class PlatformGateway:
             observe_trace = getattr(slot.provider, "ingress_trace", None) if slot else None
             if observe_trace is not None:
                 timeline = observe_trace(event, arrived)
+            refresh_access = getattr(slot.provider, "refresh_native_access", None) if slot else None
+            if refresh_access is not None and runtime.accepts(message):
+                friend = await refresh_access(event, message, runtime.identities)
+                if message.conversation.kind is ChatKind.PRIVATE and friend is not True:
+                    if friend is False:
+                        await self._qq_friend_notice(runtime, event, message)
+                    event.stop_event()
+                    return None
             if await self._identity_command(runtime, message, event):
                 return None
             if await self._group_whitelist_command(runtime, message, event):
@@ -1032,13 +1096,34 @@ class PlatformGateway:
         original_send = event.send
         original_stream = getattr(event, "send_streaming", None)
         recalled_inputs = getattr(slot.provider, "recalled_inputs", None)
+        is_recalled = getattr(slot.provider, "is_recalled", None)
+        source_message = message
+
+        def source_recalled():
+            if turn and recalled_inputs:
+                return recalled_inputs(turn.items)
+            return bool(is_recalled and is_recalled(source_message))
+
+        def current_context():
+            group_current = event.get_extra("_ffa_canonical_group_current")
+            return not source_recalled() and (group_current is None or group_current())
 
         def allowed():
             current = runtime.authorize(message)
             return (current is not None and current.principal_id == admission.principal_id
-                    and not (turn and len(turn.items) > 1 and recalled_inputs and recalled_inputs(turn.items)))
+                    and current.role >= admission.role
+                    and (not admission.room_moderator or current.room_moderator)
+                    and current_context())
 
         event.set_extra("_ffa_platform_authorize", allowed)
+        event.set_extra("_ffa_source_recalled", source_recalled)
+        filter_history = getattr(slot.provider, "filter_recalled_history", None)
+        if filter_history is not None:
+            def native_history(messages):
+                inputs = [item.message for item in turn.items] if turn else (source_message,)
+                return filter_history(source_message.conversation, inputs, messages)
+
+            event.set_extra("_ffa_filter_recalled_history", native_history)
 
         submitted = False
         completed = False
@@ -1050,9 +1135,9 @@ class PlatformGateway:
 
         async def ready_to_submit():
             await turn.ready()
-            if len(turn.items) > 1 and recalled_inputs:
+            if recalled_inputs:
                 if await asyncio.to_thread(recalled_inputs, turn.items):
-                    raise asyncio.CancelledError("FFA reply source was recalled")
+                    raise Superseded("FFA reply source was recalled")
                 await turn.ready()
 
         async def before_reply():
@@ -1074,6 +1159,8 @@ class PlatformGateway:
             progress = getattr(result, "type", None) == WEB_PROGRESS_TYPE
             receipt = result is event.get_extra("_ffa_management_receipt_result")
             persona = persona_result is not None and result is persona_result
+            if event.get_extra("_ffa_persona_denied") and not receipt:
+                return None
             if event.get_extra("_ffa_management_done") and not (progress or receipt or persona or event.get_extra("_ffa_web_material")):
                 return None
             if not (progress or receipt or persona):
@@ -1096,6 +1183,8 @@ class PlatformGateway:
 
             async def send(_):
                 nonlocal submitted
+                if not current_context():
+                    raise Superseded("FFA reply source changed")
                 submitted = True
                 native_reply = getattr(slot.provider, "reply_native", None)
                 response = (await native_reply(event, message.conversation, result, original_send)
@@ -1129,6 +1218,8 @@ class PlatformGateway:
 
                 def check_submission(mark_submitted=True):
                     nonlocal submitted, streamed
+                    if not current_context():
+                        raise Superseded("FFA stream source changed")
                     authorize(mark_submitted)
                     if mark_submitted:
                         submitted = streamed = True
@@ -1136,7 +1227,8 @@ class PlatformGateway:
                 async def guarded():
                     nonlocal preview
                     async for part in generator:
-                        if event.get_extra("_ffa_management_done") and not event.get_extra("_ffa_web_material"):
+                        if (event.get_extra("_ffa_persona_denied") or
+                                event.get_extra("_ffa_management_done") and not event.get_extra("_ffa_web_material")):
                             continue
                         if not guard and not streamed:
                             await before_stream_reply()
@@ -1181,18 +1273,35 @@ class PlatformGateway:
                 merged = "\n".join(part.message.text.strip() for part in turn.items)
                 mentions = tuple(dict.fromkeys(mention for part in turn.items for mention in part.message.mentions))
                 event.set_extra("_ffa_original_input", message)
-                message = replace(message, text=merged, mentions=mentions)
+                media = tuple(media for source in turn.items for media in source.message.media)
+                message = replace(message, text=merged, mentions=mentions, media=media)
                 event.message_str = event.message_obj.message_str = merged
                 parts = event.get_messages()
                 seen_mentions = set()
                 merged_parts = [Plain(merged)]
                 for source in turn.items:
-                    for part in source.native.get_messages():
-                        if type(part).__name__ == "At" and part.qq not in seen_mentions:
+                    for part in source.parts:
+                        kind = type(part).__name__
+                        if kind == "At":
+                            if part.qq in seen_mentions:
+                                continue
                             seen_mentions.add(part.qq)
+                        if kind != "Plain":
                             merged_parts.append(part)
                 parts[:] = merged_parts
+                if message.conversation.provider.platform == "qq":
+                    segments = []
+                    for source in turn.items:
+                        raw = getattr(source.native.message_obj, "raw_message", None)
+                        if isinstance(raw, dict) and isinstance(raw.get("message"), list):
+                            segments.extend(raw["message"])
+                    event.set_extra("_ffa_merged_onebot_segments", segments)
                 event.set_extra("_ffa_message_event", message)
+            if turn is not None and message.media:
+                # Keep file/image captions together before starting the expensive reader.
+                delay = min(turn.limit, turn.items[-1].arrived + 2.5) - asyncio.get_running_loop().time()
+                if delay > 0:
+                    await asyncio.sleep(delay)
             if timeline is not None:
                 timeline.mark("T4")
             private = message.conversation.kind is ChatKind.PRIVATE
@@ -1348,9 +1457,9 @@ class PlatformGateway:
             slot.state = "unhealthy"
             event.stop_event()
             return None
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             event.stop_event()
-            if turn is not None and turn.superseded:
+            if isinstance(exc, Superseded) or turn is not None and turn.superseded:
                 completed = True
                 return None
             raise

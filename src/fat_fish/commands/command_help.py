@@ -92,7 +92,7 @@ def platform_memory_help(*, private, preferences, can_change=True):
     return render_help("memory", actions)
 
 
-def platform_help(private, admission, args, *, reminders, registry, global_features=None):
+def platform_help(private, admission, args, *, reminders, registry, global_features=None, platform=None):
     menus = {
         "help": (("", "列出当前会话的命令"), ("[命令]", "查看指定命令的子菜单")),
         "role": (("", "查看当前角色"),),
@@ -147,10 +147,11 @@ def platform_help(private, admission, args, *, reminders, registry, global_featu
             menus["whitelist"] = (("list", "查看授权群"),)
             if admission.role == Role.OWNER:
                 menus["whitelist"] += (("add", "在本群 @机器人申请群授权，需确认"), ("remove", "在本群 @机器人申请撤销授权，需确认"))
-            menus["role"] += (
-                ("moderator-add [账号]", "任命本群 Bot 管理员，需确认，也可 @成员"),
-                ("moderator-remove [账号]", "撤销本群 Bot 管理员，需确认，也可 @成员"),
-            )
+            if platform != "qq":
+                menus["role"] += (
+                    ("moderator-add [账号]", "任命本群 Bot 管理员，需确认，也可 @成员"),
+                    ("moderator-remove [账号]", "撤销本群 Bot 管理员，需确认，也可 @成员"),
+                )
         if moderator:
             menus["role"] += (("list", "查看本群管理权限"),)
             menus["groupmode"] = (("", "查看本群回复模式"), ("[mention|smart]", "选择仅 @回复或智能插话，需确认"))

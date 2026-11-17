@@ -22,6 +22,7 @@ class ProviderContext:
     send_native: Callable[[str, object], Awaitable[bool]]
     private_dir: Path | None = None
     retract_native: Callable[[ProviderId, object], Awaitable[bool]] | None = None
+    retraction_source: Callable[[object], Awaitable[bool]] | None = None
 
 
 @dataclass(frozen=True)

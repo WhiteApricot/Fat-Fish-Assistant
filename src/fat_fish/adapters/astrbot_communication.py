@@ -76,6 +76,10 @@ def convert(event):
     native_session = event.get_session_id() if hasattr(event, "get_session_id") else getattr(event, "session_id", peer)
     conversation = Conversation(provider, _id(event.get_self_id()), kind, peer, _id(native_session or peer))
     legacy = event.get_platform_name() == ONEBOT_NAME
+    if legacy:
+        from fat_fish.integrations.forwards import recover_forward_components
+
+        recover_forward_components(event)
     mentions, reply, media, quoted_sender = _components(event, legacy)
     if provider.platform == "lark" and not reply:
         parent = getattr(getattr(event.message_obj, "raw_message", None), "parent_id", None)

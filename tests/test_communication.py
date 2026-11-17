@@ -321,6 +321,72 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sent[0].startswith("【系统】"))
         self.assertEqual(sent[1:], ["喵好呀，听你的。", "喵已经照做了！", "喵接着聊吧。"])
 
+    async def test_denied_persona_cannot_publish_model_imitation_or_persist(self):
+        for address in self.providers[:2]:
+            with self.subTest(platform=address.platform):
+                if self.ids.owner_account() is None:
+                    owner = Account(address, "31")
+                    self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+                actor = Account(address, "32")
+                self.ids.observe(actor)
+                event = NativeEvent(platform="aiocqhttp" if address == QQ else address.platform,
+                                    instance=address.instance, sender=actor.subject, ident=f"denied-{address.platform}",
+                                    group="701", text="修改全局人格", parts=[At("900")])
+                room = convert(event).conversation
+                owner = self.ids.owner_account()
+                if address != owner.provider:
+                    self.ids.confirm_platform_link(Account(address, "31"), self.ids.issue_platform_link(owner))
+                self.ids.set_room(Account(address, "31"), room, "mention")
+                event.plain_result = lambda body: SimpleNamespace(chain=[body], get_plain_text=lambda: body)
+
+                async def agent():
+                    turn = event.get_extra("_ffa_management_turn")
+                    result = await turn.call("globalpersona", ["add", "new tone"])
+                    self.assertIn("授权私聊", result["receipt"])
+                    event.set_extra("_ffa_agent_finished", True)
+                    event.set_extra("_ffa_management_persona_text", "已经照做！")
+                    await event.send(event.plain_result("我已改好。"))
+
+                await self.gateway.run(event, agent)
+                self.assertEqual(len(event.sent), 1)
+                self.assertIn("授权私聊", event.sent[0].get_plain_text())
+                self.assertNotIn("global_persona_notes", self.gateway.chat_settings.read())
+
+    async def test_qq_native_evidence_controls_friend_and_group_privileges(self):
+        from unittest.mock import AsyncMock
+        from fat_fish.adapters.onebot_communication import OneBotCommunication
+
+        owner = Account(QQ, "31")
+        member = Account(QQ, "32")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        self.ids.observe(member)
+        private_event = NativeEvent(platform="aiocqhttp", instance=QQ.instance, sender="32")
+        private = convert(private_event).conversation
+        raw = {"post_type": "message", "message_type": "group", "self_id": 900,
+               "group_id": 701, "sender": {"user_id": 32, "role": "admin"}}
+        group_event = NativeEvent(platform="aiocqhttp", instance=QQ.instance, sender="32", group="701", raw=raw)
+        group = convert(group_event).conversation
+        self.ids.set_room(owner, group, "mention")
+        self.ids.require_native_access(QQ)
+        provider = OneBotCommunication(QQ, "900", None)
+        private_event.bot.call_action = AsyncMock(side_effect=[[{"user_id": 32}], []])
+        self.assertTrue(await provider.refresh_native_access(private_event, convert(private_event), self.ids))
+        self.assertEqual(self.runtime.permissions.conversation(member, private).role, Role.MEMBER)
+        self.assertFalse(await provider.refresh_native_access(private_event, convert(private_event), self.ids))
+        self.assertIsNone(self.runtime.permissions.conversation(member, private))
+        group_event.bot.call_action = AsyncMock(side_effect=[
+            {"user_id": 32, "group_id": 701, "role": "admin"},
+            {"user_id": 32, "group_id": 701, "role": "member"},
+        ])
+        await provider.refresh_native_access(group_event, convert(group_event), self.ids)
+        scope = self.runtime.permissions.conversation(member, group)
+        self.assertTrue(scope.room_moderator)
+        self.assertFalse(self.runtime.permissions.is_global_admin(scope))
+        self.assertEqual(self.ids.resolve_principal(member)[1], Role.VISITOR)
+        await provider.refresh_native_access(group_event, convert(group_event), self.ids)
+        self.assertFalse(self.runtime.permissions.conversation(member, group).room_moderator)
+        self.assertTrue(self.runtime.permissions.conversation(owner, group).room_moderator)
+
     async def test_reminder_targeting_the_authenticated_sender_normalizes_to_self(self):
         from fat_fish.reminders.reminders import ReminderStore
 
@@ -870,6 +936,143 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.ids.change_room_mode(owner, room, "smart")
         self.assertIn("权限配置已有变化", (await self.event(owner, "/role undo")).sent[0])
         self.assertTrue(self.ids.conversation_permissions(target, room)[-1])
+
+    async def _install_native_qq_fixture(self):
+        from unittest.mock import AsyncMock
+        from fat_fish.adapters.onebot_communication import OneBotCommunication
+        from fat_fish.communication.registry import ProviderContext
+
+        await self.runtime.disable(QQ)
+        del self.runtime.connections[QQ]
+        bot = SimpleNamespace(call_action=AsyncMock(return_value=[{"user_id": 31}]))
+        adapter = SimpleNamespace(meta=lambda: SimpleNamespace(name="aiocqhttp"),
+                                  handle_msg=AsyncMock(), get_client=lambda: bot)
+        context = ProviderContext(lambda: adapter, AsyncMock(), self.gateway.path.parent,
+                                  self.gateway.retract, self.gateway.memory_bridge.retraction_source)
+        provider = OneBotCommunication(QQ, "900", context)
+        self.runtime.register(provider)
+        self.assertTrue(await self.runtime.enable(QQ))
+        return adapter, bot
+
+    async def test_qq_group_temporary_friend_notice_uses_source_and_skips_model(self):
+        from unittest.mock import AsyncMock
+
+        owner = Account(QQ, "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        _, bot = await self._install_native_qq_fixture()
+        bot.call_action.side_effect = [[{"user_id": 31}], {"message_id": -44}, [{"user_id": 31}]]
+        raw = {"post_type": "message", "message_type": "private", "sub_type": "group",
+               "self_id": 900, "user_id": 32, "sender": {"user_id": 32, "group_id": 701}}
+        event = NativeEvent(platform="aiocqhttp", instance=QQ.instance, sender="32", ident="-42", raw=raw)
+        event.bot = bot
+        model = AsyncMock()
+        await self.gateway.run(event, model)
+        await self.gateway.run(event, model)
+        model.assert_not_awaited()
+        sends = [call for call in bot.call_action.await_args_list if call.args == ("send_private_msg",)]
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0].kwargs["group_id"], 701)
+        self.assertEqual(sends[0].kwargs["user_id"], 32)
+        self.assertIn("主人 QQ：31", sends[0].kwargs["message"][0]["data"]["text"])
+
+    async def test_qq_native_recall_cancels_reply_erases_memory_and_survives_restart(self):
+        from unittest.mock import AsyncMock
+
+        owner = Account(QQ, "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        native, bot = await self._install_native_qq_fixture()
+        event = NativeEvent(platform="aiocqhttp", instance=QQ.instance, sender="31", ident="-42",
+                            text="我喜欢桂花茶")
+        event.bot = bot
+        ready = asyncio.Event()
+
+        async def answer():
+            ready.set()
+            await asyncio.sleep(10)
+            await event.send("reply")
+
+        task = asyncio.create_task(self.gateway.run(event, answer))
+        async with asyncio.timeout(8):
+            await ready.wait()
+            message = convert(event)
+            raw_history = SimpleNamespace(role="user", content="Exact formatted prompt")
+            event.get_extra("_ffa_filter_recalled_history")([raw_history])
+            recall = {"post_type": "notice", "notice_type": "friend_recall", "self_id": 900,
+                      "user_id": 31, "message_id": -42}
+            await native.handle_msg(SimpleNamespace(raw_message=dict(recall, self_id=901)))
+            self.assertFalse(task.done())
+            await native.handle_msg(SimpleNamespace(raw_message=recall))
+            await task
+        self.assertEqual(event.sent, [])
+        probe = NativeEvent(platform="aiocqhttp", instance=QQ.instance, sender="31", ident="-43", text="回忆茶的偏好")
+        probe.bot = bot
+        await self.gateway.run(probe, AsyncMock())
+        access = probe.get_extra("_ffa_memory_access")
+        memory = self.gateway.memory_bridge.memory()
+        self.assertEqual(memory.search(access, "桂花茶"), [])
+        self.assertEqual(memory.filter_retracted_context(access, [{"content": "我喜欢桂花茶"}]), [])
+
+        await self.runtime.disable(QQ)
+        native, bot = await self._install_native_qq_fixture()
+        await native.handle_msg(SimpleNamespace(raw_message=recall))
+        provider = self.runtime.connections[QQ].provider
+        self.assertTrue(provider.is_recalled(message))
+        self.assertFalse(provider.track_inbound(event, message))
+        response = SimpleNamespace(role="assistant", content="Derived answer")
+        valid = SimpleNamespace(role="user", content="A different next request")
+        self.assertEqual(provider.filter_recalled_history(message.conversation, (), [raw_history, response, valid]),
+                         [valid])
+        replay = NativeEvent(platform="aiocqhttp", instance=QQ.instance, sender="31", ident="-42")
+        replay.bot = bot
+        model = AsyncMock()
+        await self.gateway.run(replay, model)
+        model.assert_not_awaited()
+
+    async def test_qq_group_recall_clears_context_only_for_matching_group_and_author(self):
+        from unittest.mock import AsyncMock
+
+        owner = Account(QQ, "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        native, bot = await self._install_native_qq_fixture()
+        event = NativeEvent(platform="aiocqhttp", instance=QQ.instance, sender="31", group="701",
+                            ident="-42", text="原群消息", parts=[At("900")])
+        event.bot = bot
+        message = convert(event)
+        self.ids.set_room(owner, message.conversation, "mention")
+        await self.gateway.run(event, AsyncMock())
+        cache_key = (message.conversation.storage_key, 0)
+        self.assertIn(cache_key, self.gateway.participation.rooms)
+        recall = {"post_type": "notice", "notice_type": "group_recall", "self_id": 900,
+                  "group_id": 701, "user_id": 31, "operator_id": 33, "message_id": -42}
+        provider = self.runtime.connections[QQ].provider
+        await native.handle_msg(SimpleNamespace(raw_message=dict(recall, group_id=702)))
+        await native.handle_msg(SimpleNamespace(raw_message=dict(recall, user_id=32)))
+        self.assertFalse(provider.is_recalled(message))
+        self.assertIn(cache_key, self.gateway.participation.rooms)
+        await native.handle_msg(SimpleNamespace(raw_message=recall))
+        self.assertTrue(provider.is_recalled(message))
+        self.assertNotIn(cache_key, self.gateway.participation.rooms)
+
+    async def test_qq_recall_uses_existing_scoped_evidence_for_pre_upgrade_message(self):
+        from unittest.mock import AsyncMock
+
+        owner = Account(QQ, "31")
+        self.ids.confirm_owner_challenge(owner, self.ids.issue_owner_challenge(owner))
+        old_event = await self.event(owner, "我喜欢桂花茶", message_id="-91")
+        old_message = convert(old_event)
+        notice = MessageRetraction(old_message.conversation, owner, old_message.message_id)
+        self.assertTrue(await self.gateway.memory_bridge.retraction_source(notice))
+        native, bot = await self._install_native_qq_fixture()
+        raw = {"post_type": "notice", "notice_type": "friend_recall", "self_id": 900,
+               "user_id": 31, "message_id": -91}
+        await native.handle_msg(SimpleNamespace(raw_message=raw))
+        self.assertFalse(await self.gateway.memory_bridge.retraction_source(notice))
+        probe = NativeEvent(platform="aiocqhttp", instance=QQ.instance, sender="31", ident="-92")
+        probe.bot = bot
+        await self.gateway.run(probe, AsyncMock())
+        access = probe.get_extra("_ffa_memory_access")
+        memory = self.gateway.memory_bridge.memory()
+        self.assertEqual(memory.search(access, "桂花茶"), [])
 
     async def test_verified_retraction_erases_memory_once(self):
         owner = Account(self.providers[0], "31")

@@ -14,7 +14,6 @@ from fat_fish.model_config import DEFAULT_CHAT_MODEL
 MAX_BYTES = 8 * 1024 * 1024
 MAX_TEXT_BYTES = 64 * 1024
 MAX_FILES = 3
-TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml"}
 DOCUMENT_EXTENSIONS = {".pdf", ".doc", ".docx", ".ppt", ".pptx"}
 DATA_EXTENSIONS = {".xls", ".xlsx", ".epub", ".mobi"}
 MARKER = "[FFA_FILE_MATERIAL]"
@@ -94,23 +93,21 @@ async def upload_attachments(event, context, allowed):
     from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
     from fat_fish.gateway.media_ingress import UnsupportedMedia
 
-    provider = await chat_provider(context, event.unified_msg_origin)
-    key = provider_key(provider)
-    if not key or provider.get_model() != DEFAULT_CHAT_MODEL:
-        raise UnsupportedMedia("当前主模型配置无法使用 DeepSeek 文件输入，请检查实例的官方 DeepSeek Flash 配置。")
-    client = DeepSeekChatBot(key)
-    file_ids = []
-    event.set_extra("_ffa_document_uploads", (provider, client, file_ids))
+    provider = client = None
+    file_ids, texts = [], []
+    event.set_extra("_ffa_document_texts", texts)
     failures = max(0, len(parts) - MAX_FILES)
     remaining = MAX_BYTES
+    text_remaining = MAX_TEXT_BYTES
     temp_root = get_astrbot_temp_path()
     for part in parts[:MAX_FILES]:
         name = PureWindowsPath(str(getattr(part, "name", "") or "unnamed")).name[:120]
         extension = PureWindowsPath(name).suffix.lower()
-        if extension not in TEXT_EXTENSIONS | DOCUMENT_EXTENSIONS | DATA_EXTENSIONS or remaining <= 0:
+        native_file = extension in DOCUMENT_EXTENSIONS | DATA_EXTENSIONS
+        limit = remaining if native_file else min(remaining, text_remaining)
+        if limit <= 0:
             failures += 1
             continue
-        limit = min(remaining, MAX_TEXT_BYTES) if extension in TEXT_EXTENSIONS else remaining
         if not await asyncio.to_thread(allowed):
             raise PermissionError("Attachment access revoked")
         try:
@@ -121,18 +118,37 @@ async def upload_attachments(event, context, allowed):
                 data = await fetch_bytes(str(getattr(part, "url", "") or ""), limit)
             if not data or len(data) > limit:
                 raise ValueError("Attachment is empty or exceeds size limit")
-            remaining -= len(data)
-            if extension in TEXT_EXTENSIONS:
-                data = decode_text(data).encode("utf-8")
-        except (aiohttp.ClientError, OSError, ValueError):
+        except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
             failures += 1
             continue
-        purpose = "text_recognition" if extension in DOCUMENT_EXTENSIONS else "user_data"
-        try:
-            file_ids.append(await client.upload(name, data, purpose, allowed=allowed))
-        except DeepSeekError:
+        remaining -= len(data)
+        if native_file:
+            if provider is None:
+                provider = await chat_provider(context, event.unified_msg_origin)
+                key = provider_key(provider)
+                if key and provider.get_model() == DEFAULT_CHAT_MODEL:
+                    client = DeepSeekChatBot(key)
+                    event.set_extra("_ffa_document_uploads", (provider, client, file_ids))
+            if client is not None:
+                purpose = "text_recognition" if extension in DOCUMENT_EXTENSIONS else "user_data"
+                try:
+                    file_ids.append(await client.upload(name, data, purpose, allowed=allowed))
+                    continue
+                except DeepSeekError:
+                    pass
+        if len(data) > text_remaining:
             failures += 1
-    if not file_ids:
+            continue
+        try:
+            text = decode_text(data)
+        except ValueError:
+            failures += 1
+            continue
+        if not await asyncio.to_thread(allowed):
+            raise PermissionError("Attachment access revoked")
+        text_remaining -= len(data)
+        texts.append({"name": name, "text": text})
+    if not (file_ids or texts):
         raise UnsupportedMedia("没能读取附件。请检查文件类型、大小、访问权限或稍后重试。")
     if failures:
         event.set_extra("_ffa_document_failures", failures)
@@ -142,6 +158,7 @@ async def release_attachments(event):
     uploads = event.get_extra("_ffa_document_uploads")
     event.set_extra("_ffa_document_uploads", None)
     event.set_extra("_ffa_document_parts", ())
+    event.set_extra("_ffa_document_texts", ())
     if uploads:
         _, client, ids = uploads
         await asyncio.gather(*(client.delete_file(file_id) for file_id in ids), return_exceptions=True)

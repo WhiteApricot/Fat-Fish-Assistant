@@ -1,6 +1,7 @@
 """Reminder authorization and delivery through canonical account and room addresses."""
 import json
 
+from fat_fish.core.identity import Role
 from fat_fish.communication.model import Account, ChatKind, Conversation, Outgoing, ProviderId
 
 
@@ -57,6 +58,13 @@ class ReminderDispatch:
                 and recipient.principal_id == row["target_principal"])
 
     async def authorize(self, row):
+        room, actor = address(row)
+        slot = self.runtime.connections.get(room.provider)
+        refresh = getattr(slot.provider, "refresh_delivery_access", None) if slot else None
+        if refresh and slot.enabled and room.bot == slot.provider.bot:
+            _, role = self.runtime.identities.resolve_principal(actor)
+            await refresh(actor, room, self.runtime.identities,
+                          delegated=row["target"] != actor.subject and role < Role.ADMIN)
         return self.allowed(row)
 
     async def ready(self, row):

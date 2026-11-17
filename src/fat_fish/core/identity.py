@@ -30,6 +30,8 @@ class IdentityDirectory:
         self.clock = clock
         self._schema_lock = Lock()
         self._ready = False
+        self._native_access = {}
+        self._native_access_lock = Lock()
 
     @contextmanager
     def transaction(self, *, write=False):
@@ -103,9 +105,39 @@ class IdentityDirectory:
             );
         """)
 
+    def require_native_access(self, provider):
+        with self._native_access_lock:
+            self._native_access.setdefault(provider, {})
+
+    def set_native_access(self, account, room, *, allowed):
+        """Keep short-lived capabilities reported by the active native provider."""
+        if account.provider != room.provider:
+            raise ValueError("Native access belongs to another provider")
+        with self._native_access_lock:
+            rows = self._native_access.setdefault(room.provider, {})
+            key = (room.storage_key, account.storage_key)
+            rows.pop(key, None)
+            rows[key] = (time.monotonic() + 300, allowed is True)
+            if len(rows) > 8192:
+                rows.pop(next(iter(rows)))
+
+    def _native_permission(self, account, room):
+        with self._native_access_lock:
+            rows = self._native_access.get(room.provider)
+            if rows is None:
+                return None
+            entry = rows.get((room.storage_key, account.storage_key))
+            return bool(entry and entry[0] > time.monotonic() and entry[1])
+
     def _room_admin(self, db, actor, room, global_role):
-        if actor.provider != room.provider:
+        if actor.provider != room.provider or global_role == Role.BLOCKED:
             return False
+        native = self._native_permission(actor, room)
+        if native is not None or global_role >= Role.ADMIN:
+            return bool((native or global_role >= Role.ADMIN)
+                        and db.execute("SELECT 1 FROM rooms WHERE address=?", (room.storage_key,)).fetchone()
+                        and not db.execute("SELECT 1 FROM account_room_blocks WHERE room=? AND address=?",
+                                           (room.storage_key, actor.storage_key)).fetchone())
         row = db.execute("""SELECT moderator FROM account_members WHERE room=? AND address=?
             AND NOT EXISTS (SELECT 1 FROM account_room_blocks b
                             WHERE b.room=account_members.room AND b.address=account_members.address)""",
@@ -582,11 +614,16 @@ class IdentityDirectory:
             if principal_id is None or account.provider != room.provider or role == Role.BLOCKED:
                 return principal, role, None, principal_id, False
             if room.kind is ChatKind.PRIVATE:
-                allowed = role >= Role.MEMBER and account.subject == room.peer
+                native = self._native_permission(account, room)
+                if native:
+                    role = max(role, Role.MEMBER)
+                allowed = (role >= Role.MEMBER and account.subject == room.peer and native is not False)
                 return principal, role, "open" if allowed else None, principal_id, False
             row = db.execute("""SELECT mode FROM rooms WHERE rooms.address=?
                               AND NOT EXISTS (SELECT 1 FROM account_room_blocks b
                                   WHERE b.room=rooms.address AND b.address=?)""",
                              (room.storage_key, account.storage_key)).fetchone()
-            return (principal, role, row[0] if row else None, principal_id,
-                    self._room_admin(db, account, room, role))
+            moderator = self._room_admin(db, account, room, role)
+            if moderator and self._native_permission(account, room):
+                role = max(role, Role.MEMBER)
+            return principal, role, row[0] if row else None, principal_id, moderator

@@ -608,6 +608,13 @@ class MemoryService:
         access.require_recall()
         return filtered
 
+    def has_received(self, scope, principal, event_id, source):
+        with self.transaction() as db:
+            row = db.execute("""SELECT source FROM activities WHERE scope=? AND actor=? AND event_id=?
+                AND producer='core' AND kind='message_received' AND redacted=0""",
+                             (scope.storage_key, principal, "in:" + event_id)).fetchone()
+        return bool(row and json.loads(row["source"]) == asdict(source))
+
     def retract_message(self, scope, principal, event_id, allowed):
         """Remember a verified withdrawal even when the inbound evidence has not arrived."""
         if not allowed():
@@ -846,15 +853,18 @@ class MemoryService:
             self._mark_erasure(db, scope)
             access.require(write=True, moderate=group)
 
-    def search(self, access, query, *, limit=8, include_archive=False, semantic=None):
+    def search(self, access, query, *, limit=8, include_archive=False, semantic=None, include_partial=False):
         access.require_recall()
         if not 1 <= limit <= 40:
             raise ValueError("Invalid search limit")
+        exact = normalize(query)
         words = terms(query)
         if not words:
             return []
+        fallback = sorted(set(re.findall(r"[\u3400-\u9fff]", exact)) - set(words)) if include_partial else []
+        candidates = words + fallback
         with self.transaction() as db:
-            placeholders = " OR ".join("instr(v.normalized, ?) > 0" for _ in words)
+            placeholders = " OR ".join("instr(v.normalized, ?) > 0" for _ in candidates)
             rows = db.execute(f"""
                 SELECT f.fact_key,f.revision,f.status,v.content,v.normalized,v.importance,
                        v.occurred,v.ref,a.received,a.source,a.evidence,r.last_seen,r.count
@@ -862,8 +872,8 @@ class MemoryService:
                 JOIN activities a ON a.ref=v.ref
                 LEFT JOIN fact_review r USING(scope,fact_key,revision)
                 WHERE f.scope=? AND (f.status='active' OR (? AND f.status='archived'))
-                  AND (({placeholders}) OR ?)
-            """, (access.scope.storage_key, int(include_archive), *words, int(bool(semantic)))).fetchall()
+                  AND a.redacted=0 AND (({placeholders}) OR lower(f.fact_key)=? OR ?)
+            """, (access.scope.storage_key, int(include_archive), *candidates, exact, int(bool(semantic)))).fetchall()
         access.require_recall()
         hits, seen = [], set()
         now = self.clock()
@@ -871,9 +881,13 @@ class MemoryService:
             age = max(0, now - row["occurred"])
             freshness = 1 / (1 + age / (30 * 86400))
             similarity = (semantic or {}).get((row["fact_key"], row["revision"]), 0)
-            if not lexical and similarity < 0.55:
-                return -1
-            return lexical + 5 * similarity + 2 * row["importance"] + freshness + 0.2 * self.clarity(row, now)
+            key_match = normalize(row["fact_key"]) == exact
+            if not key_match and not lexical and similarity < 0.55:
+                # Use low-confidence partial Han matches only after strong matches.
+                if not any(character in row["normalized"] for character in fallback):
+                    return -1
+                return 0
+            return (10 if key_match else 0) + lexical + 5 * similarity + 2 * row["importance"] + freshness + 0.2 * self.clarity(row, now)
         lexical_scores = bm25(words, [row["normalized"] for row in rows])
         ranked = sorted(((score(row, lexical), row["occurred"], row["fact_key"], row)
                          for row, lexical in zip(rows, lexical_scores)), reverse=True)

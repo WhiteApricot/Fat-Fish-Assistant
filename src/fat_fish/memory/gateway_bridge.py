@@ -228,7 +228,7 @@ class GatewayMemory:
                                                  ActivityState.OBSERVED, previous.timestamp, body,
                                                  "native-message:" + previous.event_id)
                     await asyncio.to_thread(self.memory().record, access, previous_activity,
-                                            turn_id=previous.event_id)
+                                            turn_id=message.event_id)
             ref, _ = await asyncio.to_thread(self.memory().record, access, activity, turn_id=message.event_id,
                                              card_capture=(owner, direct) if not command else None)
             event.set_extra("_ffa_memory_access", access)
@@ -303,6 +303,15 @@ class GatewayMemory:
                 await self._reflect(access, options)
         except (*STORAGE_FAILURES, PermissionError, AttributeError, RuntimeError, ImportError) as exc:
             logger.warning("FFA memory send receipt skipped (%s)", type(exc).__name__)
+
+    async def retraction_source(self, notice):
+        room = notice.conversation
+        principal = await asyncio.to_thread(self.gateway.communication().identities.principal_id, notice.actor)
+        if principal is None:
+            return False
+        scope = Scope("private", principal) if room.kind is ChatKind.PRIVATE else Scope("group", room.storage_key)
+        source = Source(room.provider.platform, room.provider.instance, room.bot, notice.actor.subject, room.storage_key)
+        return await asyncio.to_thread(self.memory().has_received, scope, principal, notice.event_id, source)
 
     async def provider_retracted(self, notice, principal, allowed):
         room = notice.conversation
@@ -636,7 +645,7 @@ class GatewayMemory:
             result = service.edit_card(access, action, ids.split(), title.strip())
             return "记忆卡已更新。" + (f" 编号 {result}" if result else "")
         if action in {"search", "archive"} and payload:
-            hits = service.search(access, payload, include_archive=action == "archive")
+            hits = service.search(access, payload, include_archive=action == "archive", include_partial=True)
             return "\n".join(f"{row['fact_key']} v{row['revision']} · {row['content']}" for row in hits) or "没有相关记忆。"
         if action == "history":
             rows = service.history(access, query=payload, limit=8, actual_only=True)

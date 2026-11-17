@@ -169,6 +169,15 @@ class MemoryTests(unittest.TestCase):
         self.lark_alice = permit(platform="lark")
         self.bob = permit("bob", "lark")
 
+    def test_explicit_search_matches_key_and_partial_han_content_in_own_scope(self):
+        ref, _ = self.store.record(self.alice, observation("material", "物品记录"))
+        self.store.put_fact(self.alice, "material-location", "瓷碗在柜里", .8, ref)
+        for query in ("material-location", "碗子"):
+            self.assertEqual([hit["fact_key"] for hit in self.store.search(
+                self.alice, query, include_partial=True)], ["material-location"])
+            self.assertEqual(self.store.search(self.bob, query, include_partial=True), [])
+        self.assertEqual(self.store.search(self.alice, "碗子"), [])
+
     def test_card_projects_each_current_fact_on_shared_evidence(self):
         ref, _ = self.store.record(self.alice, observation("shared", "偏好资料"))
         self.store.put_fact(self.alice, "drink", "喜欢桂花茶", .8, ref)

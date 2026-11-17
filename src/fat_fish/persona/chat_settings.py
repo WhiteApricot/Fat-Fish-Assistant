@@ -214,6 +214,7 @@ class ChatSettings:
                     }
                     self.save(config)
                     self.persona_undo.pop(undo_key)
+                    event.set_extra("_ffa_persona_changed", True)
                     return "已恢复上一次修改前的人格要求。"
                 entry, result = edit_persona(config, scope, note, args)
                 if entry is None:
@@ -222,6 +223,7 @@ class ChatSettings:
                 target[field] = entry["note"]
                 entries[scope] = entry
                 self.save(config)
+                event.set_extra("_ffa_persona_changed", True)
                 self.persona_undo[undo_key] = (monotonic() + 1800, deepcopy(prior), note, deepcopy(entry))
                 self.persona_undo.move_to_end(undo_key)
                 if len(self.persona_undo) > 512:

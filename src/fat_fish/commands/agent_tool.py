@@ -53,7 +53,7 @@ INTENT_GUIDANCE = (
 def external_material(event):
     message = event.get_extra("_ffa_message_event")
     return bool(event.get_extra("_ffa_material") or event.get_extra("_ffa_quoted_context")
-                or message and message.reply_to or any(
+                or message and (message.reply_to or message.media) or any(
                     type(part).__name__ in {"Forward", "Node", "Nodes", "Reply", "File"}
                     for part in event.get_messages()))
 

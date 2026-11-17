@@ -10,6 +10,12 @@ class GroupMedia:
         self.pending = {}
         self.speech = {}
 
+    def forget(self, room):
+        for cache in (self.pending, self.speech):
+            for key in tuple(cache):
+                if key[0] == room:
+                    del cache[key]
+
     def observe(self, event, epoch, *, mentioned, room=None):
         group, sender = room or str(event.get_group_id()), str(event.get_sender_id())
         now = self.clock()

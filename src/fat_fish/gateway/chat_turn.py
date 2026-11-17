@@ -1,4 +1,4 @@
-"""Versioned text turns with a single event-loop submission boundary."""
+"""Versioned conversation turns with a single event-loop submission boundary."""
 import asyncio
 from dataclasses import dataclass, field
 
@@ -15,6 +15,7 @@ class Input:
     arrived: float
     message: object
     native: object
+    parts: tuple
     resolved: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -68,7 +69,7 @@ class ChatTurns:
 
     def receive(self, message, native, arrived):
         key = message.conversation.storage_key, message.sender.storage_key
-        item = Input(key, arrived, message, native)
+        item = Input(key, arrived, message, native, tuple(native.get_messages()))
         self.pending.setdefault(key, set()).add(item)
         return item
 
@@ -91,12 +92,26 @@ class ChatTurns:
         turn = Turn(self, item, principal, previous, reply_window)
         self.active[item.key] = turn
         if previous:
+            for path in tuple(getattr(previous.native, "_temporary_local_files", ())):
+                item.native.track_temporary_local_file(path)
+                previous.native.untrack_temporary_local_file(path)
             previous.superseded = True
             previous.native.set_extra("_ffa_reply_superseded", True)
             previous.native.stop_event()
             previous.task.cancel()
         self.resolve(item)
         return turn
+
+    def retract(self, notice):
+        key = notice.conversation.storage_key, notice.actor.storage_key
+        turn = self.active.get(key)
+        if turn is None or not any(item.message.event_id == notice.event_id for item in turn.items):
+            return
+        turn.superseded = True
+        turn.native.set_extra("_ffa_reply_superseded", True)
+        turn.native.stop_event()
+        if turn.task is not asyncio.current_task():
+            turn.task.cancel()
 
     def finish(self, turn):
         if self.active.get(turn.key) is turn:

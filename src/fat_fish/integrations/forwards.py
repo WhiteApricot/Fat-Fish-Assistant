@@ -18,7 +18,6 @@ def recover_forward_components(event):
         return
     parts = event.get_messages()
     known_ids = {str(part.id) for part in parts if part.__class__.__name__ == 'Forward'}
-    from astrbot.api.message_components import Forward
     for segment in segments:
         if not isinstance(segment, Mapping) or segment.get('type') != 'forward':
             continue
@@ -28,6 +27,8 @@ def recover_forward_components(event):
         ident = data.get('id')
         if not isinstance(ident, (str, int)) or not str(ident).strip() or str(ident) in known_ids:
             continue
+        from astrbot.api.message_components import Forward
+
         parts.append(Forward(id=str(ident)))
         known_ids.add(str(ident))
 
@@ -43,7 +44,9 @@ class ForwardReader:
     async def read(self,event,blocked=(),barrier=0,*,resolve_forward=None):
         entries=[];images=[];seen=set();size=0;incomplete=False;count=0;voice_count=0
         raw=getattr(getattr(event,'message_obj',None),'raw_message',{})
-        raw_parts=raw.get('message',[]) if isinstance(raw,Mapping) else []
+        raw_parts = event.get_extra("_ffa_merged_onebot_segments")
+        if raw_parts is None:
+            raw_parts = raw.get("message", []) if isinstance(raw, Mapping) else []
         attached_payloads={}
         if isinstance(raw_parts,list):
             for segment in raw_parts:

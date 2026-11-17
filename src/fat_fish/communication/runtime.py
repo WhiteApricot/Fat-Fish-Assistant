@@ -51,6 +51,8 @@ class CommunicationRuntime:
         if manifest is not None and (
                 manifest.address != provider.address or manifest.capabilities != provider.capabilities):
             raise ValueError("Adapter manifest does not match its provider")
+        if getattr(provider, "requires_native_access", False):
+            self.identities.require_native_access(provider.address)
         self.connections[provider.address] = Connection(provider, manifest)
 
     async def enable(self, address):

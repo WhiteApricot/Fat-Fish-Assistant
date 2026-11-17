@@ -49,3 +49,5 @@ models/
 *.key
 *.pfx
 *.p12
+
+/AGENTS.md
