@@ -12,7 +12,7 @@
 
 ## 开发者文档
 
-- [当前架构与数据边界](developer/ARCHITECTURE.md)、[消息处理、权限与投递](developer/MESSAGE_FLOW.md)、[当前记忆系统](developer/MEMORY_ARCHITECTURE.md)。
+- [当前架构与数据边界](developer/ARCHITECTURE.md)、[消息处理、权限与投递](developer/MESSAGE_FLOW.md)、[当前记忆系统](developer/MEMORY_ARCHITECTURE.md)与[后台分析和迁移](developer/MEMORY_ANALYSIS.md)。
 - [Provider 契约与生命周期](developer/PROVIDER.md)、[接口与扩展入口](developer/EXTENDING_FFA.md)。
 - [开发流程](developer/DEVELOPMENT.md)、[文档与工程治理规范](developer/DOCUMENTATION_GUIDELINES.md)。
 

@@ -21,7 +21,7 @@ P3 系列已收尾。QQ 单平台于 2026-11-17 完成实机验收，P4 QQ + 飞
 
 ### FFA-N01 · 记忆系统改造
 
-从[当前记忆实现](developer/MEMORY_ARCHITECTURE.md)进入。先核查现有 Activity、Fact、记忆卡、Principal 和 SurfCore 派生机制，再确定数据模型、升级迁移及验收。建立 Bot 自身跨平台、跨场景的经历记忆。Principal 对应的人物互动画像涵盖熟悉度、好感度和互动风格，使同一人在 QQ、飞书和后续平台保持连续性。
+从[当前记忆实现](developer/MEMORY_ARCHITECTURE.md)与[记忆分析和迁移](developer/MEMORY_ANALYSIS.md)进入。先核查现有 Activity、Fact、记忆卡、Principal 和 SurfCore 派生机制，再确定数据模型、升级迁移及验收。建立 Bot 自身跨平台、跨场景的经历记忆。Principal 对应的人物互动画像涵盖熟悉度、好感度和互动风格，使同一人在 QQ、飞书和后续平台保持连续性。
 
 保留私聊、群聊等情境隔离。跨场景的人物画像应按规则生成可用摘要，逐条人工授权私聊内容进入群聊仅作为可选操作。明确来源、证据、可信度、记忆衰减与卡片管理。验证删除、撤回和权限变化能清理或阻断所有受影响派生数据，再进入 Bilibili 集成。
 

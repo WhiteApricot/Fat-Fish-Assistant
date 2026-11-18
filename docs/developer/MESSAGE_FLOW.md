@@ -11,7 +11,7 @@ QQ 消息由 SnowLuma 经反向 OneBot WebSocket 送到 AstrBot。飞书消息�
 3. Runtime 检查会话准入并领取事件去重记录。群准入、群模式、封禁、@ 和当前权限影响能否进入后续处理。未经授权的消息或重复事件在 Gateway 停止。
 4. `ChatTurns` 按会话与账号协调短时间内的多条消息及旧回复取消。显式命令在 `CommandRegistry` 分派，管理写入可要求确认。自然语言管理使用 `ManagementTurn`，在执行时复核权限。
 5. Gateway 准备媒体、引用与记忆。媒体处理受原生能力与授权限制，失败时可发送适用的提示。普通群消息由 Participation 根据模式、是否被直接呼叫、冷却及决策结果判断是否插话。
-6. Gateway 加载 FFA 会话偏好，随后调用 AstrBot 下游。AstrBot 选择基础人格和模型，FFA Guard 在模型请求中加入经当前会话授权的记忆。模型回复提交前再次校验权限及回复是否已被更新的消息取代。普通回复使用 4–6.5 秒的计划窗口，实际回复还受模型、媒体及发送耗时影响。
+6. Gateway 加载 FFA 会话偏好，随后调用 AstrBot 下游。AstrBot 选择基础人格和模型，FFA Guard 在模型请求中加入经当前会话授权的记忆、当前发言者的互动偏好与获准 Bot 经历。合格事件在维护任务中异步分析。模型回复提交前再次校验权限及回复是否已被更新的消息取代。普通回复使用 4–6.5 秒的计划窗口，实际回复还受模型、媒体及发送耗时影响。
 7. 回复通过 Runtime 账本记录提交结果。无法确认是否已发送时保留未知状态。已确认的发送可写入相应的记忆活动。
 
 [Gateway](../../src/fat_fish/gateway/platform_gateway.py) · [插话决策](../../src/fat_fish/participation/participation.py) · [Guard](../../plugins/fat_fish_guard/main.py)

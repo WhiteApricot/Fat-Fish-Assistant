@@ -3,6 +3,8 @@
   "enabled": true,
   "capture_text": true,
   "auto_extract": true,
+  "semantic_analysis": true,
+  "agent_memory_id": "feiyu-v1",
   "legacy_persona": null,
   "legacy_group_personas": {},
   "legacy_auto_sync": false,

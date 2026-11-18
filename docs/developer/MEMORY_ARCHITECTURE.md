@@ -17,8 +17,8 @@
 
 删除、重置及核验后的撤回会处理相关事实、活动、卡片投影或索引，并记录擦除信息。授权变化会在后续读写时复核，失去来源权限的共享内容不再用于召回。恢复旧快照需保留已有擦除。把新数据接入记忆前，应明确可撤回边界以及派生索引如何清理。
 
-## 下一阶段需要补齐的边界
+## Bot 经历与 Principal 画像
 
-当前已有历史活动、衰减、叙事卡片与来源证据，`card.py` 包含 SurfCore 派生机制。当前范围类型为 `private` 和 `group`，尚无独立的 Bot 跨场景经历域，也没有正式的 Principal 社交画像或好感度、熟悉度模型。FFA-N01 从这些数据结构、来源授权和删除链开始评估。
+FFA-N01 新增同库的经历、画像和后台分析任务。经历依赖已验证的 Activity 和来源授权。公开经历只可由受信宿主根据真实回执写入。画像只向当前发言者的互动方式提供低敏偏好，源账号或记忆权限失效时不参与召回。私人事实和群情境继续使用各自的授权范围。
 
-[记忆桥](../../src/fat_fish/memory/gateway_bridge.py) · [存储服务](../../src/fat_fish/memory/service.py) · [活动与访问](../../src/fat_fish/memory/activity.py) · [卡片](../../src/fat_fish/memory/card.py) · [用户指南](../MEMORY.md)
+[记忆分析与迁移](MEMORY_ANALYSIS.md) · [记忆桥](../../src/fat_fish/memory/gateway_bridge.py) · [用户指南](../MEMORY.md)

@@ -11,6 +11,7 @@ import time
 from fat_fish.communication.model import identifier, key
 from fat_fish.memory.activity import Access, Activity, ActivityKind, ActivityState
 from fat_fish.memory.experience import contains_secret
+from fat_fish.memory.experience import sensitive_information
 from fat_fish.memory.service import encode
 from fat_fish.agents.output import OutputAuthorization, check_external_output
 
@@ -116,7 +117,8 @@ class _Plugin:
 
 class AgentRegistry:
     def __init__(self, memory, *, environment, dependency_available, clock=time.time, timeout=30,
-                 authenticate_approval=None, authorize_output=None, verify_outcome=None, protected_identities=None):
+                 authenticate_approval=None, authorize_output=None, verify_outcome=None, protected_identities=None,
+                 agent_memory_id=None):
         # These callbacks belong to the trusted host. A connector never supplies them.
         self.authenticate_approval = authenticate_approval
         self.authorize_output = authorize_output
@@ -124,6 +126,7 @@ class AgentRegistry:
         self.verify_outcome = verify_outcome
         self._live_approvers = {}
         self.memory = memory
+        self.agent_memory_id = agent_memory_id
         self.environment = environment
         self.dependency_available = dependency_available
         self.clock = clock
@@ -236,10 +239,20 @@ class AgentRegistry:
             raise PermissionError("Plugin operation belongs to a different source")
         return operation
 
+    def _experience(self, tool, state, summary):
+        if (self.agent_memory_id and summary.strip() and not sensitive_information(summary)
+                and ((state is ActivityState.OBSERVED and tool.kind in {ActivityKind.BROWSE, ActivityKind.READ})
+                     or (state is ActivityState.SUCCEEDED and tool.kind in {
+                         ActivityKind.BROWSE, ActivityKind.READ, ActivityKind.TASK, ActivityKind.TOOL,
+                         ActivityKind.COMMENT}))):
+            return self.agent_memory_id, "source", None
+        return None
+
     def _write(self, slot, tool, operation_id, intent, state, summary, evidence="", **options):
         activity = Activity(self._event_id(operation_id, state), tool.kind, state, self.clock(),
                             summary, evidence, operation_id, intent)
-        return self.memory.record(slot.access, activity, producer=self._producer(slot), source=slot.source, **options)
+        return self.memory.record(slot.access, activity, producer=self._producer(slot), source=slot.source,
+                                  experience=self._experience(tool, state, summary), **options)
 
     def observe(self, handle, tool_name, *, event_id, occurred, summary, evidence):
         slot = self._slot(handle)
@@ -248,7 +261,8 @@ class AgentRegistry:
             raise PermissionError("Observation requires an authorized read tool and evidence")
         activity = Activity("observed:" + event_id, tool.kind, ActivityState.OBSERVED,
                             occurred, summary, evidence)
-        return self.memory.record(slot.access, activity, producer=self._producer(slot), source=slot.source)
+        return self.memory.record(slot.access, activity, producer=self._producer(slot), source=slot.source,
+                                  experience=self._experience(tool, ActivityState.OBSERVED, summary))
 
     def plan(self, handle, tool_name, operation_id, arguments, summary):
         slot = self._slot(handle)
@@ -354,7 +368,7 @@ class AgentRegistry:
             if not current:
                 raise ValueError("Unknown operation")
             state = ActivityState(current["state"])
-            claimed_states = {ActivityState.RUNNING, ActivityState.SUCCEEDED, ActivityState.FAILED}
+            claimed_states = {ActivityState.RUNNING, ActivityState.SUCCEEDED, ActivityState.FAILED, ActivityState.CANCELED}
             legacy_claim = state in claimed_states and current["intent"] == self._legacy_intent(tool, arguments)
             if current["intent"] != intent and not legacy_claim:
                 raise ValueError("Changed operation intent")
@@ -382,7 +396,7 @@ class AgentRegistry:
             except ValueError:
                 latest = self._operation(slot, operation_id)
                 if latest and latest["intent"] == intent and latest["state"] in {
-                    ActivityState.RUNNING, ActivityState.SUCCEEDED, ActivityState.FAILED,
+                    ActivityState.RUNNING, ActivityState.SUCCEEDED, ActivityState.FAILED, ActivityState.CANCELED,
                 }:
                     return ActivityState(latest["state"])
                 raise

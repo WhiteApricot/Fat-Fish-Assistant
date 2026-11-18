@@ -114,8 +114,15 @@ def target_clarity(row, now):
 def refresh_initial(db, scope):
     db.execute("INSERT OR IGNORE INTO memory_card_settings(scope) VALUES (?)", (scope,))
     setting = db.execute("SELECT * FROM memory_card_settings WHERE scope=?", (scope,)).fetchone()
-    owners = db.execute("""SELECT * FROM memory_card WHERE scope=? AND owner=1 AND hidden=0 AND clarity>0
-                           ORDER BY created,id""", (scope,)).fetchall()
+    owners = db.execute("""SELECT * FROM memory_card WHERE scope=? AND (owner=1 OR id=?)
+                           AND hidden=0 AND clarity>0 ORDER BY created,id""",
+                        (scope, setting["manual_meeting"])).fetchall()
+    if not owners and json.loads(scope)[0] == "private":
+        owners = db.execute("""SELECT c.* FROM memory_card c WHERE c.scope=? AND c.hidden=0 AND c.clarity>0
+            AND (c.id=? OR EXISTS (SELECT 1 FROM memory_card_sources s JOIN activities a USING(ref)
+                JOIN memory_analysis j USING(ref) WHERE s.card=c.id AND a.scope=c.scope
+                AND a.actor=c.principal AND a.kind='message_received' AND a.redacted=0 AND j.state='done'))
+            ORDER BY c.created,c.id""", (scope, setting["manual_meeting"])).fetchall()
     if not owners:
         return
     first_at = owners[0]["created"] if setting["first_owner_at"] is None else min(
@@ -139,15 +146,21 @@ def refresh_initial(db, scope):
                     "first-meet" if first_meet else tier, first_meet, row["id"]))
 
 
-def capture(db, scope, principal, ref, turn, activity, *, owner, direct, private, update_meeting=True):
+def capture(db, scope, principal, ref, turn, activity, *, owner, direct, private, update_meeting=True,
+            semantic_pending=False):
     kind = activity.kind.value
     if kind not in {"message_received", "message_sent", "browse", "read", "reminder", "comment"} or sensitive_information(activity.summary):
         return
     if activity.summary in METADATA_ONLY or activity.summary.lstrip().startswith("/"):
         return
     ident = str(uuid5(NAMESPACE_URL, json.dumps([scope, principal, turn or activity.event_id])))
-    importance, emotional, category, pinned, reasons = score(
-        activity.summary, owner=owner and kind == "message_received", private=private, direct=direct)
+    if semantic_pending:
+        is_owner = owner and kind == "message_received"
+        importance = 50 if is_owner else 20
+        emotional, category, pinned, reasons = 0, "owner" if is_owner else "event", False, ["awaiting-analysis"]
+    else:
+        importance, emotional, category, pinned, reasons = score(
+            activity.summary, owner=owner and kind == "message_received", private=private, direct=direct)
     created = db.execute("""INSERT OR IGNORE INTO memory_card
         (id,scope,principal,kind,created,owner,emotional,importance,reasons,pinned,clarity,last_seen)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -317,24 +330,31 @@ def compact(db, scope, max_chars):
         return sum(len(json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))) + 1
                    for rows in records.values()
                    if (item := render(rows)) is not None)
-    if size() <= max_chars:
-        return
-    candidates = sorted((rows for rows in records.values() if not protected(rows[0])),
-                        key=lambda rows: (rows[0]["importance"], rows[0]["created"], rows[0]["clarity"]))
-    for rows in candidates:
-        row = rows[0]
-        ident = row["id"]
-        for level in range(row["clarity"] - 1, -1, -1):
-            db.execute("UPDATE memory_card SET clarity=? WHERE id=?", (level, ident))
-            if level:
-                records[ident] = [{**item, "clarity": level} for item in rows]
-            else:
-                del records[ident]
-            if size() <= max(400, int(max_chars * .9)):
-                return
+    before = size()
+    level = max((threshold for threshold in (80, 90, 100) if before * 100 >= max_chars * threshold), default=0)
+    if before > max_chars:
+        candidates = sorted((rows for rows in records.values() if not protected(rows[0])),
+                            key=lambda rows: (rows[0]["importance"], rows[0]["created"], rows[0]["clarity"]))
+        target = max(400, int(max_chars * .9))
+        for rows in candidates:
+            row = rows[0]
+            ident = row["id"]
+            for clarity in range(row["clarity"] - 1, -1, -1):
+                db.execute("UPDATE memory_card SET clarity=? WHERE id=?", (clarity, ident))
+                if clarity:
+                    records[ident] = [{**item, "clarity": clarity} for item in rows]
+                else:
+                    del records[ident]
+                if size() <= target:
+                    break
+            if size() <= target:
+                break
+    db.execute("""INSERT INTO memory_capacity_status VALUES (?,?,?,?)
+        ON CONFLICT(scope) DO UPDATE SET before_chars=excluded.before_chars,
+        after_chars=excluded.after_chars,level=excluded.level""", (scope, before, size(), level))
 
 
-def designate(db, scope, principal, ids, title, now, *, meeting=False, source_scope_allowed=None):
+def designate(db, scope, principal, ids, title, now, *, meeting=False, source_scope_allowed=None, automatic=False):
     ids = tuple(dict.fromkeys(ids))
     if not 1 <= len(ids) <= 20 or (len(ids) < 2 and not meeting):
         raise ValueError("Invalid number of memory records")
@@ -356,7 +376,7 @@ def designate(db, scope, principal, ids, title, now, *, meeting=False, source_sc
     if any(ident not in records or records[ident][0]["principal"] != principal for ident in ids):
         raise PermissionError("Memory record is unavailable in this scope")
     selected = sorted((records[ident][0] for ident in ids), key=lambda row: (row["created"], row["id"]))
-    if meeting and not all(row["owner"] for row in selected):
+    if meeting and json.loads(scope)[0] != "private" and not all(row["owner"] for row in selected):
         raise ValueError("First meeting requires owner interactions")
     if not meeting and any(row["first_meet"] for row in selected):
         raise ValueError("First meeting cannot enter a regular merge")
@@ -371,8 +391,16 @@ def designate(db, scope, principal, ids, title, now, *, meeting=False, source_sc
             for ident in ids for evidence in records[ident]
         ):
             raise PermissionError("No common authorized memory audience")
-    for origin in origins:
-        archive(db, origin, now)
+    if automatic and (cross_scope or meeting or not all(
+            row["kind"] not in {"merged", "fact"} and not (row["pinned"] or row["initial"] or row["title"])
+            for row in selected)):
+        raise PermissionError("Protected records cannot be merged automatically")
+    if automatic:
+        db.executemany("INSERT OR IGNORE INTO memory_card_archive VALUES (?,?)",
+                       ((ident, now) for ident in ids))
+    else:
+        for origin in origins:
+            archive(db, origin, now)
     if meeting:
         restore_meeting(db, scope, principal)
     ident = ids[0]
@@ -383,11 +411,14 @@ def designate(db, scope, principal, ids, title, now, *, meeting=False, source_sc
             raise PermissionError("This memory projection was erased")
         db.execute("""INSERT INTO memory_card
             (id,scope,principal,kind,created,owner,emotional,importance,reasons,pinned,clarity,last_seen,title,merged_from)
-            VALUES (?,?,?,?,?,?,?,?,?,1,4,?,?,?)
-            ON CONFLICT(id) DO UPDATE SET hidden=0,title=excluded.title,pinned=1,clarity=4""",
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET hidden=0,title=excluded.title,
+            pinned=excluded.pinned,clarity=excluded.clarity""",
             (ident, scope, principal, "merged", selected[0]["created"], all(row["owner"] for row in selected),
              max(row["emotional"] for row in selected),
-             max(80, *(row["importance"] for row in selected)), '["merge"]',
+             max(0 if automatic else 80, *(row["importance"] for row in selected)),
+             '["model-merge"]' if automatic else '["merge"]', not automatic,
+             max(row["clarity"] for row in selected) if automatic else 4,
              max(row["last_seen"] for row in selected), title or "合并事件", json.dumps(ids)))
         inherited = sorted({tag for row in selected for tag in tags(row)} - {"owner", "initial", "merged"})
         db.execute("UPDATE memory_card SET inherited_tags=? WHERE id=?", (json.dumps(inherited[:12]), ident))

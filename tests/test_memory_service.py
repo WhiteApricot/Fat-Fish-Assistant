@@ -462,7 +462,7 @@ class MemoryTests(unittest.TestCase):
             db.execute("DROP TABLE fact_vectors")
         self.assertEqual(self.store.history(self.alice), [])
         with self.store.transaction() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 14)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 15)
             self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(MemoryService(self.store.path).history(self.alice), [])
 
@@ -675,6 +675,32 @@ class SemanticMaintenanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reset(memory, access, "B"), 2)
         self.assertFalse(any(row["vector"] for row in candidates(memory, access, "B")))
         self.assertTrue(all(row["vector"] for row in candidates(memory, access, "A")))
+
+    async def test_corrupt_vectors_are_skipped_then_rebuilt_in_the_same_space(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        memory = MemoryService(Path(tmp.name) / "memory.sqlite3", clock=lambda: 1000)
+        access = permit()
+        for key in ("corrupt", "valid", "dimension"):
+            ref, _ = memory.record(access, observation(key, key))
+            memory.put_fact(access, key, key, .8, ref)
+        from fat_fish.memory.semantic import cache
+        cache(memory, access, "A", {(key, 1): [0, 1] for key in ("corrupt", "valid", "dimension")})
+        with memory.transaction(write=True) as db:
+            db.execute("UPDATE fact_vectors SET vector='corrupt' WHERE fact_key='corrupt'")
+            db.execute("UPDATE fact_vectors SET vector='[1]' WHERE fact_key='dimension'")
+
+        class Provider:
+            dimensions = 2
+
+            async def get_embedding(self, _):
+                return [0, 1]
+
+        provider = Provider()
+        self.assertEqual(set(await recall(memory, access, "probe", "A", provider)), {("valid", 1)})
+        await IndexMaintenance().run(memory, access, "A", provider)
+        self.assertEqual(len(await recall(memory, access, "probe", "A", provider)), 3)
+        self.assertFalse(any(row["vector"] for row in candidates(memory, access, "B")))
 
     async def test_revocation_during_embedding_does_not_cache_result(self):
         tmp = tempfile.TemporaryDirectory()

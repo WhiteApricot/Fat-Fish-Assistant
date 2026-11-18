@@ -23,6 +23,19 @@ def unit_vector(values):
     return [value / norm for value in vector]
 
 
+def stored_vector(encoded, dimensions=None):
+    if not isinstance(encoded, str) or len(encoded) > 150_000:
+        return None
+    try:
+        values = json.loads(encoded)
+        if (not isinstance(values, list) or any(type(value) not in (int, float) for value in values)
+                or (dimensions is not None and len(values) != dimensions)):
+            return None
+        return unit_vector(values)
+    except (ValueError, OverflowError, RecursionError):
+        return None
+
+
 def candidates(service, access, model):
     access.require_recall()
     with service.transaction() as db:
@@ -113,8 +126,9 @@ class IndexMaintenance:
                 events = await asyncio.to_thread(activity_candidates, service, access, model)
                 rows.extend((row, (row["ref"],), row["summary"]) for row in events)
             attempts = 0
+            dimensions = getattr(provider, "dimensions", None)
             for row, key, text in rows:
-                if row["vector"] or sensitive_information(text):
+                if stored_vector(row["vector"], dimensions) or sensitive_information(text):
                     continue
                 retry_key = access.scope.storage_key, model, *key
                 count, next_at = self.backoff.get(retry_key, (0, 0))
@@ -127,6 +141,8 @@ class IndexMaintenance:
                 try:
                     values = await asyncio.wait_for(provider.get_embedding(text), timeout)
                     vector = unit_vector(values)
+                    if dimensions is not None and len(vector) != dimensions:
+                        raise ValueError("Embedding dimension mismatch")
                     if len(key) == 1:
                         await asyncio.to_thread(cache_activity, service, access, model, key[0], text, vector)
                     else:
@@ -164,8 +180,8 @@ async def recall(service, access, query, model, provider, *, activities=False):
     query_vector = unit_vector(await provider.get_embedding(query[:1500]))
     scores = {}
     for key, encoded in cached:
-        vector = json.loads(encoded)
-        if len(vector) == len(query_vector):
+        vector = stored_vector(encoded, len(query_vector))
+        if vector is not None:
             scores[key] = sum(
                 left * right for left, right in zip(query_vector, vector))
     access.require_recall()

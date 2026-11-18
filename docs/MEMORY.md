@@ -11,3 +11,5 @@
 可通过实例的 `private/ffa-memory.json` 配置正文捕获、自动提取、反思、向量服务和上下文预算。向量匹配需要已配置的嵌入服务。修改配置前备份实例。[配置示例](../examples/config/ffa-memory.json) · [数据与隐私](DATA_AND_PRIVACY.md)
 
 [记忆存储与清理机制](developer/MEMORY_ARCHITECTURE.md)。
+
+统一记忆可在后台分析互动方式和长期偏好。已绑定账号可共享这种表达偏好。群聊中助手会根据当前发言与群聊氛围调整语气。暂停记忆会停止当前授权范围的自动分析和召回。

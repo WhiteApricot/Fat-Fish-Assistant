@@ -16,6 +16,7 @@ import unicodedata
 from fat_fish.communication.model import identifier
 from fat_fish.memory.activity import ActivityKind, ActivityState, TRANSITIONS
 from fat_fish.memory import card
+from fat_fish.memory.projections import MemoryProjections, SCHEMA as PROJECTION_SCHEMA
 from fat_fish.memory.experience import contains_secret, sensitive_information
 
 
@@ -144,6 +145,7 @@ class MemoryService:
         self._schema_lock = Lock()
         self._write_lock = Lock()
         self._ready = False
+        self.projections = MemoryProjections(self)
 
     @contextmanager
     def transaction(self, *, write=False, timeout=10):
@@ -176,7 +178,7 @@ class MemoryService:
         db.execute("PRAGMA journal_mode=WAL").fetchone()
         db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if not 0 <= version <= 14:
+        if not 0 <= version <= 15:
             raise ValueError("Unsupported memory database version")
         if version == 0:
             for statement in SCHEMA.strip().split(";"):
@@ -308,7 +310,11 @@ class MemoryService:
                     DELETE FROM memory_card WHERE NEW.redacted=1 AND id IN
                         (SELECT card FROM memory_card_sources WHERE ref=OLD.ref);
                 END""")
-            db.execute("PRAGMA user_version=14")
+            version = 14
+        if version == 14:
+            for statement in PROJECTION_SCHEMA:
+                db.execute(statement)
+            db.execute("PRAGMA user_version=15")
         db.commit()
 
     def backfill_cards(self, owner_id, check_enabled, *, limit=200):
@@ -345,7 +351,7 @@ class MemoryService:
             access.require(write=True, moderate=moderate)
 
     def record(self, access, activity, *, producer="core", source=None, approval=None,
-               consume_approval=False, turn_id=None, write_limit=None, card_capture=None):
+               consume_approval=False, turn_id=None, write_limit=None, card_capture=None, analyze=False, experience=None):
         access.require(write=True)
         identifier(producer)
         scope = access.scope.storage_key
@@ -416,7 +422,10 @@ class MemoryService:
                     and activity.kind in {ActivityKind.BROWSE, ActivityKind.READ, ActivityKind.REMINDER, ActivityKind.COMMENT}):
                 owner, direct = card_capture or (False, False)
                 card.capture(db, scope, access.principal, ref, turn_id, activity, owner=owner,
-                             direct=direct, private=access.scope.kind == "private")
+                             direct=direct, private=access.scope.kind == "private", semantic_pending=analyze)
+            if (analyze and not erased and producer == "core" and activity.kind is ActivityKind.MESSAGE_RECEIVED
+                    and turn_id and activity.summary != "收到消息"):
+                db.execute("INSERT INTO memory_analysis(ref) VALUES (?)", (ref,))
             if activity.operation_id:
                 if operation is None:
                     db.execute("INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -426,6 +435,11 @@ class MemoryService:
                     db.execute("""UPDATE operations SET state=?,occurred=?,ref=?
                                   WHERE producer=? AND operation_id=?""",
                                (activity.state.value, activity.occurred, ref, producer, activity.operation_id))
+            if experience and not erased:
+                agent, visibility, verify_public = experience
+                receipt = hashlib.sha256(encode([producer, activity.event_id]).encode()).hexdigest()
+                self.projections.publish_experience(access, agent, receipt, ref, visibility=visibility,
+                                                    verify_public=verify_public, _db=db, _origin=origin)
             access.require(write=True)
             return ref, True
 
@@ -509,7 +523,7 @@ class MemoryService:
         return item
 
     def put_fact(self, access, fact_key, text, importance, evidence_ref, *, expected_revision=None,
-                 automatic=False):
+                 automatic=False, _db=None):
         access.require(write=True)
         identifier(fact_key)
         if not isinstance(text, str) or not 0 < len(text.strip()) <= 2048 or contains_secret([fact_key, text]):
@@ -518,7 +532,7 @@ class MemoryService:
             raise ValueError("Invalid importance")
         scope = access.scope.storage_key
         normalized = normalize(text)
-        with self.transaction(write=True) as db:
+        with (self.transaction(write=True) if _db is None else nullcontext(_db)) as db:
             evidence = db.execute("SELECT actor,kind,state,occurred,redacted,turn_id FROM activities WHERE ref=? AND scope=?",
                                   (evidence_ref, scope)).fetchone()
             if (not evidence or evidence["redacted"] or evidence["actor"] != access.principal
@@ -549,7 +563,7 @@ class MemoryService:
                     return current["revision"]
                 if current["status"] == "deleted" and (automatic or evidence_ref <= current["ref"]):
                     raise PermissionError("A deleted fact requires fresh explicit evidence")
-                if (not automatic and expected_revision != current["revision"]) or (
+                if ((not automatic or expected_revision is not None) and expected_revision != current["revision"]) or (
                     evidence["occurred"], evidence_ref
                 ) <= (current["occurred"], current["ref"]):
                     raise ValueError("Fact revision or evidence is stale")
@@ -758,6 +772,7 @@ class MemoryService:
             for scope in scopes:
                 self._mark_erasure(db, scope)
                 erased = {row[0] for row in db.execute("SELECT digest FROM memory_erasures WHERE scope=?", (scope,))}
+                self.projections.replay(db, scope, erased)
                 inbound = db.execute("""SELECT ref,actor,event_id FROM activities WHERE scope=? AND producer='core'
                     AND kind='message_received' AND redacted=0""", (scope,)).fetchall()
                 for activity in inbound:
@@ -827,6 +842,7 @@ class MemoryService:
         access.require(write=True, moderate=group)
         scope = access.scope.storage_key
         with self.transaction(write=True) as db:
+            self.projections.erase_scope(db, scope)
             digests = set(legacy_digests)
             digests.update(content_digest(row[0]) for row in db.execute(
                 "SELECT normalized FROM fact_versions WHERE scope=? AND content IS NOT NULL", (scope,)))
@@ -999,6 +1015,10 @@ class MemoryService:
             facts = dict(db.execute("SELECT status,COUNT(*) FROM facts GROUP BY status"))
             runtime = db.execute("SELECT occurred,pending,failure FROM memory_runtime_status WHERE id=1").fetchone()
             return {
+                "capacity_levels": dict(db.execute("SELECT level,COUNT(*) FROM memory_capacity_status GROUP BY level")),
+                "analysis": dict(db.execute("SELECT state,COUNT(*) FROM memory_analysis GROUP BY state")),
+                "social_profiles": db.execute("SELECT COUNT(DISTINCT principal) FROM memory_social_signal").fetchone()[0],
+                "agent_experiences": db.execute("SELECT COUNT(*) FROM memory_agent_experience").fetchone()[0],
                 "facts": {state: facts.get(state, 0) for state in ("active", "archived", "deleted")},
                 "active_cards": db.execute("SELECT COUNT(*) FROM memory_card WHERE hidden=0 AND clarity>0").fetchone()[0],
                 "archived_cards": db.execute("SELECT COUNT(*) FROM memory_card_archive").fetchone()[0],
@@ -1057,6 +1077,8 @@ class MemoryService:
             day = datetime.fromtimestamp(self.clock(), user_timezone).date() - timedelta(
                 days={"前天": 2, "昨天": 1, "今天": 0}[relative[0]])
         selected = []
+        lexical_max = max(1, sum(min(len(word), 8) for word in words))
+        now = self.clock()
         for rows in records.values():
             row = rows[0]
             foreign = {item["evidence_scope"] for item in rows if item["evidence_scope"] != access.scope.storage_key}
@@ -1084,9 +1106,27 @@ class MemoryService:
                 continue
             item = card.render(rows, full=archived)
             if item is not None:
+                lexical_score = min(1, lexical / lexical_max)
+                age = max(0, now - row["created"])
+                recency = 2 ** (-age / (30 * card.DAY))
+                credibility = max(1.0 if row["fact_key"] else (0.8 if row["state"] == "succeeded" else 0.6)
+                                  for row in rows)
+                score = (0.34 * lexical_score + 0.28 * max(0, similarity) + 0.12 * row["importance"] / 100
+                         + 0.08 * recency + 0.05 * min(1, row["reviews"] / 5)
+                         + 0.07 * row["clarity"] / 4 + 0.06 * credibility)
+                reasons = []
+                if lexical:
+                    reasons.append("lexical")
+                if similarity >= 0.55:
+                    reasons.append("semantic")
+                if card.protected(row):
+                    reasons.append("anchor")
+                if greeting:
+                    reasons.append("greeting")
+                item["recall_reason"] = reasons
                 selected.append((not row["first_meet"], not row["pinned"], not matched,
-                                 -lexical, -similarity, -row["importance"], foreign, item))
-        selected.sort(key=lambda entry: entry[:6])
+                                 -score, -row["created"], foreign, item))
+        selected.sort(key=lambda entry: entry[:5])
         access.require_recall()
         if epoch != self.erasure_epoch(access):
             return []
@@ -1152,7 +1192,7 @@ class MemoryService:
             return result
 
     def context(self, access, query, *, budget=2400, token_budget=None, semantic=None,
-                exclude_turn=None, user_timezone=timezone.utc):
+                exclude_turn=None, user_timezone=timezone.utc, count_tokens=None):
         access.require_recall()
         if not 256 <= budget <= 8000:
             raise ValueError("Invalid context budget")
@@ -1164,20 +1204,31 @@ class MemoryService:
         char_limit = min(640, budget) if GREETING.fullmatch(query.strip()) else budget
         items = self.card_records(access, query, exclude_turn=exclude_turn, limit=12, semantic=semantic,
                                   user_timezone=user_timezone)
-        lines, recalled, size, bytes_used = [], [], 0, 0
+        lines, recalled, seen = [], [], set()
+        count_tokens = count_tokens or (lambda text: len(text.encode("utf-8")))
+
+        def fits(line):
+            text = "\n".join([*lines, line])
+            return len(text) <= char_limit and (token_budget is None or count_tokens(text) <= token_budget)
+
         for item in items:
-            line = encode(item)
-            if size + len(line) + 1 > char_limit or (
-                    token_budget is not None and bytes_used + len(line.encode()) + 1 > token_budget):
-                line = encode({**item, "events": [
-                    {**event, "text": event["text"][:48]} for event in item["events"][:3]
-                ]})
-            line_bytes = len(line.encode()) + 1
-            if size + len(line) + 1 <= char_limit and (
-                    token_budget is None or bytes_used + line_bytes <= token_budget):
-                size += len(line) + 1
-                bytes_used += line_bytes
+            events = []
+            event_keys = set(seen)
+            for event in item["events"]:
+                digest = (event["speaker"], normalize(event["text"]))
+                if digest not in event_keys:
+                    events.append(event)
+                    event_keys.add(digest)
+            if not events:
+                continue
+            line = encode({**item, "events": events})
+            if not fits(line):
+                events = events[:3]
+                shorter = [{**event, "text": event["text"][:48]} for event in events]
+                line = encode({**item, "events": shorter})
+            if fits(line):
                 lines.append(line)
+                seen.update((event["speaker"], normalize(event["text"])) for event in events)
                 if len(recalled) < 5:
                     recalled.append(item["id"])
         if recalled and access.may_write:

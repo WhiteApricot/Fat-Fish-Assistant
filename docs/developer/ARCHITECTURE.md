@@ -9,7 +9,7 @@
 | Provider 与适配器 | 转换原生消息，提供原生权限、引用、撤回及发送能力 | [registry.py](../../src/fat_fish/communication/registry.py) · [适配器](../../src/fat_fish/adapters/) |
 | Identity / Permission | 平台账号绑定到 Principal，计算全局角色和当前会话准入 | [identity.py](../../src/fat_fish/core/identity.py) · [service.py](../../src/fat_fish/permissions/service.py) |
 | Persona | AstrBot 选择基础人格，FFA 加载全局、个人及群内附加偏好 | [persona](../../src/fat_fish/persona/) |
-| Memory | 记录活动和事实，维护有来源的卡片，按权限召回和清理 | [记忆架构](MEMORY_ARCHITECTURE.md) |
+| Memory | 记录活动和事实，维护有来源的卡片、社交画像和 Bot 经历，按权限召回和清理 | [记忆架构](MEMORY_ARCHITECTURE.md) |
 | Task 与 Plugin | 当前有提醒调度和 Agent 操作状态，宿主加载 AstrBot 插件 | [接口与扩展](EXTENDING_FFA.md) |
 
 ## 数据与状态

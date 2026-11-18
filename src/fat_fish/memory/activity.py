@@ -28,14 +28,15 @@ class ActivityState(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    CANCELED = "canceled"
 
 
 TRANSITIONS = {
     None: {ActivityState.PLANNED},
-    ActivityState.PLANNED: {ActivityState.AWAITING_APPROVAL, ActivityState.RUNNING},
-    ActivityState.AWAITING_APPROVAL: {ActivityState.APPROVED},
-    ActivityState.APPROVED: {ActivityState.RUNNING},
-    ActivityState.RUNNING: {ActivityState.SUCCEEDED, ActivityState.FAILED},
+    ActivityState.PLANNED: {ActivityState.AWAITING_APPROVAL, ActivityState.RUNNING, ActivityState.CANCELED},
+    ActivityState.AWAITING_APPROVAL: {ActivityState.APPROVED, ActivityState.CANCELED},
+    ActivityState.APPROVED: {ActivityState.RUNNING, ActivityState.CANCELED},
+    ActivityState.RUNNING: {ActivityState.SUCCEEDED, ActivityState.FAILED, ActivityState.CANCELED},
 }
 
 
@@ -118,7 +119,7 @@ class Activity:
         else:
             identifier(self.operation_id)
             identifier(self.intent)
-        if self.state in {ActivityState.SUCCEEDED, ActivityState.FAILED} and not self.evidence:
+        if self.state in {ActivityState.SUCCEEDED, ActivityState.FAILED, ActivityState.CANCELED} and not self.evidence:
             raise ValueError("Terminal outcome requires evidence")
         if not isinstance(self.summary, str) or len(self.summary) > 2048:
             raise ValueError("Invalid activity summary")
