@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 from fat_fish.communication.model import key
 from fat_fish.memory.activity import Access, Activity, ActivityKind, ActivityState, Scope, Source
-from fat_fish.memory.reasoner import analyze, parse
+from fat_fish.memory.reasoner import analyze, analyze_batch, parse
 from fat_fish.memory.service import MemoryService
 
 
@@ -53,6 +53,49 @@ class ProjectionTests(unittest.TestCase):
         origin = origin or self.qq
         lease, _, facts, _ = self.social.claim(origin, ref)
         return self.social.apply(origin, ref, lease, proposals, {item["key"]: item["revision"] for item in facts})
+
+    def test_reply_gate_batches_idle_threshold_and_manual_scope(self):
+        def queue(ident, source, *, reply):
+            event = Activity("in:" + ident, ActivityKind.MESSAGE_RECEIVED, ActivityState.OBSERVED,
+                             self.now, "一条需要分析的偏好")
+            ref, _ = self.memory.record(source, event, turn_id=ident, analyze=True, after_reply=True)
+            if reply:
+                outbound = Activity("out:" + ident, ActivityKind.MESSAGE_SENT, ActivityState.OBSERVED,
+                                    self.now, "收到", "native-send-return:" + ident)
+                self.memory.record(source, outbound, turn_id=ident)
+            return ref
+
+        held = queue("held", self.qq, reply=False)
+        refs = [queue("qq" + str(i), self.qq, reply=True) for i in range(3)]
+        lark = queue("lark", self.lark, reply=True)
+        self.assertEqual(self.social.ready_batches(), [])
+        self.assertEqual(self.social.queue_status(self.qq), {"awaiting_reply": 1, "pending": 3})
+        self.assertIsNone(self.social.claim(self.qq, held))
+        self.assertEqual([r["ref"] for r in self.social.ready_batches(target=self.qq)[0]], refs)
+        refs.append(queue("fourth", self.qq, reply=True))
+        self.assertEqual([r["ref"] for r in self.social.ready_batches()[0]], refs)
+        self.now += 121
+        restarted = MemoryService(self.path, clock=lambda: self.now)
+        self.assertEqual([[item["ref"] for item in batch] for batch in restarted.projections.ready_batches()],
+                         [refs, [lark]])
+
+    def test_group_expression_requires_multiple_members_and_days_and_revokes(self):
+        second = access("principal-b", "lark", "room-a")
+        expression = dict(type="expression", expression="青灯",
+                          meaning="发布前的集体验证", confidence=0.97)
+        for ident, origin in (("first", self.room), ("second", second)):
+            activity = Activity("in:" + ident, ActivityKind.MESSAGE_RECEIVED, ActivityState.OBSERVED,
+                                self.now, "准备进行青灯验证", "native-message:" + ident)
+            ref, _ = self.memory.record(origin, activity, turn_id=ident, analyze=True)
+            self.complete(ref, [expression], origin)
+            self.now += 86401
+        lookup = self.social.group_expressions
+        self.assertEqual(lookup(self.room, "青灯", lambda *_: True),
+                         [{"expression": "青灯", "meaning": "发布前的集体验证"}])
+        self.assertEqual(lookup(self.room, "绿灯", lambda *_: True), [])
+        self.assertEqual(lookup(access("principal-a", "qq", "room-a"), "青灯", lambda *_: True), [])
+        self.memory.retract_message(second.scope, second.principal, "second", lambda: True)
+        self.assertEqual(lookup(self.room, "青灯", lambda *_: True), [])
 
     def test_social_signals_are_typed_shared_and_revocable(self):
         for i, origin in enumerate((self.qq, self.lark, self.qq)):
@@ -249,11 +292,14 @@ class ProjectionTests(unittest.TestCase):
                          "memory_agent_experience", "memory_analysis_conflict", "memory_projection_epoch",
                          "memory_capacity_status"):
                 db.execute(f'DROP TABLE "{name}"')
+            db.execute("DROP TRIGGER memory_group_expression_erasure")
+            db.execute("DROP TABLE memory_group_expression")
+            db.execute("DROP TABLE memory_analysis_usage")
             db.execute("PRAGMA user_version=14")
         for _ in range(2):
             reopened = MemoryService(self.path)
             with reopened.transaction() as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 15)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 16)
                 self.assertEqual(db.execute("SELECT ref FROM activities ORDER BY ref").fetchone()[0], ref)
                 self.assertEqual(db.execute("SELECT redacted FROM activities WHERE ref=?", (deleted,)).fetchone()[0], 1)
                 self.assertFalse(db.execute("SELECT 1 FROM memory_analysis").fetchone())
@@ -277,6 +323,27 @@ class ReasonerTests(unittest.IsolatedAsyncioTestCase):
                         raw | {"proposals": [dict(type="theme", kind="goal", label="外发", status="done", confidence=1)]}):
             with self.assertRaises(ValueError):
                 parse(json.dumps(invalid), 42)
+
+    async def test_batch_calls_model_once_and_rejects_duplicate_source(self):
+        payload = [{"source_ref": ref, "text": "样本文字"} for ref in (41, 42)]
+        results = [{"version": 1, "source_ref": ref, "proposals": []} for ref in (41, 42)]
+        provider = SimpleNamespace(text_chat=AsyncMock(return_value=SimpleNamespace(
+            completion_text=json.dumps({"version": 2, "results": results}))))
+        meter = AsyncMock()
+        self.assertEqual(await analyze_batch(provider, payload, meter=meter), {41: [], 42: []})
+        provider.text_chat.assert_awaited_once()
+        self.assertEqual(meter.await_args.args[0], 2)
+        results[0]["proposals"] = [signal() | {"evidence_quote": "来自另一条消息"}]
+        provider.text_chat.return_value.completion_text = json.dumps({"version": 2, "results": results})
+        with self.assertRaises(ValueError):
+            await analyze_batch(provider, payload)
+        results[0]["proposals"][0]["evidence_quote"] = "样本文字"
+        provider.text_chat.return_value.completion_text = json.dumps({"version": 2, "results": results})
+        self.assertEqual((await analyze_batch(provider, payload))[41], [signal()])
+        results[1]["source_ref"] = 41
+        provider.text_chat.return_value.completion_text = json.dumps({"version": 2, "results": results})
+        with self.assertRaises(ValueError):
+            await analyze_batch(provider, payload)
 
     async def test_unavailable_model_propagates_for_retry(self):
         provider = SimpleNamespace(text_chat=AsyncMock(side_effect=TimeoutError))
@@ -324,7 +391,7 @@ class GatewayAnalysisTests(unittest.IsolatedAsyncioTestCase):
         await gateway.run(event, reply)
         model.text_chat.assert_not_awaited()
         self.assertEqual(event.sent, ["收到"])
-        await bridge._run_analysis(bridge.memory())
+        await bridge._run_analysis(bridge.memory(), target=event.get_extra("_ffa_memory_access"))
         model.text_chat.assert_awaited_once()
 
         remote = NativeEvent("lark", lark.instance, sender="32", ident="n01-lark", text="什么是正式回答")

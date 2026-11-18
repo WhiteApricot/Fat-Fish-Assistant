@@ -73,8 +73,68 @@ class MemoryProjections:
                 """SELECT j.ref,a.actor,a.scope,COALESCE(
                    (SELECT e.authority FROM memory_agent_experience e WHERE e.ref=a.ref AND e.visibility='public' LIMIT 1),
                    a.source) AS source FROM memory_analysis j JOIN activities a USING(ref)
-                   WHERE j.state IN ('pending','running') AND j.available<=?
+                   WHERE j.state IN ('pending','running') AND j.released IS NOT NULL AND j.available<=?
                    ORDER BY j.available,j.ref LIMIT ?""", (self.service.clock(), limit))]
+
+    def ready_batches(self, *, idle=120, threshold=4, target=None):
+        now = self.service.clock()
+        params = [now]
+        scope_filter = ""
+        if target:
+            target.require_recall()
+            target.require(moderate=target.scope.kind == "group")
+            scope_filter = " AND a.actor=? AND a.scope=? AND a.source=?"
+            params.extend((target.principal, target.scope.storage_key, self.encode_source(target.source)))
+        params.extend((threshold, now - idle, bool(target)))
+        with self.service.transaction() as db:
+            rows = db.execute(f"""WITH eligible AS (
+                SELECT j.ref,j.released,a.actor,a.scope,
+                    COALESCE(e.authority,a.source) AS source,
+                    CASE WHEN e.ref IS NOT NULL OR j.attempts>0 THEN j.ref ELSE 0 END AS domain
+                FROM memory_analysis j JOIN activities a USING(ref)
+                LEFT JOIN memory_agent_experience e ON e.rowid=(
+                    SELECT x.rowid FROM memory_agent_experience x WHERE x.ref=a.ref AND x.visibility='public'
+                    ORDER BY x.agent,x.receipt LIMIT 1)
+                WHERE j.state IN ('pending','running') AND j.released IS NOT NULL AND j.available<=?
+                    AND a.redacted=0 {scope_filter}
+            ), readiness AS (
+                SELECT *,count(*) OVER room AS turns,max(released) OVER room AS latest
+                FROM eligible WINDOW room AS (PARTITION BY actor,scope,source,domain)
+            )
+            SELECT * FROM readiness WHERE domain<>0 OR turns>=? OR latest<=? OR ? ORDER BY ref LIMIT 72""", params)
+            grouped = {}
+            for row in rows:
+                group = (row["actor"], row["scope"], row["source"], row["domain"])
+                grouped.setdefault(group, []).append(dict(row))
+        return [rows[offset:offset + 6] for rows in grouped.values() for offset in range(0,len(rows),6)][:12]
+
+    def expire_unanswered(self):
+        with self.service.transaction(write=True, timeout=0.1) as db:
+            db.execute("""UPDATE memory_analysis SET state='discarded'
+                WHERE state='pending' AND released IS NULL
+                AND ref IN (SELECT ref FROM activities WHERE received<?)""",
+                (self.service.clock() - 86400,))
+
+    def queue_status(self, access):
+        access.require_recall()
+        access.require(moderate=access.scope.kind == "group")
+        with self.service.transaction() as db:
+            counts = dict(db.execute("""SELECT CASE WHEN j.state='pending' AND j.released IS NULL
+                THEN 'awaiting_reply' ELSE j.state END AS phase,count(*)
+                FROM memory_analysis j JOIN activities a USING(ref) WHERE a.scope=? AND a.actor=?
+                AND a.source=? GROUP BY phase""",
+                (access.scope.storage_key, access.principal, self.encode_source(access.source))))
+        access.require_recall()
+        return counts
+
+    def count_request(self, sources, input_tokens, output_tokens):
+        day = int(self.service.clock() // 86400)
+        with self.service.transaction(write=True) as db:
+            db.execute("""INSERT INTO memory_analysis_usage VALUES (?,1,?,?,?)
+              ON CONFLICT(day) DO UPDATE SET calls=calls+1,sources=sources+excluded.sources,
+              input_tokens=input_tokens+excluded.input_tokens,output_tokens=output_tokens+excluded.output_tokens""",
+              (day,sources,input_tokens,output_tokens))
+            db.execute("DELETE FROM memory_analysis_usage WHERE day<?", (day-90,))
 
     def claim(self, access, ref, source_allowed=None):
         access.require_recall()
@@ -84,7 +144,7 @@ class MemoryProjections:
             row, public = self.evidence(db, access, ref)
             if not db.execute(
                     """UPDATE memory_analysis SET state='running',available=?,lease=?
-                       WHERE ref=? AND state IN ('pending','running') AND available<=?""",
+                       WHERE ref=? AND state IN ('pending','running') AND released IS NOT NULL AND available<=?""",
                     (now + 90, lease, ref, now)).rowcount:
                 return None
             facts = [dict(item) for item in db.execute(
@@ -201,6 +261,10 @@ class MemoryProjections:
                         WHERE pinned=0 AND first_meet=0 AND initial=0 AND hidden=0 AND kind<>'merged' AND id IN (
                         SELECT card FROM memory_card_sources WHERE ref=?)""",
                                (round(proposal["importance"] * 100), round(proposal["emotion"] * 24), ref))
+                elif kind == "expression":
+                    if access.scope.kind == "group" and proposal["expression"] in evidence["summary"]:
+                        db.execute("INSERT OR IGNORE INTO memory_group_expression VALUES (?,?,?)",
+                                   (ref, proposal["expression"], proposal["meaning"]))
                 elif kind == "card_merge":
                     if cards:
                         self._merge_card(db, access, ref, proposal["card_id"], cards)
@@ -297,6 +361,32 @@ class MemoryProjections:
             access.require(write=True)
         return True
 
+    def group_expressions(self, access, query, source_allowed):
+        if access.scope.kind != "group":
+            return []
+        access.require_recall()
+        with self.service.transaction() as db:
+            epoch = self.epoch(db)
+            evidence = db.execute("""SELECT g.expression,g.meaning,a.actor,a.source,a.occurred
+                FROM memory_group_expression g JOIN activities a USING(ref)
+                WHERE a.scope=? AND a.redacted=0 AND a.occurred>=? AND instr(?,g.expression)>0
+                ORDER BY a.occurred DESC LIMIT 80""",
+                (access.scope.storage_key, self.service.clock() - 60 * 86400, query)).fetchall()
+        candidates = {}
+        for row in evidence:
+            if source_allowed(row["actor"], access.scope.storage_key, row["source"]):
+                candidates.setdefault(row["expression"], {}).setdefault(row["meaning"], []).append(row)
+        result = []
+        for expression, meanings in candidates.items():
+            if len(meanings) != 1:
+                continue
+            meaning, rows = next(iter(meanings.items()))
+            if len({row["actor"] for row in rows}) >= 2 and len({int(row["occurred"] // 86400) for row in rows}) >= 2:
+                result.append({"expression": expression, "meaning": meaning})
+        access.require_recall()
+        with self.service.transaction() as db:
+            return result[:4] if self.epoch(db) == epoch else []
+
     def snapshot(self, access, agent, source_allowed, query, *, public_only=False):
         access.require_recall()
         source_allowed = lru_cache(maxsize=128)(source_allowed)
@@ -364,6 +454,9 @@ class MemoryProjections:
             item["salience"] += -weight if row["status"] == "rejected" else weight
         relevant_goals = [item | {"salience": round(item["salience"], 2)} for item in goals.values()
                           if item["salience"] > 0 and item["status"] != "rejected"]
+        for item in relevant_goals:
+            if item["status"] == "hypothesis" and item["evidence_count"] >= 2 and item["salience"] >= 1:
+                item["status"] = "active"
         relevant_goals.sort(key=lambda item: item["salience"], reverse=True)
         access.require_recall()
         with self.service.transaction() as db:

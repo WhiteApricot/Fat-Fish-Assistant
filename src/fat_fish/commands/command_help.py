@@ -88,7 +88,8 @@ def platform_memory_help(*, private, preferences, can_change=True):
         if can_change and not private:
             actions += (("card-sharing [on|off]", "开启或关闭本群卡片向已授权的私聊投影"),)
     if can_change:
-        actions += (MEMORY_RESET,)
+        actions += (MEMORY_RESET, ("analyze", "安排后台分析当前来源中已回复的对话"),
+                    ("analysis-status", "查看当前来源的记忆分析队列"))
     return render_help("memory", actions)
 
 

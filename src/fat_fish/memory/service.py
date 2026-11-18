@@ -178,7 +178,7 @@ class MemoryService:
         db.execute("PRAGMA journal_mode=WAL").fetchone()
         db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if not 0 <= version <= 15:
+        if not 0 <= version <= 16:
             raise ValueError("Unsupported memory database version")
         if version == 0:
             for statement in SCHEMA.strip().split(";"):
@@ -314,7 +314,29 @@ class MemoryService:
         if version == 14:
             for statement in PROJECTION_SCHEMA:
                 db.execute(statement)
-            db.execute("PRAGMA user_version=15")
+            version = 15
+        if version == 15:
+            db.execute("ALTER TABLE memory_analysis ADD COLUMN released REAL DEFAULT 0")
+            db.execute("""CREATE TABLE memory_analysis_usage (
+                day INTEGER PRIMARY KEY, calls INTEGER NOT NULL, sources INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL)""")
+            db.execute("""CREATE TABLE memory_group_expression (
+                ref INTEGER NOT NULL REFERENCES activities(ref) ON DELETE CASCADE,
+                expression TEXT NOT NULL, meaning TEXT NOT NULL, PRIMARY KEY(ref,expression))""")
+            db.execute("""CREATE TRIGGER memory_group_expression_erasure AFTER UPDATE OF summary,evidence,redacted ON activities
+                WHEN NEW.summary<>OLD.summary OR NEW.evidence<>OLD.evidence OR NEW.redacted<>OLD.redacted
+                BEGIN
+                    DELETE FROM memory_group_expression WHERE ref=OLD.ref;
+                    UPDATE memory_projection_epoch SET value=value+1 WHERE id=1;
+                END""")
+            # Existing queued chat also needs a recorded reply before it can reach a model.
+            db.execute("""UPDATE memory_analysis SET released=NULL WHERE state IN ('pending','running')
+                AND ref IN (SELECT a.ref FROM activities a WHERE a.kind='message_received'
+                    AND NOT EXISTS (SELECT 1 FROM activities b WHERE b.scope=a.scope AND b.actor=a.actor
+                        AND b.turn_id=a.turn_id AND b.kind='message_sent' AND b.redacted=0
+                        AND b.evidence LIKE 'native-send-return:%'
+                        AND json_extract(b.source,'$.conversation')=json_extract(a.source,'$.conversation')))""")
+            db.execute("PRAGMA user_version=16")
         db.commit()
 
     def backfill_cards(self, owner_id, check_enabled, *, limit=200):
@@ -351,7 +373,7 @@ class MemoryService:
             access.require(write=True, moderate=moderate)
 
     def record(self, access, activity, *, producer="core", source=None, approval=None,
-               consume_approval=False, turn_id=None, write_limit=None, card_capture=None, analyze=False, experience=None):
+               consume_approval=False, turn_id=None, write_limit=None, card_capture=None, analyze=False, after_reply=False, experience=None):
         access.require(write=True)
         identifier(producer)
         scope = access.scope.storage_key
@@ -425,7 +447,13 @@ class MemoryService:
                              direct=direct, private=access.scope.kind == "private", semantic_pending=analyze)
             if (analyze and not erased and producer == "core" and activity.kind is ActivityKind.MESSAGE_RECEIVED
                     and turn_id and activity.summary != "收到消息"):
-                db.execute("INSERT INTO memory_analysis(ref) VALUES (?)", (ref,))
+                db.execute("INSERT INTO memory_analysis(ref,released) VALUES (?,?)", (ref, None if after_reply else 0))
+            if (not erased and producer == "core" and activity.kind is ActivityKind.MESSAGE_SENT
+                    and turn_id and activity.evidence == "native-send-return:" + turn_id):
+                db.execute("""UPDATE memory_analysis SET released=? WHERE released IS NULL AND ref IN (
+                    SELECT ref FROM activities WHERE scope=? AND actor=? AND turn_id=? AND redacted=0
+                    AND kind='message_received' AND json_extract(source,'$.conversation')=?)""",
+                    (self.clock(), scope, access.principal, turn_id, origin.conversation))
             if activity.operation_id:
                 if operation is None:
                     db.execute("INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -1016,7 +1044,10 @@ class MemoryService:
             runtime = db.execute("SELECT occurred,pending,failure FROM memory_runtime_status WHERE id=1").fetchone()
             return {
                 "capacity_levels": dict(db.execute("SELECT level,COUNT(*) FROM memory_capacity_status GROUP BY level")),
-                "analysis": dict(db.execute("SELECT state,COUNT(*) FROM memory_analysis GROUP BY state")),
+                "analysis": dict(db.execute("""SELECT CASE WHEN state='pending' AND released IS NULL
+                    THEN 'awaiting_reply' ELSE state END AS phase,count(*) FROM memory_analysis GROUP BY phase""")),
+                "analysis_usage_utc": [dict(row) for row in db.execute(
+                    "SELECT * FROM memory_analysis_usage ORDER BY day DESC LIMIT 7")],
                 "social_profiles": db.execute("SELECT COUNT(DISTINCT principal) FROM memory_social_signal").fetchone()[0],
                 "agent_experiences": db.execute("SELECT COUNT(*) FROM memory_agent_experience").fetchone()[0],
                 "facts": {state: facts.get(state, 0) for state in ("active", "archived", "deleted")},

@@ -19,6 +19,8 @@ add 使用稳定语义键（小写 ASCII 字母、数字和连字符），其余
 field 仅限 humor、banter、formality、directness、detail、warmth。
 只用 value 表达偏好程度。用户明确要求更改交流风格时 explicit=true。
 不推断健康、政治、身份或其他私人事实到画像。玩笑不能算作明确同意攻击。
+群聊可提出 type='expression'、expression、meaning、confidence。只记录原文出现的群内用语和中性释义。
+拒绝昵称、身份指代、指令、辱骂、秘密、普通词和未确定的释义。私聊不得提出群内用语。
 卡片评分字段为 type='card'、importance、emotion、confidence。
 当前文本和一张候选卡片讲的是同一件已发生的事时，可以提出 type='card_merge'、card_id、confidence。
 主题相近不代表同一事件。只有时间、主体及具体事实一致时才合并。
@@ -33,6 +35,7 @@ status（hypothesis、done 或 rejected）、confidence（0 到 1）。
 """
 
 FIELDS = {
+    "expression": {"type", "expression", "meaning", "confidence"},
     "theme": {"type", "kind", "label", "status", "confidence"},
     "card_merge": {"type", "card_id", "confidence"},
     "fact": {"type", "operation", "key", "text", "importance", "confidence"},
@@ -81,6 +84,12 @@ def parse(text, ref, *, public=False):
                 raise ValueError("Invalid fact proposal")
             if operation == "noop" or (operation not in {"conflict", "reinforce"} and not content.strip()):
                 continue
+        elif kind == "expression":
+            term, meaning = proposal["expression"], proposal["meaning"]
+            if (not isinstance(term, str) or not re.fullmatch(r"[\w-]{2,18}", term)
+                    or not isinstance(meaning, str) or not re.fullmatch(r"[\w ，、]{2,60}", meaning)
+                    or sensitive_information(term + " " + meaning)):
+                raise ValueError("Invalid group expression")
         elif kind == "card_merge":
             if not isinstance(proposal["card_id"], str) or not re.fullmatch(r"[a-f0-9-]{36}", proposal["card_id"]):
                 raise ValueError("Invalid card candidate")
@@ -97,17 +106,72 @@ def parse(text, ref, *, public=False):
                 raise ValueError("Invalid social proposal")
         elif not probability(proposal["importance"]) or not probability(proposal["emotion"]):
             raise ValueError("Invalid card score")
-        if proposal["confidence"] >= (0.92 if kind == "card_merge" else 0.8):
+        if proposal["confidence"] >= (0.92 if kind in {"card_merge", "expression"} else 0.8):
             clean.append(proposal)
     return clean
 
 
-async def analyze(provider, ref, summary, facts, *, public=False, cards=None):
-    async with asyncio.timeout(20):
-        result = await provider.text_chat(
-            prompt=json.dumps({"source_ref": ref, "text": summary, "facts": facts, "cards": [
-                {"card_id": key, "text": text[:300]} for key, (_, text) in (cards or {}).items()
-            ]}, ensure_ascii=False),
-            contexts=[], func_tool=None, request_max_retries=1, system_prompt=SELF_INSTRUCTIONS if public else INSTRUCTIONS,
-        )
-    return parse(getattr(result, "completion_text", None), ref, public=public)
+async def analyze(provider, ref, summary, facts, *, public=False, cards=None, meter=None, scope_kind=None):
+    payload = packet(ref, summary, facts, cards)
+    if scope_kind:
+        payload["scope_kind"] = scope_kind
+    completion = await request(provider, payload, SELF_INSTRUCTIONS if public else INSTRUCTIONS, meter, 1)
+    return parse(completion, ref, public=public)
+
+
+def packet(ref, summary, facts, cards):
+    return {"source_ref": ref, "text": summary, "facts": facts[:6], "cards": [
+        {"card_id": key, "text": text[:160]} for key, (_, text) in list((cards or {}).items())[:4]
+    ]}
+
+
+async def request(provider, payload, instructions, meter, sources):
+    prompt = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    completion = usage = None
+    try:
+        async with asyncio.timeout(20):
+            result = await provider.text_chat(prompt=prompt, contexts=[], func_tool=None,
+                                              request_max_retries=1, system_prompt=instructions)
+        completion = getattr(result, "completion_text", None)
+        usage = getattr(result, "usage", None)
+        return completion
+    finally:
+        if meter:
+            await meter(sources, instructions + prompt, completion or "", usage)
+
+
+async def analyze_batch(provider, payload, *, meter=None):
+    guidance = INSTRUCTIONS + (
+        "\n本次输入是同一会话的多轮资料。改用 JSON 对象 {version: 2, results: [...] }。"
+        "results 包含每个来源的完整 version=1 对象，来源各出现一次。"
+        "每项提议附 evidence_quote，逐字摘录该 source_ref 的完整支撑短语，最多120字符。"
+        "相邻消息只供理解语境。不得把其他消息的内容写入本来源。"
+        "反复寒暄、临时说法和证据不完整的提议返回空列表。"
+        "同一个事实键在本批只给出最新的、可独立用作证据的更新。")
+    text = await request(provider, payload, guidance, meter, len(payload))
+    if not isinstance(text, str) or len(text) > 16384:
+        raise ValueError("Invalid memory batch output length")
+    output = json.loads(text, object_pairs_hook=unique_object)
+    if (not isinstance(output, dict) or set(output) != {"version", "results"}
+            or type(output["version"]) is not int or output["version"] != 2
+            or not isinstance(output["results"], list) or len(output["results"]) != len(payload)):
+        raise ValueError("Invalid memory batch envelope")
+    remaining = {item["source_ref"]: item["text"] for item in payload}
+    parsed = {}
+    for item in output["results"]:
+        ref = item.get("source_ref") if isinstance(item, dict) else None
+        if type(ref) is not int or ref not in remaining:
+            raise ValueError("Unexpected memory batch source")
+        if not isinstance(item.get("proposals"), list):
+            raise ValueError("Invalid batch proposals")
+        verified = []
+        for proposal in item["proposals"]:
+            if not isinstance(proposal, dict):
+                raise ValueError("Invalid batch proposal")
+            quote = proposal.get("evidence_quote")
+            if not isinstance(quote, str) or not 2 <= len(quote) <= 120 or quote not in remaining[ref]:
+                raise ValueError("Batch proposal quote does not match its source")
+            verified.append({name: value for name, value in proposal.items() if name != "evidence_quote"})
+        parsed[ref] = parse(json.dumps({**item, "proposals": verified}), ref)
+        del remaining[ref]
+    return parsed

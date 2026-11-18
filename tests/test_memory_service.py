@@ -462,7 +462,7 @@ class MemoryTests(unittest.TestCase):
             db.execute("DROP TABLE fact_vectors")
         self.assertEqual(self.store.history(self.alice), [])
         with self.store.transaction() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 15)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 16)
             self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(MemoryService(self.store.path).history(self.alice), [])
 
