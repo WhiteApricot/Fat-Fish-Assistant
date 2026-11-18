@@ -110,11 +110,11 @@ class IndexMaintenance:
 
     def schedule(self, service, access, model, provider, *, activities=False):
         key = access.scope.storage_key, model
-        if key not in self.tasks:
+        if key not in self.tasks and len(self.tasks) < 4:
             task = asyncio.create_task(self.run(service, access, model, provider, activities=activities))
             self.tasks[key] = task
             task.add_done_callback(lambda _: self.tasks.pop(key, None))
-        return self.tasks[key]
+        return self.tasks.get(key)
 
     async def run(self, service, access, model, provider, *, timeout=10, limit=8, activities=False):
         if access.scope.kind != "private" or not access.may_write:
@@ -165,7 +165,7 @@ class IndexMaintenance:
             logger.warning("FFA vector maintenance unavailable (%s)", type(exc).__name__)
 
 
-async def recall(service, access, query, model, provider, *, activities=False):
+async def recall(service, access, query, model, provider, *, activities=False, vector=None):
     access.require_recall()
     if access.scope.kind != "private" or sensitive_information(query):
         return {}
@@ -177,7 +177,7 @@ async def recall(service, access, query, model, provider, *, activities=False):
     if not cached:
         return {}
     access.require_recall()
-    query_vector = unit_vector(await provider.get_embedding(query[:1500]))
+    query_vector = vector or unit_vector(await provider.get_embedding(query[:1500]))
     scores = {}
     for key, encoded in cached:
         vector = stored_vector(encoded, len(query_vector))

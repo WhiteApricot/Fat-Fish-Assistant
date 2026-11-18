@@ -462,7 +462,7 @@ class MemoryTests(unittest.TestCase):
             db.execute("DROP TABLE fact_vectors")
         self.assertEqual(self.store.history(self.alice), [])
         with self.store.transaction() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 16)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 17)
             self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(MemoryService(self.store.path).history(self.alice), [])
 
@@ -982,6 +982,7 @@ class ChatMemoryTests(unittest.IsolatedAsyncioTestCase):
         identities.observe(self.qq_user)
         identities.provision(self.owner, self.qq_user, Role.MEMBER)
         identities.confirm(self.lark_user, identities.invite(self.qq_user, self.qq_user, self.lark_user))
+        await self.gateway.memory_bridge.initialize()
 
     async def unexpected(self):
         self.fail("Control or unauthorized event reached the chat model")

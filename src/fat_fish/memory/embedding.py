@@ -6,8 +6,27 @@ import hashlib
 from http.client import HTTPConnection, HTTPException
 import json
 from urllib.parse import urlsplit
+from threading import BoundedSemaphore, Lock
+from time import monotonic
 
 from fat_fish.communication.model import key
+
+
+class EmbeddingLane:
+    def __init__(self):
+        self.slot = BoundedSemaphore(1)
+        self.lock = Lock()
+        self.stats = dict(submitted=0, busy=0, success=0, failure=0, socket_timeout=0,
+                          query_deadline=0, elapsed_ms=0)
+
+    def count(self, **values):
+        with self.lock:
+            for key, value in values.items():
+                self.stats[key] += value
+
+    def snapshot(self):
+        with self.lock:
+            return dict(self.stats)
 
 
 @dataclass(frozen=True)
@@ -17,6 +36,7 @@ class LocalEmbeddingProvider:
     revision: str
     dimensions: int
     api_key: str = field(repr=False)
+    lane: EmbeddingLane = field(default_factory=EmbeddingLane, repr=False, compare=False)
 
     def __post_init__(self):
         if not isinstance(self.base_url, str):
@@ -38,7 +58,27 @@ class LocalEmbeddingProvider:
         return hashlib.sha256(model_space.encode()).hexdigest()
 
     async def get_embedding(self, text):
-        return await asyncio.to_thread(self._request, text[:300])
+        self.lane.count(submitted=1)
+        return await asyncio.to_thread(self._bounded_request, text[:300])
+
+    def _bounded_request(self, text):
+        if not self.lane.slot.acquire(blocking=False):
+            self.lane.count(busy=1)
+            raise OSError("Local embedding lane is busy")
+        started = monotonic()
+        try:
+            result = self._request(text)
+            self.lane.count(success=1)
+            return result
+        except TimeoutError:
+            self.lane.count(socket_timeout=1, failure=1)
+            raise
+        except (OSError, ValueError):
+            self.lane.count(failure=1)
+            raise
+        finally:
+            self.lane.count(elapsed_ms=round((monotonic()-started)*1000))
+            self.lane.slot.release()
 
     def _request(self, text):
         endpoint = urlsplit(self.base_url)
@@ -70,6 +110,7 @@ class LocalEmbeddingProvider:
 class EmbeddingService:
     def __init__(self, private):
         self.private = private
+        self.lane = EmbeddingLane()
 
     def provider(self, options):
         explicit = options.get("embedding")
@@ -77,7 +118,7 @@ class EmbeddingService:
             credential = self.private / "local-embedding-key.txt"
             secret = credential.read_text(encoding="utf-8-sig").strip() if credential.is_file() else ""
             return LocalEmbeddingProvider(explicit["base_url"], explicit["model"], explicit["revision"],
-                                          explicit["dimensions"], secret)
+                                          explicit["dimensions"], secret, self.lane)
         config = self.private.parent / "data" / "cmd_config.json"
         if not config.is_file():
             return None
@@ -94,4 +135,4 @@ class EmbeddingService:
             raise ValueError("Configured local model requires an explicit embedding revision and dimension")
         return LocalEmbeddingProvider(row.get("embedding_api_base"), row["embedding_model"],
                                       "bge-small-zh-v1.5-gguf@5bf683e6", 512,
-                                      row.get("embedding_api_key", ""))
+                                      row.get("embedding_api_key", ""), self.lane)

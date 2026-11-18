@@ -17,7 +17,7 @@ from fat_fish.memory.embedding import EmbeddingService
 from fat_fish.memory.experience import contains_secret, sensitive_information
 from fat_fish.memory.reflection import Reflection
 from fat_fish.memory.reasoner import analyze, analyze_batch, packet
-from fat_fish.memory.semantic import IndexMaintenance, recall
+from fat_fish.memory.semantic import IndexMaintenance, recall, stored_vector, unit_vector
 from fat_fish.memory.service import GREETING, MemoryService, normalize, parse_timezone
 
 
@@ -65,6 +65,15 @@ class GatewayMemory:
         self._index_scopes = OrderedDict()
         self.maintenance_error = None
         self._analysis_task = None
+        self._experience_task = None
+        self._experience_cursor = 0
+        self._experience_space = None
+        self._semantic_experience_hits = 0
+        self._experience_retry_until = 0
+        self._capture_queue = asyncio.Queue(maxsize=64)
+        self._capture_task = None
+        self._capture_dropped = 0
+        self._review_pending = OrderedDict()
         self._analysis_requests = OrderedDict()
 
     def options(self):
@@ -194,6 +203,51 @@ class GatewayMemory:
         await event.send(event.plain_result("【系统】" + reply))
         return True
 
+    async def initialize(self):
+        try:
+            if self.options():
+                await asyncio.to_thread(self.memory().status)
+        except STORAGE_FAILURES as exc:
+            logger.warning("FFA memory startup initialization deferred (%s)", type(exc).__name__)
+
+    async def _record_chat(self, access, activity, **options):
+        try:
+            return await asyncio.to_thread(self.memory().record, access, activity, timeout=0.14, **options)
+        except sqlite3.OperationalError as exc:
+            if not any(word in str(exc).lower() for word in ("busy", "locked")):
+                raise
+            try:
+                self._capture_queue.put_nowait((access, activity, options))
+            except asyncio.QueueFull:
+                self._capture_dropped += 1
+                logger.warning("FFA chat memory retry queue full")
+            else:
+                if self._capture_task is None or self._capture_task.done():
+                    self._capture_task = asyncio.create_task(self._retry_capture())
+            return None, False
+
+    async def _retry_capture(self):
+        while not self._capture_queue.empty():
+            access, activity, options = self._capture_queue.get_nowait()
+            try:
+                for delay in (0.1, 0.3, 1.0):
+                    await asyncio.sleep(delay)
+                    try:
+                        await asyncio.to_thread(self.memory().record, access, activity, timeout=0.25, **options)
+                        break
+                    except sqlite3.OperationalError:
+                        continue
+                else:
+                    self._capture_dropped += 1
+                    logger.warning("FFA chat memory retry exhausted")
+            except PermissionError:
+                pass
+            except STORAGE_FAILURES as exc:
+                self._capture_dropped += 1
+                logger.warning("FFA chat memory retry rejected (%s)", type(exc).__name__)
+            finally:
+                self._capture_queue.task_done()
+
     async def prepare(self, event, *, media_ready=None):
         try:
             options = self.options()
@@ -224,6 +278,7 @@ class GatewayMemory:
             if media_ready is not None:
                 await media_ready.wait()
             event.set_extra("_ffa_memory_command", command)
+            event.set_extra("_ffa_memory_access", access)
             safe_input = (access.scope.kind == "private" and not command and not message.reply_to
                     and not message.media and not event.get_extra("_ffa_material")
                     and not contains_secret(message.text))
@@ -243,23 +298,25 @@ class GatewayMemory:
                     if previous.event_id == message.event_id:
                         continue
                     body = "收到消息"
-                    if options.get("capture_text") and not sensitive_information(previous.text):
+                    if (options.get("capture_text") and not previous.reply_to and not previous.media
+                            and not event.get_extra("_ffa_material") and not sensitive_information(previous.text)):
                         body = previous.text[:1500]
                     previous_activity = Activity("in:" + previous.event_id, ActivityKind.MESSAGE_RECEIVED,
                                                  ActivityState.OBSERVED, previous.timestamp, body,
                                                  "native-message:" + previous.event_id)
-                    await asyncio.to_thread(self.memory().record, access, previous_activity,
-                                            turn_id=message.event_id)
+                    await self._record_chat(access, previous_activity, turn_id=message.event_id)
             semantic = self._analysis_enabled(options)
             eligible = (semantic and options["capture_text"] and not command and not message.reply_to
                         and not message.media and not event.get_extra("_ffa_material")
                         and not sensitive_information(message.text) and bool(message.text.strip()) and not GREETING.fullmatch(message.text.strip()))
-            ref, _ = await asyncio.to_thread(self.memory().record, access, activity, turn_id=message.event_id,
-                                             card_capture=(owner, direct) if not command else None,
-                                             analyze=eligible, after_reply=True)
-            event.set_extra("_ffa_memory_access", access)
+            if command:
+                ref, _ = await asyncio.to_thread(self.memory().record, access, activity,
+                                                 turn_id=message.event_id, timeout=2)
+            else:
+                ref, _ = await self._record_chat(access, activity, turn_id=message.event_id,
+                                                 card_capture=(owner, direct), analyze=eligible, after_reply=True)
             event.set_extra("_ffa_memory_receipt", ref)
-            if (not semantic and safe_input and options["auto_extract"]
+            if (ref and not semantic and safe_input and options["auto_extract"]
                     and not sensitive_information(message.text)):
                 candidate = self._extract(message.text)
                 if candidate:
@@ -268,8 +325,6 @@ class GatewayMemory:
                     event.set_extra("_ffa_auto_fact", normalize(value))
                 if options["reflect"] and not UNRELIABLE.search(message.text):
                     self.reflection.observe(access, ref, message.text, message.timestamp)
-            if options.get("embedding_space"):
-                await self._semantic_provider(access, options)
         except (*STORAGE_FAILURES, PermissionError, AttributeError, RuntimeError) as exc:
             logger.warning("FFA memory capture skipped (%s)", type(exc).__name__)
 
@@ -323,7 +378,7 @@ class GatewayMemory:
                                 time.time(), summary, "native-send-return:" + message.event_id)
             source = Source(access.source.platform, access.source.provider, access.source.bot,
                             access.source.bot, access.source.conversation)
-            await asyncio.to_thread(self.memory().record, access, activity, source=source, turn_id=message.event_id,
+            await self._record_chat(access, activity, source=source, turn_id=message.event_id,
                                     card_capture=(False, False) if not is_command else None)
             if (options and options["reflect"] and options["auto_extract"] and access.scope.kind == "private"
                     and not self._analysis_enabled(options)):
@@ -371,14 +426,14 @@ class GatewayMemory:
         await asyncio.to_thread(self.memory().record, access, activity, source=source,
                                 experience=(options["agent_memory_id"], "source", None))
 
-    def _context(self, access, query, semantic=None, *, exclude_turn=None):
+    def _context(self, access, query, semantic=None, *, exclude_turn=None, review=None):
         options = self.options()
         if not options:
             return ""
         access.require_recall()
         return self.memory().context(access, query, semantic=semantic,
                                      token_budget=options.get("context_token_budget"), exclude_turn=exclude_turn,
-                                     count_tokens=count_context_tokens,
+                                     count_tokens=count_context_tokens, review=review,
                                      user_timezone=parse_timezone(options.get("timezone")))
 
     def _job_access(self, access, options, fields):
@@ -514,7 +569,12 @@ class GatewayMemory:
             except STORAGE_FAILURES as exc:
                 logger.warning("FFA analysis usage unavailable (%s)", type(exc).__name__)
 
-        for jobs in await asyncio.to_thread(projections.ready_batches, target=target):
+        try:
+            batches = await asyncio.to_thread(projections.ready_batches, target=target)
+        except (*STORAGE_FAILURES, PermissionError) as exc:
+            logger.info("FFA analysis queue scan deferred (%s)", type(exc).__name__)
+            return
+        for jobs in batches:
             first = jobs[0]
             access = self._source_access(first["actor"], first["scope"], first["source"], for_analysis=True)
             if not access or not await asyncio.to_thread(access.verify):
@@ -577,6 +637,36 @@ class GatewayMemory:
                     except STORAGE_FAILURES as failure:
                         logger.warning("FFA memory analysis retry deferred (%s)", type(failure).__name__)
 
+    async def _index_experiences(self, memory, options, provider):
+        model, agent = provider.space(options["embedding_space"]), options["agent_memory_id"]
+        if (agent, model) != self._experience_space:
+            self._experience_space = (agent, model)
+            self._experience_cursor = 0
+        try:
+            rows = await asyncio.to_thread(memory.projections.experience_index_rows,
+                                           agent, model, self._experience_cursor)
+            if not rows:
+                self._experience_cursor = 0
+                return
+            encoded = 0
+            for row in rows:
+                if not stored_vector(row["vector"], provider.dimensions) and not sensitive_information(row["summary"]):
+                    auth = (row["actor"], row["scope"], row["authority"])
+                    if await asyncio.to_thread(self._source_allowed, *auth):
+                        vector = unit_vector(await provider.get_embedding(row["summary"]))
+                        if len(vector) != provider.dimensions:
+                            raise ValueError("Experience vector dimension mismatch")
+                        if await asyncio.to_thread(self._source_allowed, *auth):
+                            await asyncio.to_thread(memory.projections.store_experience_vector, agent, model, row, vector)
+                        encoded += 1
+                        if encoded == 4:
+                            self._experience_cursor = row["ref"]
+                            return
+                self._experience_cursor = row["ref"]
+        except (*STORAGE_FAILURES, PermissionError, TimeoutError, RuntimeError) as exc:
+            self._experience_retry_until = time.monotonic() + 20
+            logger.warning("FFA experience index deferred (%s)", type(exc).__name__)
+
     async def maintenance_tick(self):
         def enabled():
             if not self.options():
@@ -604,11 +694,17 @@ class GatewayMemory:
                 owner_id = await asyncio.to_thread(directory.principal_id, owner)
                 await asyncio.to_thread(memory.backfill_cards, owner_id, enabled)
             await asyncio.to_thread(memory.maintain_pending, enabled)
+            for _ in range(min(8, len(self._review_pending))):
+                _, (access, cards) = self._review_pending.popitem(last=False)
+                await asyncio.to_thread(memory.review_cards, access, cards)
             provider = None
             if options.get("embedding_space"):
                 provider = await asyncio.to_thread(self.embedding.provider, options)
                 if provider:
                     await self._recover_index_scopes(memory, options, provider)
+                    if (self._experience_task is None or self._experience_task.done()
+                            ) and time.monotonic() >= self._experience_retry_until:
+                        self._experience_task = asyncio.create_task(self._index_experiences(memory, options, provider))
             for scope, access in tuple(self._index_scopes.items())[:16]:
                 try:
                     if provider:
@@ -621,7 +717,9 @@ class GatewayMemory:
             logger.warning("FFA scheduled memory maintenance deferred (%s)", self.maintenance_error)
         if memory is not None:
             pending = {"index": len(self.index.tasks), "index_retries": len(self.index.backoff),
-                       "reflection": len(self.reflection.tasks)}
+                       "reflection": len(self.reflection.tasks), "embedding": self.embedding.lane.snapshot(),
+                       "experience_semantic_hits": self._semantic_experience_hits,
+                       "capture_retries": self._capture_queue.qsize(), "capture_dropped": self._capture_dropped}
             try:
                 failure = self.maintenance_error or self.index.last_failure
                 await asyncio.to_thread(memory.record_maintenance_run, pending, failure)
@@ -632,26 +730,46 @@ class GatewayMemory:
         tasks = (*self.index.tasks.values(), *self.reflection.tasks.values())
         if self._analysis_task is not None:
             tasks += (self._analysis_task,)
+        if self._experience_task is not None:
+            tasks += (self._experience_task,)
+        if self._capture_task is not None:
+            tasks += (self._capture_task,)
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._index_scopes.clear()
+        self._review_pending.clear()
 
-    async def _semantic(self, access, query):
-        if sensitive_information(query):
-            return {}
+    async def _semantic(self, access, query, options):
+        if not options.get("embedding_space") or sensitive_information(query):
+            return None, None, {}
         try:
-            options = self.options()
-            active = await self._semantic_provider(access, options)
-            if active is not None:
-                return await asyncio.wait_for(recall(self.memory(), access, query, *active,
-                                                     activities=options.get("capture_text", False)), 4)
-        except (AttributeError, RuntimeError, TimeoutError, *STORAGE_FAILURES) as exc:
-            logger.warning("FFA semantic recall skipped (%s)", type(exc).__name__)
-        return {}
+            async with asyncio.timeout(0.40):
+                await asyncio.to_thread(access.require_recall)
+                provider = await asyncio.to_thread(self.embedding.provider, options)
+                if provider is None:
+                    return None, None, {}
+                model = provider.space(options["embedding_space"])
+                vector = unit_vector(await provider.get_embedding(query))
+                await asyncio.to_thread(access.require_recall)
+                scores = await recall(self.memory(), access, query, model, provider,
+                                      activities=options.get("capture_text", False), vector=vector)
+                return model, vector, scores
+        except TimeoutError:
+            self.embedding.lane.count(query_deadline=1)
+        except (AttributeError, RuntimeError, *STORAGE_FAILURES) as exc:
+            logger.info("FFA semantic recall fell back (%s)", type(exc).__name__)
+        return None, None, {}
 
     async def augment(self, event, request):
+        try:
+            async with asyncio.timeout(0.90):
+                await self._augment(event, request)
+        except TimeoutError:
+            logger.info("FFA memory recall deadline exceeded")
+
+    async def _augment(self, event, request):
         scoped_access = event.get_extra("_ffa_memory_access")
         access = scoped_access or event.get_extra("_ffa_public_memory_access")
         message = event.get_extra("_ffa_message_event")
@@ -662,17 +780,21 @@ class GatewayMemory:
             memory = self.memory()
             epoch = await asyncio.to_thread(memory.erasure_epoch, access)
             context = ""
-            if scoped_access:
-                if isinstance(getattr(request, "contexts", None), list):
-                    request.contexts = await asyncio.to_thread(memory.filter_retracted_context, access, request.contexts)
-                semantic = await self._semantic(access, message.text)
-                context = await asyncio.to_thread(self._context, access, message.text, semantic, exclude_turn=message.event_id)
             options = self.options()
             if not options:
                 return
+            if scoped_access and isinstance(getattr(request, "contexts", None), list):
+                request.contexts = await asyncio.to_thread(memory.filter_retracted_context, access, request.contexts)
+            model, vector, semantic = await self._semantic(access, message.text, options)
+            reviewed = []
+            if scoped_access:
+                context = await asyncio.to_thread(self._context, access, message.text, semantic,
+                                                exclude_turn=message.event_id, review=reviewed.extend)
             profile, experiences, themes = await asyncio.to_thread(
                 memory.projections.snapshot, access, options["agent_memory_id"], self._source_allowed,
-                message.text, public_only=scoped_access is None)
+                message.text, public_only=scoped_access is None, model=model, vector=vector)
+            if any(item["reason"] in {"semantic", "hybrid"} for item in experiences):
+                self._semantic_experience_hits += 1
             if access.scope.kind == "group" and "banter" in profile:
                 profile["banter_when_invited"] = profile.pop("banter")
             expressions = await asyncio.to_thread(memory.projections.group_expressions, access, message.text,
@@ -693,6 +815,10 @@ class GatewayMemory:
             if event.get_extra("_ffa_memory_request") is request:
                 return
             event.set_extra("_ffa_memory_request", request)
+            if reviewed:
+                self._review_pending[(access.principal, access.scope.storage_key)] = (access, reviewed)
+                if len(self._review_pending) > 32:
+                    self._review_pending.popitem(last=False)
         except (*STORAGE_FAILURES, PermissionError) as exc:
             logger.warning("FFA memory context skipped (%s)", type(exc).__name__)
             return
@@ -727,7 +853,8 @@ class GatewayMemory:
                      "/groupmemory remember 内容：写入本群记忆\n"
                      "/groupmemory update 编号 内容：更新本群记录\n"
                      "/groupmemory delete 编号：遗忘本群单条记录\n"
-                     "/groupmemory reset：申请清除本群记忆，需再次确认")
+                     "/groupmemory reset：申请清除本群记忆，需再次确认\n"
+                     "/groupmemory analyze 或 analysis-status：调度或查看本人在本群的分析任务")
         elif words in (["/memory", "analyze"], ["/memory", "analysis-status"],
                       ["/groupmemory", "analyze"], ["/groupmemory", "analysis-status"]) and access:
             try:
@@ -736,6 +863,13 @@ class GatewayMemory:
                 counts = await asyncio.to_thread(self.memory().projections.queue_status, access)
                 reply = ("待回复 %d，已排队 %d，运行中 %d，完成 %d，失败 %d。" %
                          tuple(counts.get(name, 0) for name in ("awaiting_reply", "pending", "running", "done", "failed")))
+                admission = event.get_extra("_ffa_platform_admission")
+                if words[1] == "analysis-status" and access.scope.kind == "private" and admission.role == Role.OWNER:
+                    stats = await asyncio.to_thread(self.memory().status)
+                    usage = stats["analysis_usage_utc"]
+                    reply += " 近七个有记录的 UTC 日：请求 %d，来源 %d，输入 %d / 输出 %d Token。" % (
+                        tuple(sum(row[name] for row in usage) for name in
+                              ("calls", "sources", "input_tokens", "output_tokens")))
                 if words[1] == "analyze":
                     key = (access.principal, access.scope.storage_key, access.source)
                     self._analysis_requests[key] = access

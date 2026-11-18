@@ -149,15 +149,23 @@ class MemoryService:
 
     @contextmanager
     def transaction(self, *, write=False, timeout=10):
-        with self._writer(write, timeout), closing(sqlite3.connect(self.path, timeout=timeout)) as db, db:
+        deadline = time.monotonic() + timeout
+        with self._writer(write, timeout), closing(sqlite3.connect(
+                self.path, timeout=max(0, deadline-time.monotonic()))) as db, db:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA secure_delete=ON")
             if not self._ready:
-                with self._schema_lock:
+                if not self._schema_lock.acquire(timeout=max(0, deadline-time.monotonic())):
+                    raise sqlite3.OperationalError("Memory schema busy")
+                try:
                     if not self._ready:
+                        db.execute(f"PRAGMA busy_timeout={max(0, int((deadline-time.monotonic())*1000))}")
                         self._migrate(db)
                         self._ready = True
+                finally:
+                    self._schema_lock.release()
+            db.execute(f"PRAGMA busy_timeout={max(0, int((deadline-time.monotonic())*1000))}")
             db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             yield db
 
@@ -166,7 +174,7 @@ class MemoryService:
         if not write:
             yield
             return
-        if not self._write_lock.acquire(timeout=timeout if timeout < 1 else -1):
+        if not self._write_lock.acquire(timeout=timeout):
             raise sqlite3.OperationalError("Memory writer busy")
         try:
             yield
@@ -175,10 +183,12 @@ class MemoryService:
 
     @staticmethod
     def _migrate(db):
+        if db.execute("PRAGMA user_version").fetchone()[0] == 17:
+            return
         db.execute("PRAGMA journal_mode=WAL").fetchone()
         db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if not 0 <= version <= 16:
+        if not 0 <= version <= 17:
             raise ValueError("Unsupported memory database version")
         if version == 0:
             for statement in SCHEMA.strip().split(";"):
@@ -336,7 +346,22 @@ class MemoryService:
                         AND b.turn_id=a.turn_id AND b.kind='message_sent' AND b.redacted=0
                         AND b.evidence LIKE 'native-send-return:%'
                         AND json_extract(b.source,'$.conversation')=json_extract(a.source,'$.conversation')))""")
-            db.execute("PRAGMA user_version=16")
+            version = 16
+        if version == 16:
+            db.execute("""CREATE TABLE memory_experience_vectors (
+                agent TEXT NOT NULL, receipt TEXT NOT NULL, model TEXT NOT NULL, vector TEXT NOT NULL,
+                PRIMARY KEY(agent, receipt, model),
+                FOREIGN KEY(agent,receipt) REFERENCES memory_agent_experience(agent,receipt) ON DELETE CASCADE)""")
+            db.execute("""CREATE TRIGGER memory_experience_changed AFTER UPDATE OF summary,evidence,redacted ON activities
+                WHEN NEW.summary<>OLD.summary OR NEW.evidence<>OLD.evidence OR NEW.redacted<>OLD.redacted
+                BEGIN
+                    DELETE FROM memory_experience_vectors WHERE EXISTS (
+                        SELECT 1 FROM memory_agent_experience e WHERE e.ref=OLD.ref
+                        AND e.agent=memory_experience_vectors.agent AND e.receipt=memory_experience_vectors.receipt);
+                END""")
+            db.execute("""UPDATE memory_analysis SET state='pending',lease=NULL,available=0
+                WHERE state='running' AND released IS NULL""")
+            db.execute("PRAGMA user_version=17")
         db.commit()
 
     def backfill_cards(self, owner_id, check_enabled, *, limit=200):
@@ -373,7 +398,7 @@ class MemoryService:
             access.require(write=True, moderate=moderate)
 
     def record(self, access, activity, *, producer="core", source=None, approval=None,
-               consume_approval=False, turn_id=None, write_limit=None, card_capture=None, analyze=False, after_reply=False, experience=None):
+               consume_approval=False, turn_id=None, write_limit=None, card_capture=None, analyze=False, after_reply=False, experience=None, timeout=10):
         access.require(write=True)
         identifier(producer)
         scope = access.scope.storage_key
@@ -383,7 +408,7 @@ class MemoryService:
             identifier(turn_id)
         payload = encode([scope, access.principal, source, asdict(activity)])
         digest = hashlib.sha256(payload.encode()).hexdigest()
-        with self.transaction(write=True) as db:
+        with self.transaction(write=True, timeout=timeout) as db:
             inbound_id = activity.event_id if activity.kind is ActivityKind.MESSAGE_RECEIVED else (
                 "in:" + turn_id if activity.kind is ActivityKind.MESSAGE_SENT and turn_id else None)
             if (producer == "core" and inbound_id is not None
@@ -447,7 +472,14 @@ class MemoryService:
                              direct=direct, private=access.scope.kind == "private", semantic_pending=analyze)
             if (analyze and not erased and producer == "core" and activity.kind is ActivityKind.MESSAGE_RECEIVED
                     and turn_id and activity.summary != "收到消息"):
-                db.execute("INSERT INTO memory_analysis(ref,released) VALUES (?,?)", (ref, None if after_reply else 0))
+                release = 0
+                if after_reply:
+                    receipt = db.execute("""SELECT max(received) FROM activities WHERE scope=? AND actor=?
+                        AND turn_id=? AND kind='message_sent' AND redacted=0 AND evidence=?
+                        AND json_extract(source,'$.conversation')=?""",
+                        (scope, access.principal, turn_id, "native-send-return:" + turn_id, origin.conversation))
+                    release = receipt.fetchone()[0]
+                db.execute("INSERT INTO memory_analysis(ref,released) VALUES (?,?)", (ref, release))
             if (not erased and producer == "core" and activity.kind is ActivityKind.MESSAGE_SENT
                     and turn_id and activity.evidence == "native-send-return:" + turn_id):
                 db.execute("""UPDATE memory_analysis SET released=? WHERE released IS NULL AND ref IN (
@@ -1046,6 +1078,7 @@ class MemoryService:
                 "capacity_levels": dict(db.execute("SELECT level,COUNT(*) FROM memory_capacity_status GROUP BY level")),
                 "analysis": dict(db.execute("""SELECT CASE WHEN state='pending' AND released IS NULL
                     THEN 'awaiting_reply' ELSE state END AS phase,count(*) FROM memory_analysis GROUP BY phase""")),
+                "experience_index": dict(db.execute("SELECT model,count(*) FROM memory_experience_vectors GROUP BY model")),
                 "analysis_usage_utc": [dict(row) for row in db.execute(
                     "SELECT * FROM memory_analysis_usage ORDER BY day DESC LIMIT 7")],
                 "social_profiles": db.execute("SELECT COUNT(DISTINCT principal) FROM memory_social_signal").fetchone()[0],
@@ -1223,7 +1256,7 @@ class MemoryService:
             return result
 
     def context(self, access, query, *, budget=2400, token_budget=None, semantic=None,
-                exclude_turn=None, user_timezone=timezone.utc, count_tokens=None):
+                exclude_turn=None, user_timezone=timezone.utc, count_tokens=None, review=None):
         access.require_recall()
         if not 256 <= budget <= 8000:
             raise ValueError("Invalid context budget")
@@ -1262,20 +1295,30 @@ class MemoryService:
                 seen.update((event["speaker"], normalize(event["text"])) for event in events)
                 if len(recalled) < 5:
                     recalled.append(item["id"])
-        if recalled and access.may_write:
-            try:
-                access.require(write=True)
-                with self.transaction(write=True, timeout=0.1) as db:
-                    now = self.clock()
-                    db.executemany("""UPDATE memory_card SET last_seen=?, reviews=min(reviews+1,999)
-                        WHERE id=? AND scope=? AND hidden=0 AND clarity>0
-                        AND (reviews=0 OR last_seen<=?)""",
-                        ((now, ident, access.scope.storage_key, now - card.DAY) for ident in recalled))
-                    access.require(write=True)
-            except (sqlite3.Error, OSError) as exc:
-                logger.warning("FFA narrative memory review deferred (%s)", type(exc).__name__)
         access.require_recall()
-        return "\n".join(lines) if self.erasure_epoch(access) == epoch else ""
+        if self.erasure_epoch(access) != epoch:
+            return ""
+        if recalled and access.may_write:
+            if review is None:
+                self.review_cards(access, recalled)
+                if self.erasure_epoch(access) != epoch:
+                    return ""
+            else:
+                review(recalled)
+        return "\n".join(lines)
+
+    def review_cards(self, access, recalled):
+        try:
+            access.require(write=True)
+            with self.transaction(write=True, timeout=0.1) as db:
+                now = self.clock()
+                db.executemany("""UPDATE memory_card SET last_seen=?, reviews=min(reviews+1,999)
+                    WHERE id=? AND scope=? AND hidden=0 AND clarity>0
+                    AND (reviews=0 OR last_seen<=?)""",
+                    ((now, ident, access.scope.storage_key, now - card.DAY) for ident in recalled))
+                access.require(write=True)
+        except (sqlite3.Error, OSError, PermissionError) as exc:
+            logger.info("FFA narrative memory review deferred (%s)", type(exc).__name__)
 
     @staticmethod
     def _date(value):

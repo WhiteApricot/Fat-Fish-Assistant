@@ -110,8 +110,8 @@ class MemoryProjections:
 
     def expire_unanswered(self):
         with self.service.transaction(write=True, timeout=0.1) as db:
-            db.execute("""UPDATE memory_analysis SET state='discarded'
-                WHERE state='pending' AND released IS NULL
+            db.execute("""UPDATE memory_analysis SET state='discarded',lease=NULL
+                WHERE state IN ('pending','running') AND released IS NULL
                 AND ref IN (SELECT ref FROM activities WHERE received<?)""",
                 (self.service.clock() - 86400,))
 
@@ -367,10 +367,10 @@ class MemoryProjections:
         access.require_recall()
         with self.service.transaction() as db:
             epoch = self.epoch(db)
-            evidence = db.execute("""SELECT g.expression,g.meaning,a.actor,a.source,a.occurred
+            evidence = db.execute("""SELECT DISTINCT g.expression,g.meaning,a.actor,a.source,CAST(a.occurred/86400 AS INTEGER) AS day
                 FROM memory_group_expression g JOIN activities a USING(ref)
                 WHERE a.scope=? AND a.redacted=0 AND a.occurred>=? AND instr(?,g.expression)>0
-                ORDER BY a.occurred DESC LIMIT 80""",
+                ORDER BY day DESC""",
                 (access.scope.storage_key, self.service.clock() - 60 * 86400, query)).fetchall()
         candidates = {}
         for row in evidence:
@@ -381,25 +381,47 @@ class MemoryProjections:
             if len(meanings) != 1:
                 continue
             meaning, rows = next(iter(meanings.items()))
-            if len({row["actor"] for row in rows}) >= 2 and len({int(row["occurred"] // 86400) for row in rows}) >= 2:
+            if len({row["actor"] for row in rows}) >= 2 and len({row["day"] for row in rows}) >= 2:
                 result.append({"expression": expression, "meaning": meaning})
         access.require_recall()
         with self.service.transaction() as db:
             return result[:4] if self.epoch(db) == epoch else []
 
-    def snapshot(self, access, agent, source_allowed, query, *, public_only=False):
+    def experience_index_rows(self, agent, model, after=0, limit=48):
+        with self.service.transaction(timeout=0.25) as db:
+            return db.execute("""SELECT a.ref,a.summary,a.actor,a.scope,e.authority,e.receipt,v.vector
+                FROM memory_agent_experience e JOIN activities a USING(ref)
+                LEFT JOIN memory_experience_vectors v ON v.agent=e.agent AND v.receipt=e.receipt AND v.model=?
+                WHERE e.agent=? AND a.redacted=0 AND a.summary NOT LIKE '通信适配器已返回%' AND a.ref>? ORDER BY a.ref LIMIT ?""",
+                (model,agent,after,limit)).fetchall()
+
+    def store_experience_vector(self, agent, model, row, vector):
+        with self.service.transaction(write=True, timeout=0.25) as db:
+            db.execute("""INSERT INTO memory_experience_vectors
+                SELECT e.agent,e.receipt,?,? FROM memory_agent_experience e JOIN activities a USING(ref)
+                WHERE e.agent=? AND e.receipt=? AND a.ref=? AND a.summary=? AND a.redacted=0
+                ON CONFLICT(agent,receipt,model) DO UPDATE SET vector=excluded.vector""",
+                (model,json.dumps(vector),agent,row["receipt"],row["ref"],row["summary"]))
+
+    def snapshot(self, access, agent, source_allowed, query, *, public_only=False, model=None, vector=None):
+        from fat_fish.memory.semantic import stored_vector
+        from fat_fish.memory.service import bm25, normalize, terms as tokenize
+
         access.require_recall()
+        verify_source = source_allowed
         source_allowed = lru_cache(maxsize=128)(source_allowed)
         terms = {word for word in re.findall(r"[a-z0-9]+|[\u3400-\u9fff]", query.lower())
                  if len(word) > 1 or ord(word) >= 0x3400}
         with self.service.transaction() as db:
             epoch = self.epoch(db)
-            projections = [dict(row) for row in db.execute("""SELECT a.*,e.visibility,e.authority
+            projections = db.execute("""SELECT a.ref,a.scope,a.actor,a.kind,a.state,a.summary,a.occurred,a.source,
+                    e.visibility,e.authority,v.vector
                 FROM memory_agent_experience e JOIN activities a USING(ref)
-                WHERE e.agent=? AND a.redacted=0
+                LEFT JOIN memory_experience_vectors v ON v.agent=e.agent AND v.receipt=e.receipt AND v.model=?
+                WHERE e.agent=? AND a.redacted=0 AND a.summary NOT LIKE '通信适配器已返回%'
                 AND (e.visibility='public' OR (? AND a.scope=? AND a.actor=?))
-                ORDER BY a.occurred DESC,a.ref DESC LIMIT 64""",
-                (agent, not public_only, access.scope.storage_key, access.principal))]
+                ORDER BY a.occurred DESC,a.ref DESC""",
+                (model, agent, not public_only, access.scope.storage_key, access.principal)).fetchall()
             themes = [dict(row) for row in db.execute("""SELECT t.theme,t.kind,t.status,t.confidence,a.occurred,
                 a.actor,a.scope,e.authority FROM memory_agent_theme t
                 JOIN memory_agent_experience e USING(agent,receipt) JOIN activities a USING(ref)
@@ -428,17 +450,34 @@ class MemoryProjections:
         if active:
             events = {(row["ref"], row["occurred"]) for rows in active.values() for row in rows}
             profile["familiarity"] = min(1, len(events) / 20)
+        authorized = [row for row in projections
+                      if source_allowed(row["actor"], row["scope"], row["authority"])]
+        texts = [normalize(row["summary"]) for row in authorized]
+        lexical = bm25(tokenize(query), texts)
         experiences = []
-        for row in projections:
-            if not source_allowed(row["actor"], row["scope"], row["authority"]):
+        for row, text, lexical_score in zip(authorized, texts, lexical):
+            candidate = stored_vector(row["vector"], len(vector)) if vector else None
+            similarity = sum(a*b for a,b in zip(vector,candidate)) if candidate else 0.0
+            if not lexical_score and similarity < 0.60 and terms:
                 continue
-            relevance = sum(term in row["summary"].lower() for term in terms)
-            if not terms or relevance:
-                item = {key: row[key] for key in ("ref", "kind", "state", "summary", "occurred", "visibility")}
-                item["platform"] = json.loads(row["source"])["platform"]
-                item["reason"] = "lexical-match" if relevance else "recent-receipt"
-                experiences.append((relevance, item))
+            recency = 2 ** (-max(0, self.service.clock()-row["occurred"]) / (90*86400))
+            importance = 1.0 if row["state"] == "succeeded" else 0.6
+            score = 0.56*max(0, similarity) + 0.30*lexical_score/(1+lexical_score) + 0.08*recency + 0.06*importance
+            item = {key: row[key] for key in ("ref", "kind", "state", "summary", "occurred", "visibility")}
+            item["platform"] = json.loads(row["source"])["platform"]
+            item["reason"] = ("hybrid" if lexical_score else "semantic") if similarity >= .60 else (
+                "lexical-match" if lexical_score else "recent-receipt")
+            experiences.append((score, text, item, row))
         experiences.sort(key=lambda result: result[0], reverse=True)
+        seen = set()
+        results = []
+        confirmed = lru_cache(maxsize=16)(verify_source)
+        for _, text, item, row in experiences:
+            if text not in seen and confirmed(row["actor"], row["scope"], row["authority"]):
+                seen.add(text)
+                results.append(item)
+            if len(results) == 3:
+                break
         goals = {}
         for row in themes:
             theme = " ".join(row["theme"].casefold().split())
@@ -462,7 +501,7 @@ class MemoryProjections:
         with self.service.transaction() as db:
             if self.epoch(db) != epoch:
                 return {}, [], []
-        return profile, [item for _, item in experiences[:3]], relevant_goals[:4]
+        return profile, results, relevant_goals[:4]
 
     @staticmethod
     def epoch(db):

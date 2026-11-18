@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -54,6 +56,82 @@ class ProjectionTests(unittest.TestCase):
         lease, _, facts, _ = self.social.claim(origin, ref)
         return self.social.apply(origin, ref, lease, proposals, {item["key"]: item["revision"] for item in facts})
 
+    def test_analysis_subcommands_are_registered_with_lookup_distinction(self):
+        from fat_fish.commands.registry import CommandRegistry, ROUTES, is_lookup
+
+        registry = CommandRegistry(dict.fromkeys(ROUTES))
+        for name in ("memory", "groupmemory"):
+            self.assertFalse(is_lookup(registry.proposal(name, ["analyze"])))
+            self.assertTrue(is_lookup(registry.proposal(name, ["analysis-status"])))
+            self.assertIsNone(registry.proposal(name, ["analyze", "other-scope"]))
+
+    def test_write_lock_wait_is_bounded(self):
+        self.memory.status()
+        condition = threading.Event()
+        release = threading.Event()
+
+        def hold():
+            with self.memory.transaction(write=True):
+                condition.set()
+                release.wait(3)
+
+        thread = threading.Thread(target=hold)
+        thread.start()
+        try:
+            self.assertTrue(condition.wait(2))
+            started = time.monotonic()
+            with self.assertRaises(sqlite3.OperationalError):
+                with self.memory.transaction(write=True, timeout=0.06):
+                    self.fail("writer was acquired during contention")
+            self.assertLess(time.monotonic()-started, 0.75)
+        finally:
+            release.set()
+            thread.join()
+        self.assertTrue(self.inbound("post-contention"))
+
+    def test_experience_rank_scope_model_and_erasure(self):
+        def publish(origin, ident, text, values):
+            activity = Activity(ident, ActivityKind.READ, ActivityState.OBSERVED,
+                                self.now, text, "verified:" + ident)
+            ref, _ = self.memory.record(origin, activity, producer="fixture")
+            self.social.publish_experience(origin, "feiyu", ident, ref, visibility="source")
+            row = next(row for row in self.social.experience_index_rows("feiyu", "model-v1") if row["ref"] == ref)
+            self.social.store_experience_vector("feiyu", "model-v1", row, values)
+            return ref
+
+        good = publish(self.qq, "rain", "冒着暴雨前往研究楼参加会议", [1, 0])
+        publish(self.other, "unrelated", "陌生人的私人路线", [1, 0])
+        publish(self.room, "group", "仅在本群记录的私人路线", [1, 0])
+        publish(self.qq, "lexical", "降水 那趟是虚构的天气用例", [0, 1])
+        recall = self.social.snapshot
+        _, hits, _ = recall(self.lark, "feiyu", lambda *_: True, "降水时去了哪",
+                            model="model-v1", vector=[1, 0])
+        self.assertEqual(hits[0]["ref"], good)
+        self.assertEqual(hits[0]["reason"], "semantic")
+        self.assertEqual(len(hits), 2)
+        for model, vector in (("model-v2", [1, 0]), (None, None)):
+            self.assertFalse(any(item["ref"] == good for item in recall(
+                self.lark, "feiyu", lambda *_: True, "降水时去了哪", model=model, vector=vector)[1]))
+        self.assertEqual(recall(self.lark, "feiyu", lambda *_: False, "降水", model="model-v1", vector=[1, 0])[1], [])
+        self.memory.reset_scope(self.qq)
+        self.assertEqual(self.memory.status()["experience_index"], {"model-v1": 2})
+        self.assertEqual(recall(self.lark, "feiyu", lambda *_: True, "降水", model="model-v1", vector=[1, 0])[1], [])
+
+    def test_unreleased_running_job_recovers_upgrading_v16(self):
+        ref = self.inbound("old-running")
+        with self.memory.transaction(write=True) as db:
+            db.execute("UPDATE memory_analysis SET state='running',released=NULL,lease='old' WHERE ref=?", (ref,))
+            db.execute("DROP TRIGGER memory_experience_changed")
+            db.execute("DROP TABLE memory_experience_vectors")
+            db.execute("PRAGMA user_version=16")
+        restored = MemoryService(self.path, clock=lambda: self.now)
+        self.assertEqual(restored.projections.queue_status(self.qq), {"awaiting_reply": 1})
+        self.now += 86401
+        restored.projections.expire_unanswered()
+        with restored.transaction() as db:
+            self.assertEqual(tuple(db.execute("SELECT state,lease FROM memory_analysis").fetchone()),
+                             ("discarded", None))
+
     def test_reply_gate_batches_idle_threshold_and_manual_scope(self):
         def queue(ident, source, *, reply):
             event = Activity("in:" + ident, ActivityKind.MESSAGE_RECEIVED, ActivityState.OBSERVED,
@@ -78,6 +156,32 @@ class ProjectionTests(unittest.TestCase):
         restarted = MemoryService(self.path, clock=lambda: self.now)
         self.assertEqual([[item["ref"] for item in batch] for batch in restarted.projections.ready_batches()],
                          [refs, [lark]])
+
+    def test_group_expression_old_conflict_remains_visible(self):
+        older = self.inbound("old-dispute", self.room)
+        self.now += 86400
+        other = access("principal-b", "lark", "room-a")
+        second = self.inbound("second-author", other)
+        self.now += 86400
+        newer = self.inbound("new-author", self.room)
+        with self.memory.transaction(write=True) as db:
+            db.execute("INSERT INTO memory_group_expression VALUES (?,?,?)", (older, "青灯", "另一个解释"))
+            db.executemany("INSERT INTO memory_group_expression VALUES (?,?,?)",
+                           ((second, "青灯", "同意的意思"), (newer, "青灯", "同意的意思")))
+            for i in range(82):
+                previous = second if i % 2 else newer
+                source = db.execute("SELECT * FROM activities WHERE ref=?", (previous,)).fetchone()
+                ref = db.execute("""INSERT INTO activities
+                    (producer,event_id,digest,scope,actor,source,kind,state,occurred,received,summary,evidence)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (source["producer"], f"duplicate-{i}", source["digest"], source["scope"], source["actor"],
+                     source["source"], source["kind"], source["state"], source["occurred"], source["received"],
+                     source["summary"], source["evidence"])).lastrowid
+                db.execute("INSERT INTO memory_group_expression VALUES (?,?,?)", (ref, "青灯", "同意的意思"))
+        self.assertEqual(self.social.group_expressions(self.room, "青灯", lambda *_: True), [])
+        self.memory.retract_message(self.room.scope, self.room.principal, "old-dispute", lambda: True)
+        self.assertEqual(self.social.group_expressions(self.room, "青灯", lambda *_: True),
+                         [{"expression": "青灯", "meaning": "同意的意思"}])
 
     def test_group_expression_requires_multiple_members_and_days_and_revokes(self):
         second = access("principal-b", "lark", "room-a")
@@ -285,6 +389,8 @@ class ProjectionTests(unittest.TestCase):
         ledger = self.memory.export_erasures()
         self.assertTrue(ledger)
         with self.memory.transaction(write=True) as db:
+            db.execute("DROP TRIGGER memory_experience_changed")
+            db.execute("DROP TABLE memory_experience_vectors")
             for name in ("memory_projection_erasure", "memory_social_removed", "memory_agent_removed",
                          "memory_unmerge_surviving_evidence"):
                 db.execute(f'DROP TRIGGER "{name}"')
@@ -299,7 +405,7 @@ class ProjectionTests(unittest.TestCase):
         for _ in range(2):
             reopened = MemoryService(self.path)
             with reopened.transaction() as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 16)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 17)
                 self.assertEqual(db.execute("SELECT ref FROM activities ORDER BY ref").fetchone()[0], ref)
                 self.assertEqual(db.execute("SELECT redacted FROM activities WHERE ref=?", (deleted,)).fetchone()[0], 1)
                 self.assertFalse(db.execute("SELECT 1 FROM memory_analysis").fetchone())
@@ -383,6 +489,7 @@ class GatewayAnalysisTests(unittest.IsolatedAsyncioTestCase):
         gateway.context = SimpleNamespace(get_using_provider_async=AsyncMock(return_value=model))
         event = NativeEvent("aiocqhttp", QQ.instance, sender="31", ident="n01-input",
                             text="请以后和我用正式的表达方式")
+        bridge.memory().status()
         event.message_obj.timestamp = bridge.memory().clock()
 
         async def reply():
@@ -391,8 +498,9 @@ class GatewayAnalysisTests(unittest.IsolatedAsyncioTestCase):
         await gateway.run(event, reply)
         model.text_chat.assert_not_awaited()
         self.assertEqual(event.sent, ["收到"])
+        await bridge._capture_queue.join()
         await bridge._run_analysis(bridge.memory(), target=event.get_extra("_ffa_memory_access"))
-        model.text_chat.assert_awaited_once()
+        self.assertEqual(model.text_chat.await_count, 1, bridge.memory().status()["analysis"])
 
         remote = NativeEvent("lark", lark.instance, sender="32", ident="n01-lark", text="什么是正式回答")
 

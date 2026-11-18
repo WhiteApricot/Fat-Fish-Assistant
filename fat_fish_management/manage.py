@@ -209,7 +209,7 @@ def recover_upgrade(instance):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=['start','stop','status','upgrade','rollback','recover-upgrade','recover-lifecycle'])
+    p.add_argument('command',choices=['start','stop','status','memory-status','upgrade','rollback','recover-upgrade','recover-lifecycle'])
     p.add_argument('--instance',required=True,type=Path)
     p.add_argument('--python',type=Path,default=Path(sys.executable))
     p.add_argument('--release',type=Path)
@@ -222,6 +222,14 @@ if __name__=='__main__':
         with exclusive(root,'.start-lock'),exclusive(root):recover_stale(root)
     elif a.command=='stop':stop(root,a.force)
     elif a.command=='status':print(json.dumps({'running':process(root) is not None,'dirty':(root/'private/DIRTY').exists(),'clean_stop':(root/'private/STOPPED').exists()}))
+    elif a.command=='memory-status':
+        release = Path(json.loads((root / 'instance.json').read_text())['release'])
+        sys.path.insert(0, str(release / 'src'))
+        from fat_fish.memory.service import MemoryService
+        path = root / 'private/ffa-memory.sqlite3'
+        if not path.is_file():
+            raise ValueError('Memory database unavailable')
+        print(json.dumps(MemoryService(path).status()))
     elif a.command=='upgrade':activate(root,a.release.resolve(),a.simulate_failure,a.simulate_crash)
     elif a.command=='recover-upgrade':recover_upgrade(root)
     else:activate(root,Path(json.loads((root/'private/previous-release.json').read_text())['release']))

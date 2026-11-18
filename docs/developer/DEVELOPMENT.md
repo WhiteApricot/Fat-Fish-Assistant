@@ -7,3 +7,5 @@
 5. 仅文档变更检查相对链接、描述真实性、私有数据和变更范围。保留短验收结论，详细结果放本地报告。
 
 离线回归在安装清单锁定的 `cryptography` 和 `psutil` 后执行。按终端设置 `PYTHONPATH=src`，运行 `python -m unittest discover -s tests -v`。[CI 工作流](../../.github/workflows/core-tests.yml) · [外部依赖](../DEPENDENCIES.md)
+
+N01 的专项回归覆盖锁预算、旧租约、经历向量和群词冲突。部署后使用[延迟及索引诊断](MEMORY_ANALYSIS.md#延迟预算和故障排查)，分别核对回环模型、索引及实际语义命中。

@@ -1196,7 +1196,7 @@ class PlatformGateway:
                     words = message.text.strip().split()
                     if words:
                         self._record_command(receipt_key, words, text.removeprefix("【系统】"))
-                if not (receipt or progress):
+                if response is not False and not (receipt or progress):
                     await self.memory_bridge.sent(event, result)
                     if event.get_extra("_ffa_original_input") is None:
                         self._record_group_reply(message, admission, event,
@@ -1243,7 +1243,7 @@ class PlatformGateway:
 
                 with guard(event, check_submission) if guard else nullcontext():
                     result = await original_stream(guarded(), *args, **kwargs)
-                if streamed:
+                if streamed and result is not False:
                     await self.memory_bridge.sent(event, streamed_text=preview)
                     if event.get_extra("_ffa_original_input") is None:
                         self._record_group_reply(message, admission, event, preview)
@@ -1395,7 +1395,10 @@ class PlatformGateway:
                 if timeline is not None:
                     timeline.mark("media_end")
             media_ready.set()
-            await memory_task
+            try:
+                await asyncio.wait_for(asyncio.shield(memory_task), timeout=0.65)
+            except TimeoutError:
+                logger.info("FFA memory capture did not finish before chat deadline")
             if timeline is not None:
                 timeline.mark("memory_end")
             if not await asyncio.to_thread(allowed) or not await self._participate(message, admission, event):

@@ -24,6 +24,7 @@ class FatFishGuard(Star):
         self.platform_gateway = gateway
         await self.platform_gateway.start_configured()
         self.memory_bridge = gateway.memory_bridge
+        await self.memory_bridge.initialize()
         self.memory_job = self.context.cron_manager.scheduler.add_job(
             self.memory_bridge.maintenance_tick, "interval", seconds=60, id="ffa-memory-maintenance",
             replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=60,

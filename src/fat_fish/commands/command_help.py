@@ -162,6 +162,8 @@ def platform_help(private, admission, args, *, reminders, registry, global_featu
                 ("search [关键词]", "查询本群共享记忆"), ("remember [内容]", "写入本群共享记忆"),
                 ("update [记忆键] [内容]", "修改一条本群记忆，记忆键取自查询结果"),
                 ("delete [记忆键]", "删除一条本群记忆"), MEMORY_RESET,
+                ("analyze", "安排后台分析本人在本群已收到回复的对话"),
+                ("analysis-status", "查看本人在本群的分析队列"),
             )
     rendered = {name: render_help(name, actions) for name, actions in menus.items()}
     rendered["memory"] = platform_memory_help(private=private, preferences=True,
