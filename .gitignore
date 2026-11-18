@@ -51,4 +51,10 @@ models/
 *.pfx
 *.p12
 
-/AGENTS.md
+/AGENT.local.md
+/AGENTS.local.md
+/*.local.json
+/*.local.yaml
+/*.local.yml
+/*.local.toml
+/WORKFLOW.local.md

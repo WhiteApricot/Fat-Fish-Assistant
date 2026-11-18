@@ -8,3 +8,5 @@
 - [功能总览](docs/FEATURES.md) · [聊天指令](docs/COMMAND_REFERENCE.md) · [账号与权限](docs/PERMISSIONS.md) · [长期记忆](docs/MEMORY.md)
 - [运维](docs/OPERATIONS.md) · [加密换机](docs/MIGRATION.md) · [故障排查](docs/TROUBLESHOOTING.md) · [数据与隐私](docs/DATA_AND_PRIVACY.md)
 - [第三方声明](THIRD_PARTY_NOTICES.md) · [项目许可](LICENSE)
+
+[文档索引](docs/README.md) · [开发者入口](docs/developer/ARCHITECTURE.md) · [工程路线图](docs/ROADMAP.md)

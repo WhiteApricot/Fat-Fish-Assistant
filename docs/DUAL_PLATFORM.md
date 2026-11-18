@@ -26,8 +26,6 @@ FFA disable/enable 控制对应 Provider 的业务接入闸门和钩子。AstrBo
 
 人格目录中的 Persona_Master.md 需要通过受管实例初始化流程写入 AstrBot 原生人格数据库，并将默认人格设为 feiyu-v1。只复制人格文件不能完成数据库初始化。诊断时应同时核对文件、数据库 system_prompt 和 PersonaManager 对两个平台会话的实际选择。
 
-## 验收记录
+## 开发与验收
 
-2026-11-18，项目维护者确认 QQ 与飞书双平台实机验收全部通过。覆盖同组织首次私聊、人格加载、跨端个人记忆、群聊隔离、并发回复、撤回隔离和提醒投递恢复。此前已验证两个原生适配器可分别停止和恢复，另一端连接保持在线。
-
-P4 的 Windows 定向回归共 99 项全部通过，Windows 与 Ubuntu 的分支 CI 均通过。长期运行稳定性需持续运行数据。
+2026-11-18，QQ + 飞书双平台实机验收完成。[当前架构](developer/ARCHITECTURE.md) · [Provider 契约](developer/PROVIDER.md)

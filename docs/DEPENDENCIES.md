@@ -20,3 +20,5 @@ SnowLuma 仅从官方 GitHub 仓库或官方 Release 获取。任何获准的传
 默认使用 Core 锁，141 个发行项。完整 Chat 锁 160 项，保留给显式选择。双击安装默认跳过本地模型组件。Embedding 使用独立模型和引擎。构建期的 2 个工具只用于固定源码构建；应用只在确实缺少共享 VC++ 运行库时引导补齐。SnowLuma Full 自带 Node，QQ 客户端由腾讯官方提供。旧通信运行包、独立 Node 安装和额外 QQ 运行资产均不在 FFA 安装计划中。
 
 PyPI 优先使用国内镜像匹配固定文件名，失败后回退官方 PyPI。同意使用的 GitHub 加速服务可设置 FFA_GITHUB_TRANSFER_BASE，地址需为 HTTPS。加速服务失败后回退固定官方 URL。SnowLuma 接入使用用户保存的原始官方 ZIP 或有效安装目录。本地 ZIP 校验大小与 SHA256。[Windows QQ 接入](SNOWLUMA_WINDOWS.md)
+
+[开发与验证流程](developer/DEVELOPMENT.md)。

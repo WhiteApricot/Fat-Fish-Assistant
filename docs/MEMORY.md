@@ -9,3 +9,5 @@
 - 重置需要在原会话确认。QQ 和飞书收到并核验撤回通知后，会按会话、作者和消息来源清理可关联的活动与记忆。具体范围取决于平台事件投递、当前授权和原消息登记状态。恢复较早的记忆快照时，应保留已经执行的删除。 [QQ 撤回说明](SNOWLUMA_WINDOWS.md#qq-聊天与媒体边界) · [飞书撤回说明](LARK.md#流式回复提醒与撤回)
 
 可通过实例的 `private/ffa-memory.json` 配置正文捕获、自动提取、反思、向量服务和上下文预算。向量匹配需要已配置的嵌入服务。修改配置前备份实例。[配置示例](../examples/config/ffa-memory.json) · [数据与隐私](DATA_AND_PRIVACY.md)
+
+[记忆存储与清理机制](developer/MEMORY_ARCHITECTURE.md)。

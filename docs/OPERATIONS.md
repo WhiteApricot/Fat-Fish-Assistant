@@ -13,3 +13,5 @@ Windows 用户从源码根目录的 CMD 入口管理肥鱼助手。向导会识�
 | 换机 | 使用 **Migrate-Fat-Fish-Assistant.cmd**。确认目标完成验证前，源实例保持暂停。[迁移](MIGRATION.md) |
 
 更新失败时先查看向导提示。回滚使用受管理发布入口，保留原聊天与记忆数据。日志保存在安装目录，分享前清除账号、令牌、消息与本机路径。[故障排查](TROUBLESHOOTING.md) · [数据与隐私](DATA_AND_PRIVACY.md)
+
+[维护者可查阅 Provider 生命周期](developer/PROVIDER.md)。
