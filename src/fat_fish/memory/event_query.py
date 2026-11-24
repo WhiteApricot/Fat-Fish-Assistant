@@ -10,8 +10,11 @@ COMPLETED = re.compile("已[经实际]*.{0,8}(?:完成|做完|读完|收尾|送�
 CANCELLED = re.compile("取消|撤掉|作罢|中止|没看|没有发生|不看的|放弃|暂不|没有开展")
 PLANNED = re.compile("计划|准备|打算|提议|待处理|没开始|还没|仍由|待检|列入日程|安排")
 RUNNING = re.compile("还在|仍在|正在|执行中")
-CONFIRM = re.compile(r"(?:吧|了吗|过吗|过没有)[？?]?$|是不是")
+CONFIRM = re.compile(r"(?:吧|吗|过没有)[？?]?$|是不是|能确认")
 ALTERNATIVE = re.compile("还是|哪次|哪一回")
+REFERENT = re.compile(r"还是|哪[一]?(?:次|回|款|处|份|批|扇|箱|笔|项)|哪个领域|两.{0,6}都")
+FIRST_PERSON_SUBJECT = re.compile(r"^\s*(?:请问[，,：:\s]*)?我(?!记得|想问|想知道|听说)")
+LEGACY_CONFIRM = re.compile(r"(?:吧|了吗|过吗|过没有)[？?]?$|是不是")
 HISTORY = re.compile("哪些|有什么|发生过什么|有何|进展|做了什么")
 ACTIONS = {
     "验证": ("验证", "测定", "测完", "标定", "化验", "核验", "核实", "试验", "检测", "评估"),
@@ -25,6 +28,11 @@ ACTIONS = {
     "品评": ("品评", "品尝", "试味", "尝到", "喝", "试了", "试茶"),
     "阅读": ("阅读", "查阅", "读完", "看完", "文档", "公示", "指南", "手册"),
 }
+CONFIRMATION_VERBS = re.compile("|".join(sorted(
+    {word for aliases in ACTIONS.values() for word in aliases}
+    | {"装好", "收集", "分到", "完成", "打开", "读", "看", "试", "去"},
+    key=lambda word: (-len(word), word),
+)))
 
 
 @dataclass(frozen=True)
@@ -60,4 +68,13 @@ def parse_event_query(text: str) -> EventIntent:
     matches = {action for action, words in ACTIONS.items() if any(word in text for word in words)}
     action = next(iter(matches)) if len(matches) == 1 else None
     return EventIntent(actor, phase, action, time_of_day, bool(RECENT.search(text)),
-                       bool(ALTERNATIVE.search(text)), bool(CONFIRM.search(text)), bool(HISTORY.search(text)))
+                       bool(ALTERNATIVE.search(text)), bool(LEGACY_CONFIRM.search(text)),
+                       bool(HISTORY.search(text)))
+
+
+def confirmation_objects(text: str) -> tuple[str, ...]:
+    """Keep complete lexical spans so a shared bigram alone cannot confirm a claim."""
+    text = re.sub(r"昨天晚上|昨晚|昨天|今天|夜里|白天|后来|已经|确实|实际|是不是|能确认|没有|"
+                  r"肥鱼|你|那款|那件|那次|[了吗吧过也的把给和与]", " ", text)
+    text = CONFIRMATION_VERBS.sub(" ", text)
+    return tuple(dict.fromkeys(re.findall(r"[\u3400-\u9fff]{2,}|[A-Za-z0-9-]{2,}", text)))

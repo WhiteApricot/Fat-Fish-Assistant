@@ -111,69 +111,69 @@ def summarize(rows):
             "count": len(rows)}
 
 
-async def evaluate(dataset, vectors, variants):
+async def evaluate(dataset, vectors, variants, workspace):
     now = millis(dataset["query_time"])
     model = CachedModel(vectors)
     rows = {variant: [] for variant in variants}
     for group in dataset["groups"]:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            ledger = ErasureLedger(root / "erase.jsonl", "fixture", {"fixture": b"f" * 32}, "fixture")
-            repository = MemoryRepository(root / "memory.sqlite3", ledger)
-            repository.open(ledger.create())
-            public = ScopeRef("fish", ScopeKind.PUBLIC, "fish")
-            caller = Audience("fish", "fixture", ScopeRef("fish", ScopeKind.PRIVATE, "fixture"), 1)
-            names = {}
-            for doc in group["documents"]:
-                item, rev, content_hash = seed(repository, public, doc)
-                names[item] = doc["id"]
-                repository.store_embedding(item, rev, content_hash, BASELINE_SPACE,
-                                           vectors[doc["text"]], now)
-            baseline = CognitiveRetrieval(repository, model, space=BASELINE_SPACE)
-            for case in group["queries"]:
-                for variant in variants:
-                    start = time.perf_counter()
-                    sqlite_ms = None
-                    trace = None
-                    if variant == "A":
-                        vector = unit_vector(vectors[case["query"]])
-                        hits = repository.semantic_candidates(caller, now, BASELINE_SPACE, vector)
-                        ranking = [names[doc["id"]] for doc, _ in hits]
-                        returned = [names[doc["id"]] for doc, score in hits if score >= .60][:1]
-                        decision = "answer" if returned else "abstain"
-                    elif variant == "B":
-                        result = await baseline.recall(caller, case["query"], now, deep=True)
-                        ranking = [names[hit.item_id] for hit in result.hits]
-                        returned = ranking[:1]
-                        decision = "answer" if returned else "abstain"
-                    else:
-                        result = await EventRetrieval(repository, model, space=BASELINE_SPACE,
-                                                      clock_zone=datetime.fromisoformat(dataset["query_time"]).tzinfo).recall(
-                            caller, case["query"], now, variant)
-                        ranking = [names[hit.item_id] for hit in result.candidates]
-                        returned = [names[hit.item_id] for hit in result.support]
-                        decision = result.decision
-                        sqlite_ms = result.timings_ms.get("sqlite")
-                        trace = {
-                            "reason": result.reason,
-                            "evidence": [
-                                {"item": names[hit.item_id], "revision": hit.revision,
-                                 "source": hit.evidence_id, "event": hit.event_id,
-                                 "channels": hit.channels, "matches": hit.matched,
-                                 "conflicts": hit.conflicts}
-                                for hit in result.support
-                            ],
-                        }
-                    rows[variant].append({**{k: case[k] for k in ("id", "gold", "clarification", "hard_negatives")},
-                                          "split": group["split"], "ranking": ranking, "returned": returned,
-                                          "sqlite_ms": sqlite_ms,
-                                          "trace": trace,
-                                          "elapsed_ms": (time.perf_counter() - start) * 1000,
-                                          "decision": decision})
+        root = workspace / group["id"]
+        root.mkdir()
+        ledger = ErasureLedger(root / "erase.jsonl", "fixture", {"fixture": b"f" * 32}, "fixture")
+        repository = MemoryRepository(root / "memory.sqlite3", ledger)
+        repository.open(ledger.create())
+        public = ScopeRef("fish", ScopeKind.PUBLIC, "fish")
+        caller = Audience("fish", "fixture", ScopeRef("fish", ScopeKind.PRIVATE, "fixture"), 1)
+        names = {}
+        for doc in group["documents"]:
+            item, rev, content_hash = seed(repository, public, doc)
+            names[item] = doc["id"]
+            repository.store_embedding(item, rev, content_hash, BASELINE_SPACE,
+                                       vectors[doc["text"]], now)
+        baseline = CognitiveRetrieval(repository, model, space=BASELINE_SPACE)
+        for case in group["queries"]:
+            for variant in variants:
+                start = time.perf_counter()
+                sqlite_ms = None
+                trace = None
+                if variant == "A":
+                    vector = unit_vector(vectors[case["query"]])
+                    hits = repository.semantic_candidates(caller, now, BASELINE_SPACE, vector)
+                    ranking = [names[doc["id"]] for doc, _ in hits]
+                    returned = [names[doc["id"]] for doc, score in hits if score >= .60][:1]
+                    decision = "answer" if returned else "abstain"
+                elif variant == "B":
+                    result = await baseline.recall(caller, case["query"], now, deep=True)
+                    ranking = [names[hit.item_id] for hit in result.hits]
+                    returned = ranking[:1]
+                    decision = "answer" if returned else "abstain"
+                else:
+                    result = await EventRetrieval(repository, model, space=BASELINE_SPACE,
+                                                  clock_zone=datetime.fromisoformat(dataset["query_time"]).tzinfo).recall(
+                        caller, case["query"], now, variant)
+                    ranking = [names[hit.item_id] for hit in result.candidates]
+                    returned = [names[hit.item_id] for hit in result.support]
+                    decision = result.decision
+                    sqlite_ms = result.timings_ms.get("sqlite")
+                    trace = {
+                        "reason": result.reason,
+                        "evidence": [
+                            {"item": names[hit.item_id], "revision": hit.revision,
+                             "source": hit.evidence_id, "event": hit.event_id,
+                             "channels": hit.channels, "matches": hit.matched,
+                             "conflicts": hit.conflicts}
+                            for hit in result.support
+                        ],
+                    }
+                rows[variant].append({**{k: case[k] for k in ("id", "gold", "clarification", "hard_negatives")},
+                                      "split": group["split"], "ranking": ranking, "returned": returned,
+                                      "sqlite_ms": sqlite_ms,
+                                      "trace": trace,
+                                      "elapsed_ms": (time.perf_counter() - start) * 1000,
+                                      "decision": decision})
     return rows
 
 
-async def main():
+async def main(workspace):
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--vectors", required=True, type=Path)
@@ -191,7 +191,8 @@ async def main():
         vectors, latencies = await prepare_vectors(dataset, model)
         args.vectors.write_text(json.dumps({"version": dataset["version"], "model": model.revision,
                                              "vectors": vectors, "embedding_ms": latencies}), encoding="utf-8")
-    rows = await evaluate(dataset, vectors, tuple(args.variants.split(",")) if "," in args.variants else tuple(args.variants))
+    variants = tuple(args.variants.split(",")) if "," in args.variants else tuple(args.variants)
+    rows = await evaluate(dataset, vectors, variants, workspace)
     metrics = {name: {split: summarize([r for r in result if r["split"] == split])
                       for split in ("dev", "validation", "frozen")} for name, result in rows.items()}
     args.output.write_text(json.dumps({"metrics": metrics, "cases": rows,
@@ -203,4 +204,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # asyncio.run drains outstanding executor work before Windows removes the databases.
+    with tempfile.TemporaryDirectory() as directory:
+        asyncio.run(main(Path(directory)))

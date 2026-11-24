@@ -475,7 +475,8 @@ class MemoryRepository:
 
 
 
-    def event_candidates(self, audience: Audience, now: int, *, actor=None, phase=None, limit=48):
+    def event_candidates(self, audience: Audience, now: int, *, actor=None, phase=None, limit=48,
+                         preferred_ids=()):
         """Return only events that support a currently visible revision."""
         if not 1 <= limit <= 48:
             raise ValueError("Invalid event candidate budget")
@@ -489,6 +490,12 @@ class MemoryRepository:
                 db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 250)
                 clauses = ", ".join(f"(:ag{i}, :ki{i}, :sc{i})" for i in range(len(allowed)))
                 binds = {"now": now, "actor": actor, "phase": phase, "limit": limit}
+                preferred = tuple(dict.fromkeys(preferred_ids))[:16]
+                priority = "ev.occurred_at DESC"
+                if preferred:
+                    placeholders = ", ".join(f":preferred{i}" for i in range(len(preferred)))
+                    binds.update({f"preferred{i}": value for i, value in enumerate(preferred)})
+                    priority = f"(i.id IN ({placeholders})) DESC, {priority}"
                 for i, scope in enumerate(allowed):
                     binds.update({f"ag{i}": scope.agent, f"ki{i}": scope.kind.value, f"sc{i}": scope.key})
                 rows = db.execute(f"""WITH allowed(agent, kind, scope_key) AS (VALUES {clauses})
@@ -508,7 +515,7 @@ class MemoryRepository:
                       AND (:actor IS NULL OR ev.actor_kind=:actor)
                       AND (:phase IS NULL OR ev.phase=:phase)
                       AND {VISIBLE_EVIDENCE}
-                    ORDER BY ev.occurred_at DESC, ev.id DESC, i.id DESC LIMIT :limit""",
+                    ORDER BY {priority}, ev.id DESC, i.id DESC LIMIT :limit""",
                                   binds).fetchall()
                 return tuple(dict(row) for row in rows)
         finally:

@@ -94,3 +94,41 @@ class EventRetrievalTests(unittest.TestCase):
         self.assertEqual(result.decision, "abstain")
         self.assertFalse(result.candidates)
         self.assertFalse(result.support)
+
+    def test_confirmation_requires_same_object_action_and_state(self):
+        good, _ = self.add(self.public, "blue", "蓝册已经转交接班人", action="交付")
+        self.add(self.public, "green", "绿册原定转交接班人", phase="planned", action="交付")
+        self.add(self.public, "yellow", "黄册已登记，由接班人签字", action="登记")
+        for query in ("绿册也转交接班人了吗？", "黄册转交接班人了吗？",
+                      "蓝册已经登记了吗？", "蓝册和绿册已经转交了吗？"):
+            with self.subTest(query=query):
+                self.assertEqual(self.recall(query).decision, "abstain")
+        result = self.recall("蓝册已经转交接班人了吗？")
+        self.assertEqual([hit.item_id for hit in result.support], [good])
+
+    def test_relative_date_excludes_previous_evening(self):
+        good, _ = self.add(self.public, "yesterday", "渡船上能看到南塔")
+        self.add(self.public, "earlier", "渡船上能看到北塔", time=NIGHT - 86400000)
+        result = self.recall("昨晚你过河时看到了什么？")
+        self.assertEqual([hit.item_id for hit in result.support], [good])
+
+    def test_user_subject_is_not_replaced_by_bot_event(self):
+        self.add(self.public, "bot", "昨晚搭渡船抵达南岸")
+        result = self.recall("请问，我昨晚怎么过河的？")
+        self.assertEqual(result.decision, "abstain")
+        self.assertEqual(result.reason, "unsupported_subject")
+
+    def test_clarification_requires_distinct_visible_events(self):
+        self.add(self.public, "north", "巡查了北泉的水口", action="巡查")
+        self.add(self.bob, "south", "巡查了南井的水口", action="巡查")
+        self.assertNotEqual(self.recall("检查的是哪一处？").decision, "clarify")
+        self.add(self.public, "east", "巡查了东沟的水口", action="巡查")
+        self.assertEqual(self.recall("检查的是哪一处？").decision, "clarify")
+
+    def test_ranked_lexical_candidate_outside_recent_event_window(self):
+        older, _ = self.add(self.public, "old", "蓝册已经转交接班人",
+                            time=NIGHT - 86400000, action="交付")
+        for index in range(48):
+            self.add(self.public, f"recent-{index}", "新箱已入库", action="登记")
+        result = self.recall("蓝册已经转交接班人了吗？")
+        self.assertEqual([hit.item_id for hit in result.support], [older])
