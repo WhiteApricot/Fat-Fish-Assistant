@@ -1,5 +1,5 @@
 import asyncio
-import unittes
+import unittest
 
 from fat_fish.memory.reply_guard import (
     Delivery, Dependency, PolicyFence, ProtectedReply, ReplyStamp, UNAVAILABLE_REPLY,
@@ -29,7 +29,7 @@ class CognitiveMemoryReplyTests(unittest.IsolatedAsyncioTestCase):
             if request[2]:
                 effects.append("once")
             for part in request[1]:
-                yield par
+                yield part
             if changes:
                 key = changes.pop(0)
                 fence.revoke(lambda: memory.pop(key))
@@ -42,7 +42,7 @@ class CognitiveMemoryReplyTests(unittest.IsolatedAsyncioTestCase):
             result = authorize_handoff(send)
             if transport_lost and result == Delivery.SUBMITTED:
                 raise OSError("Adapter result unknown")
-            return resul
+            return result
 
         guard = ProtectedReply(fence, lambda: allowed, valid)
         outcome = await guard.run("original request", build, generate, submit,

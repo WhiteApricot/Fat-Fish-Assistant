@@ -4,7 +4,9 @@ from dataclasses import asdict
 from functools import lru_cache
 import hashlib
 import json
+import logging
 import re
+import sqlite3
 from uuid import uuid4
 
 from fat_fish.communication.model import identifier
@@ -13,6 +15,7 @@ from fat_fish.memory.activity import ActivityKind, ActivityState
 from fat_fish.memory.experience import sensitive_information
 
 
+logger = logging.getLogger(__name__)
 DIMENSIONS = frozenset({"humor", "banter", "formality", "directness", "detail", "warmth"})
 SCHEMA = (
     """CREATE TABLE memory_analysis (
@@ -500,16 +503,20 @@ class MemoryProjections:
                  if len(word) > 1 or ord(word) >= 0x3400}
         with self.service.transaction() as db:
             epoch = self.epoch(db)
-            public_recent = public_experience.recent(db, agent)
-            public_rows = public_experience.search(db, agent, tokenize(query), model, public_recent)
-            interests = public_experience.interests(public_recent, self.service.clock())
-            for item in interests:
-                focus = db.execute("""SELECT state,revision FROM memory_public_focus
-                    WHERE agent=? AND topic=? ORDER BY revision DESC LIMIT 1""",
-                    (agent,item["topic"].strip().casefold())).fetchone()
-                if focus:
-                    item["focus_state"] = focus["state"]
-                    item["focus_revision"] = focus["revision"]
+            try:
+                public_recent = public_experience.recent(db, agent)
+                public_rows = public_experience.search(db, agent, tokenize(query), model, public_recent)
+                interests = public_experience.interests(public_recent, self.service.clock())
+                for item in interests:
+                    focus = db.execute("""SELECT state,revision FROM memory_public_focus
+                        WHERE agent=? AND topic=? ORDER BY revision DESC LIMIT 1""",
+                        (agent,item["topic"].strip().casefold())).fetchone()
+                    if focus:
+                        item["focus_state"] = focus["state"]
+                        item["focus_revision"] = focus["revision"]
+            except sqlite3.OperationalError:
+                logger.warning("FFA public experience projection unavailable")
+                public_rows, interests = (), []
             projections = db.execute("""WITH candidates AS (
                 SELECT ref FROM (
                     SELECT a.ref FROM activities a INDEXED BY activities_scope_time

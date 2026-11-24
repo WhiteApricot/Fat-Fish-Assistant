@@ -332,6 +332,18 @@ class ProjectionTests(unittest.TestCase):
         self.memory.retract_message(self.qq.scope, self.qq.principal, "correction", lambda: True)
         self.assertAlmostEqual(self.social.snapshot(self.room, "agent", lambda *_: True, "你好")[0]["banter"], 0.8)
 
+    def test_unavailable_public_projection_preserves_shared_profile(self):
+        self.complete(self.inbound("style"), [signal(value=0.25, explicit=True)])
+        with self.memory.transaction(write=True) as db:
+            db.execute("DROP TABLE memory_public_content")
+        reopened = MemoryService(self.path, clock=lambda: self.now)
+        with self.assertLogs("fat_fish.memory.projections", level="WARNING"):
+            profile, experiences, _ = reopened.projections.snapshot(
+                self.lark, "agent", lambda *_: True, "你好"
+            )
+        self.assertEqual(profile["banter"], 0.25)
+        self.assertEqual(experiences, [])
+
     def test_fact_correction_conflict_and_stale_revision(self):
         self.complete(self.inbound("first"), [fact()])
         original = self.memory.search(self.qq, "正式")[0]
@@ -579,6 +591,31 @@ class ReasonerTests(unittest.IsolatedAsyncioTestCase):
             await analyze(provider, 42, "普通输入", [])
 
 class GatewayAnalysisTests(unittest.IsolatedAsyncioTestCase):
+    async def test_capture_cancellation_drains_started_worker(self):
+        import asyncio
+        from threading import Event
+
+        from fat_fish.memory.gateway_bridge import GatewayMemory
+
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = Event()
+
+        def capture():
+            loop.call_soon_threadsafe(started.set)
+            release.wait(5)
+
+        task = asyncio.create_task(GatewayMemory._capture_io(capture))
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+        finally:
+            release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
     async def test_admitted_qq_turn_is_analyzed_after_return_and_recalled_by_bound_lark_account(self):
         from fat_fish.communication.model import Account, ProviderId
         from fat_fish.adapters.astrbot_communication import convert

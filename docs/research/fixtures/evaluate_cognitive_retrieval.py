@@ -33,7 +33,8 @@ def seed(repository, scope, doc):
     source = SourceRecord(scope, doc["evidence_id"], "public_attestation", "benchmark",
                           "verified_connector", doc["evidence_id"], event_time)
     event = EventRecord(source, doc["id"], doc["action"], STATUS.get(doc["status"], doc["status"]),
-                        doc["subject"], event_time, doc["text"])
+                        doc["subject"], event_time, doc["text"],
+                        payload={"episode": doc["episode"]} if "episode" in doc else None)
     event_id = repository.record_event(event, millis(doc["recorded_at"]))
     with repository.write() as db:
         source_id = db.execute("SELECT source_id FROM event WHERE id=?", (event_id,)).fetchone()[0]
@@ -93,6 +94,7 @@ def summarize(rows):
         / sum(1 / math.log2(i + 2) for i in range(min(5, len(r["gold"])))) for r in positives)
     answers = [r for r in rows if r["decision"] == "answer"]
     correct_answers = sum(set(r["returned"]) == set(r["gold"]) for r in answers)
+    correct_evidence = sum(len(set(r["returned"]) & set(r["gold"])) for r in answers)
     correct_decisions = correct_answers + sum(r["decision"] == "clarify" for r in ambiguous) + sum(
         r["decision"] == "abstain" for r in negative)
     latencies = [r["elapsed_ms"] for r in rows]
@@ -102,6 +104,12 @@ def summarize(rows):
                                 len(positives) * 3),
             "decision_accuracy": rate(correct_decisions, len(rows)),
             "answer_evidence_accuracy": rate(correct_answers, len(answers)),
+            "evidence_precision": rate(correct_evidence, sum(len(r["returned"]) for r in answers)),
+            "evidence_completeness": rate(correct_evidence, sum(len(r["gold"]) for r in positives)),
+            "unsupported_answer_rate": rate(sum(not (set(r["returned"]) & set(r["gold"])) for r in answers),
+                                             len(answers)),
+            "hard_negative_accuracy": rate(
+                sum(r["decision"] == "abstain" for r in negative), len(negative)),
             "abstention_precision": rate(sum(r["decision"] == "abstain" and r in negative for r in rows),
                                          sum(r["decision"] == "abstain" for r in rows)),
             "abstention_recall": rate(sum(r["decision"] == "abstain" for r in negative), len(negative)),
@@ -110,6 +118,7 @@ def summarize(rows):
             "constraint_violation_rate": rate(sum(bool(set(r["returned"]) & set(r["hard_negatives"]))
                                                    for r in answers), len(answers)),
             "retrieval_p50_ms": percentile(latencies, .5), "retrieval_p95_ms": percentile(latencies, .95),
+            "retrieval_p99_ms": percentile(latencies, .99),
             "sqlite_p95_ms": percentile(sqlite, .95) if sqlite else None,
             "count": len(rows)}
 
@@ -119,6 +128,8 @@ async def evaluate(dataset, vectors, variants, workspace, distractors=0):
     model = CachedModel(vectors)
     rows = {variant: [] for variant in variants}
     for group in dataset["groups"]:
+        if "selected_groups" in dataset and group["id"] not in dataset["selected_groups"]:
+            continue
         root = workspace / group["id"]
         root.mkdir()
         ledger = ErasureLedger(root / "erase.jsonl", "fixture", {"fixture": b"f" * 32}, "fixture")
@@ -188,6 +199,8 @@ async def main(workspace):
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--vectors", required=True, type=Path)
     parser.add_argument("--dataset", type=Path, default=DATASET)
+    parser.add_argument("--episodes", type=Path, help="Trusted synthetic episode metadata keyed by document ID")
+    parser.add_argument("--groups", nargs="+", help="Optional diagnostic subset of story IDs")
     parser.add_argument("--distractors", type=int, choices=range(33), default=0)
     parser.add_argument("--variants", default="AB")
     args = parser.parse_args()
@@ -209,11 +222,30 @@ async def main(workspace):
                                              "dataset_sha256": dataset_hash,
                                              "vectors": vectors, "embedding_ms": latencies}), encoding="utf-8")
     variants = tuple(args.variants.split(",")) if "," in args.variants else tuple(args.variants)
+    episode_hash = None
+    if args.episodes:
+        episode_bytes = args.episodes.read_bytes()
+        episode_hash = hashlib.sha256(episode_bytes).hexdigest()
+        episodes = json.loads(episode_bytes)
+        known = {doc["id"] for group in dataset["groups"] for doc in group["documents"]}
+        if set(episodes) - known:
+            parser.error("Episode overlay contains an unknown document ID")
+        for group in dataset["groups"]:
+            for doc in group["documents"]:
+                if doc["id"] in episodes:
+                    doc["episode"] = episodes[doc["id"]]
+    if args.groups:
+        selected = set(args.groups)
+        if selected - {group["id"] for group in dataset["groups"]}:
+            parser.error("Unknown story ID")
+        # Keep the complete same-split competitor pool for a subset run.
+        dataset["selected_groups"] = selected
     rows = await evaluate(dataset, vectors, variants, workspace, args.distractors)
     metrics = {name: {split: summarize([r for r in result if r["split"] == split])
                       for split in ("dev", "validation", "frozen")} for name, result in rows.items()}
     args.output.write_text(json.dumps({"metrics": metrics, "cases": rows, "dataset_sha256": dataset_hash,
                                       "model_revision": model.revision, "seed": dataset.get("seed"),
+                                      "episode_overlay_sha256": episode_hash,
                                       "embedding_p50_ms": percentile(latencies, .5),
                                       "embedding_p95_ms": percentile(latencies, .95)}, ensure_ascii=False,
                                      indent=2), encoding="utf-8")

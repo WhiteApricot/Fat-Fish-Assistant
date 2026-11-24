@@ -1,0 +1,8 @@
+{
+  "CR-09-night": {"id": "tea-session", "aliases": ["茶席"]},
+  "CR-09-day": {"id": "tea-session"},
+  "CR-12-night": {"id": "spring-inspection", "aliases": ["巡查"]},
+  "CR-12-day": {"id": "well-inspection", "aliases": ["巡查"]},
+  "CR-15-night": {"id": "clock-maintenance", "aliases": ["钟楼"]},
+  "CR-15-day": {"id": "clock-maintenance"}
+}

@@ -32,10 +32,13 @@ class EventRetrievalTests(unittest.TestCase):
         self.bob = ScopeRef("fish", ScopeKind.PRIVATE, "bob")
         self.caller = Audience("fish", "alice", self.alice, 1)
 
-    def add(self, scope, key, content, *, actor="bot", phase="succeeded", time=NIGHT, action="渡河"):
+    def add(self, scope, key, content, *, actor="bot", phase="succeeded", time=NIGHT, action="渡河",
+            episode=None, producer="fixture"):
         kind = "public_attestation" if scope.kind == ScopeKind.PUBLIC else "message"
-        source = SourceRecord(scope, key, kind, "fixture", "verified_connector", key, time)
-        event = self.repo.record_event(EventRecord(source, key, action, phase, actor, time, content), NOW)
+        source = SourceRecord(scope, key, kind, producer, "verified_connector", key, time)
+        payload = {"episode": episode} if episode else None
+        event = self.repo.record_event(EventRecord(source, key, action, phase, actor, time, content,
+                                                   payload=payload), NOW)
         with self.repo.write() as conn:
             source_id = conn.execute("SELECT source_id FROM event WHERE id=?", (event,)).fetchone()[0]
         return self.repo.put_item(ItemRecord(scope, "fish", actor, "experience", key, "event",
@@ -161,6 +164,29 @@ class EventRetrievalTests(unittest.TestCase):
         result = self.recall("你记得如何过河吗？")
         self.assertEqual(result.reason, "supported_history")
         self.assertEqual({hit.item_id for hit in result.support}, {first, second})
+
+    def test_episode_subject_and_issuer_bound_withdrawal(self):
+        reference = {"id": "maintenance-17", "aliases": ["钟楼"]}
+        member = {"id": "maintenance-17"}
+        first, _ = self.add(self.public, "pivot", "调整了钟楼摆锤", episode=reference, action="修理")
+        second, _ = self.add(self.public, "related", "表盘更换取消", episode=member,
+                             phase="cancelled", action="修理")
+        self.add(self.public, "other-producer", "车站表盘已换", episode=member,
+                 producer="other", action="修理")
+        self.add(self.alice, "other-scope", "私人表盘已换", episode=member, action="修理")
+        self.add(self.public, "other-actor", "亲自修好了表盘", episode=member, actor="user", action="修理")
+        result = self.recall("钟楼那回发生了什么？")
+        self.assertEqual({hit.item_id for hit in result.support}, {first, second})
+        self.repo.erase("source", self.public, "related", 0, NOW)
+        self.assertEqual([hit.item_id for hit in self.recall("钟楼那回发生了什么？").support], [first])
+
+    def test_same_entity_can_name_two_independent_episodes(self):
+        for key in ("first", "second"):
+            self.add(self.public, key, "茶席安排已更新", action="品评",
+                     episode={"id": key, "aliases": ["茶席"]})
+        result = self.recall("你在茶席上做了什么？")
+        self.assertEqual(result.reason, "multiple_matching_episodes")
+        self.assertFalse(result.support)
 
     def test_date_bounds_are_applied_before_event_candidate_limit(self):
         old, _ = self.add(self.public, "old", "蓝册转交给接班人", action="交付")

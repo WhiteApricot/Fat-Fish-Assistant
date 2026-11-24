@@ -210,9 +210,19 @@ class GatewayMemory:
         except STORAGE_FAILURES as exc:
             logger.warning("FFA memory startup initialization deferred (%s)", type(exc).__name__)
 
+    @staticmethod
+    async def _capture_io(operation, *args, **kwargs):
+        """Keep ownership of a started database operation through cancellation."""
+        worker = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            await asyncio.gather(worker, return_exceptions=True)
+            raise
+
     async def _record_chat(self, access, activity, **options):
         try:
-            return await asyncio.to_thread(self.memory().record, access, activity, timeout=0.14, **options)
+            return await self._capture_io(self.memory().record, access, activity, timeout=0.14, **options)
         except sqlite3.OperationalError as exc:
             if not any(word in str(exc).lower() for word in ("busy", "locked")):
                 raise
@@ -233,7 +243,7 @@ class GatewayMemory:
                 for delay in (0.1, 0.3, 1.0):
                     await asyncio.sleep(delay)
                     try:
-                        await asyncio.to_thread(self.memory().record, access, activity, timeout=0.25, **options)
+                        await self._capture_io(self.memory().record, access, activity, timeout=0.25, **options)
                         break
                     except sqlite3.OperationalError:
                         continue
@@ -257,8 +267,8 @@ class GatewayMemory:
             if not options or message is None:
                 return
             event.set_extra("_ffa_unified_memory", True)
-            access = await asyncio.to_thread(self._access, event, message)
-            if not await asyncio.to_thread(self.memory().scope_enabled, access.scope):
+            access = await self._capture_io(self._access, event, message)
+            if not await self._capture_io(self.memory().scope_enabled, access.scope):
                 if access.scope.kind == "group" and not memory_command and self._analysis_enabled(options):
                     event.set_extra("_ffa_public_memory_access",
                                     self._access(event, message, check_preference=False))
@@ -273,7 +283,7 @@ class GatewayMemory:
                 runtime = self.gateway.communication()
                 slot = runtime.connections.get(message.conversation.provider)
                 reconcile = getattr(slot.provider, "reconcile_retractions", None) if slot and slot.enabled else None
-                if reconcile and await asyncio.to_thread(access.verify):
+                if reconcile and await self._capture_io(access.verify):
                     await reconcile(event, message, force=lookup)
             if media_ready is not None:
                 await media_ready.wait()
@@ -310,7 +320,7 @@ class GatewayMemory:
                         and not message.media and not event.get_extra("_ffa_material")
                         and not sensitive_information(message.text) and bool(message.text.strip()) and not GREETING.fullmatch(message.text.strip()))
             if command:
-                ref, _ = await asyncio.to_thread(self.memory().record, access, activity,
+                ref, _ = await self._capture_io(self.memory().record, access, activity,
                                                  turn_id=message.event_id, timeout=2)
             else:
                 ref, _ = await self._record_chat(access, activity, turn_id=message.event_id,
@@ -321,7 +331,7 @@ class GatewayMemory:
                 candidate = self._extract(message.text)
                 if candidate:
                     category, subject, value, importance = candidate
-                    await asyncio.to_thread(self.memory().remember, access, category, subject, value, importance, ref)
+                    await self._capture_io(self.memory().remember, access, category, subject, value, importance, ref)
                     event.set_extra("_ffa_auto_fact", normalize(value))
                 if options["reflect"] and not UNRELIABLE.search(message.text):
                     self.reflection.observe(access, ref, message.text, message.timestamp)

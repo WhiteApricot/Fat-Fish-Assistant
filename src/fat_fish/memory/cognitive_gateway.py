@@ -15,7 +15,7 @@ from fat_fish.memory.reply_guard import Dependency, ProtectedReply, ReplyStamp
 
 class CognitiveMemoryGateway:
     def __init__(self, agent: str, queue: CaptureQueue):
-        self.agent = agen
+        self.agent = agent
         self.queue = queue
 
     def _scope(self, conversation, principal: str) -> ScopeRef:

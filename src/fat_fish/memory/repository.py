@@ -507,7 +507,8 @@ class MemoryRepository:
                 rows = db.execute(f"""WITH allowed(agent, kind, scope_key) AS (VALUES {clauses})
                     SELECT i.id, r.rev, r.content_hash, r.body, r.confidence,
                         ev.id AS event_id, ev.event_kind, ev.actor_kind, ev.phase,
-                        ev.occurred_at, ev.known_at, se.id AS source_id, se.trust_class
+                        ev.occurred_at, ev.known_at, se.id AS source_id, se.trust_class,
+                        ev.scope_id AS event_scope_id, se.producer, ev.payload_json
                     FROM allowed a JOIN scope s USING(agent, kind, scope_key)
                     JOIN item i ON i.scope_id=s.id
                     JOIN revision r ON r.item_id=i.id AND r.rev=i.current_rev

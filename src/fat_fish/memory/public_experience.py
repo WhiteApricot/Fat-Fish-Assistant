@@ -144,7 +144,7 @@ def drop_unsupported_focus(db, agent, topics):
 
 
 def recent(db, agent):
-    active = db.execute("""SELECT * FROM memory_public_conten
+    active = db.execute("""SELECT * FROM memory_public_content
         WHERE agent=? ORDER BY pinned DESC,occurred DESC,content_id LIMIT 96""", (agent,)).fetchall()
     important = db.execute("""SELECT * FROM memory_public_content WHERE agent=? AND importance>=0.75
         ORDER BY importance DESC,occurred DESC,content_id LIMIT 24""", (agent,)).fetchall()
@@ -176,7 +176,7 @@ def set_focus(db, agent, topic, action, now):
                "active": {"completed", "abandoned"}, "completed": {"confirmed"},
                "abandoned": {"confirmed"}}
     if action == current:
-        return curren
+        return current
     if action not in allowed[current]:
         raise ValueError("Focus transition is not allowed")
     proof = hashlib.sha256(json.dumps(entry["evidence"], sort_keys=True).encode()).hexdigest()

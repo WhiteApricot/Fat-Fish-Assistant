@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
+import json
 import re
 import sqlite3
 from time import perf_counter
@@ -46,6 +47,26 @@ def _coarse_time(event_ms, clock_zone):
     return "night" if hour >= 18 or hour < 6 else "day"
 
 
+def _episode(row):
+    """Resolve connector-owned metadata, scoped to the original evidence event."""
+    if row["trust_class"] not in {"verified_connector", "owner_confirmed"}:
+        return None, ()
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except (ValueError, TypeError):
+        return None, ()
+    episode = payload.get("episode") if isinstance(payload, dict) else None
+    if not isinstance(episode, dict):
+        return None, ()
+    ident = episode.get("id")
+    if not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", ident):
+        return None, ()
+    names = episode.get("aliases")
+    aliases = tuple(name for name in names[:8] if isinstance(name, str) and 2 <= len(name) <= 40
+                    and not sensitive_information(name)) if isinstance(names, list) else ()
+    return (row["event_scope_id"], row["producer"], ident), aliases
+
+
 def _object_terms(query):
     # Do not let a shared question frame or event verb satisfy object confirmation.
     query = re.sub("后来|已经|确实|实际|完成|什么|了吗|是否|以前|当时|昨晚|白天|晚上|夜里|是吗|没有|原来",
@@ -69,7 +90,8 @@ class EventRetrieval:
 
     async def recall(self, audience, query: str, now: int, variant="E"):
         strict = variant in {"E", "Eprev"}
-        expanded = variant == "E"
+        expanded = strict
+        linked = variant == "E"
         # Allow a question about which public survey happened, without forwarding
         # the sensitive phrase to the model or admitting private address evidence.
         public_survey = strict and bool(re.fullmatch(
@@ -97,7 +119,8 @@ class EventRetrieval:
         )
         hours = event_hours(query) if strict else None
         phase = "succeeded" if public_survey else intent.phase
-        if history and re.search(r"做(?:过|了)(?:什么|哪些)", query):
+        episode_overview = linked and history and phase is None and "做了什么" in query
+        if history and not episode_overview and re.search(r"做(?:过|了)(?:什么|哪些)", query):
             phase = "succeeded"
         if confirming and re.search(r"没有|没|未曾|并未", query):
             return EventResult("abstain", "unsupported_claim_polarity", (), (), {})
@@ -198,7 +221,10 @@ class EventRetrieval:
                     topic = topic.replace(alias, " ")
         topic_terms = tuple(word for word in re.findall(r"[\u3400-\u9fff]{2,}", topic)
                             if word not in {"情况", "经历", "事情", "活动"})
+        episode_topic = "".join(topic_terms).removesuffix("上")
         ranked = []
+        episode_by_evidence = {}
+        completed_events = set()
         for item, sources in rows_by_item.items():
             best = None
             for row in sources:
@@ -231,7 +257,9 @@ class EventRetrieval:
                         matched.append("object")
                 elif anchors.intersection(tokens(row["body"])):
                     matched.append("object")
-                if topic_terms and all(term in row["body"] for term in topic_terms):
+                episode, aliases = _episode(row) if linked and history else (None, ())
+                if topic_terms and (all(term in row["body"] for term in topic_terms)
+                                    or episode_topic in aliases):
                     matched.append("topic")
                 if row["trust_class"] in {"verified_connector", "owner_confirmed", "direct_self"}:
                     matched.append("source")
@@ -242,6 +270,10 @@ class EventRetrieval:
                     continue
                 result = RankedEvent(item, row["rev"], row["source_id"], row["event_id"], row["body"],
                                      channels, tuple(matched), tuple(conflicts), fusion)
+                if episode:
+                    episode_by_evidence[(result.event_id, result.evidence_id)] = episode
+                if row["phase"] == "succeeded":
+                    completed_events.add(result.event_id)
                 structural = sum(name in matched for name in ("time", "action", "state", "object", "topic"))
                 score = (-len(conflicts), structural, row["occurred_at"] if intent.recent else 0,
                          fusion) if use_rerank else (fusion, structural)
@@ -266,6 +298,7 @@ class EventRetrieval:
             eligible = [hit for hit in eligible if {"action", "object", "source"} <= set(hit.matched)]
         if history:
             distinct = {}
+            episodes = set()
             for _, hit in (ranked if expanded else ranked[:10]):
                 matched = set(hit.matched)
                 if "source" in matched and not hit.conflicts and (
@@ -273,6 +306,20 @@ class EventRetrieval:
                     or (expanded and open_history and not topic_terms and "action" in matched)
                 ):
                     distinct.setdefault(hit.event_id, hit)
+                    episode = episode_by_evidence.get((hit.event_id, hit.evidence_id))
+                    if episode and ("topic" in matched or (not topic_terms and "action" in matched)):
+                        episodes.add(episode)
+            if len(episodes) > 1:
+                return EventResult("clarify", "multiple_matching_episodes", candidates, (), timings)
+            if episodes:
+                distinct = {}
+                for _, hit in ranked:
+                    if "source" in hit.matched and not hit.conflicts and (
+                        episode_by_evidence.get((hit.event_id, hit.evidence_id)) in episodes
+                    ):
+                        distinct.setdefault(hit.event_id, hit)
+            elif episode_overview:
+                distinct = {key: hit for key, hit in distinct.items() if key in completed_events}
             if not distinct:
                 return EventResult("abstain", "history_topic_unresolved", candidates, (), timings)
             if len(distinct) > 3 or (len(rows) == 48 if expanded else len(ranked) > len(candidates)):

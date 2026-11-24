@@ -98,3 +98,22 @@ Windows 隔离运行 10 项定向测试全部通过。并发运行时两项曾�
 v1 每组由 2 条增加到 20 条。v2 留出组由 6 条增加到 12 条。扩池后 `CR-03-4` 恢复两条过河记录，`CR-11-4` 恢复完整样机交接历史。`CR-12-4` 因来源跨多个巡查故事而请求缩小范围。`CR-15-4` 只采纳了可核对钟楼主题的一条，与原 Gold 有缺口。新 E 的 16 道冻结正例失败按优先级归为候选缺失 2 道、额外证据 3 道、采纳不完整 11 道。显式难负例零误答不覆盖新增跨故事材料的误采纳。下一轮需要用可信的实体或情境标识核对关联，并由独立审查者核定扩池后的合法证据。
 
 Windows 检索单测 18/18。v1 缓存检索 P95 从 42.28 ms 降至 36.87 ms，单次诊断不代表普通路径或生产负载。WSL 2 核、4 GiB 进程限制、SQLite 3.51.1 下，保留空闲连接的既有并发用例在 45 秒达到诊断上限，超时状态 124。该试验保留原测试断言。由于证据正确率下降，新的证据组合暂不准出。
+
+## RC2 Episode 关联诊断
+
+用 `--variants E0,Eprev,E --distractors 18` 比较。Eprev 对应 `1e7628c` 的 E。三组 v1 定向诊断增加了独立的[假设元数据](fixtures/rc2-episode-assumptions.json)，借此验证可信关系存在时的行为。题目及 Gold 保持原样。缓存向量复用锁定的 BGE。诊断不同于对原资料自动推断 Episode。
+
+| 指标 | E0 | Eprev | E |
+| --- | ---: | ---: | ---: |
+| v1 定向综合决策 | 9/15 | 10/15 | 12/15 |
+| 候选 Recall@5 | 88.9% | 88.9% | 88.9% |
+| 证据精确率 | 75% | 100% | 100% |
+| 证据完整性 | 50% | 41.7% | 66.7% |
+| 无依据回答率 | 25% | 0% | 0% |
+| 难负例正确拒答 | 3/3 | 3/3 | 3/3 |
+| 正确澄清 | 1/3 | 3/3 | 3/3 |
+| v2 留出候选决策 | 3/8 | 8/8 | 8/8 |
+
+茶席和钟楼各补齐一条同组证据，巡查识别出两个不同 Episode 并请求澄清。两条预先注明的真实关联均被采纳。单元测试另外覆盖相同别名、其他签发者、其他作用域、不同主体和撤回。关系级独立精确率、召回率和自然语言质量尚待独立标注。v2 无 Episode 标签，留出区与 Eprev 同分。
+
+Episode 的来源锚定与时间筛选沿用 [Graphiti 查询过滤](https://github.com/getzep/graphiti/blob/main/graphiti_core/search/search_filters.py) 和 [Hindsight 分通道召回](https://github.com/vectorize-io/hindsight/blob/main/skills/hindsight-docs/references/developer/retrieval.md) 的思路。主题别名用可审计的元数据匹配，与 [Mem0 实体检索信号](https://github.com/mem0ai/mem0/blob/main/docs/core-concepts/memory-operations/search.mdx) 相近。SQLite 写路径和后台索引仍需独立性能验证。

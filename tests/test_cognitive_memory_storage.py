@@ -4,7 +4,7 @@ import json
 import shutil
 import sqlite3
 import tempfile
-import unittes
+import unittest
 from pathlib import Path
 
 from fat_fish.communication.model import Account, ChatKind, Conversation, MessageEvent, MessageRetraction, ProviderId
@@ -13,7 +13,7 @@ from fat_fish.memory.cognitive_gateway import CognitiveMemoryGateway
 from fat_fish.memory.erasure import ErasureLedger, LedgerError
 from fat_fish.memory.policy import Audience, ScopeKind, ScopeRef
 from fat_fish.memory.records import EventRecord, EvidenceRecord, ItemRecord, SourceRecord
-from fat_fish.memory.recovery import replay_snapsho
+from fat_fish.memory.recovery import replay_snapshot
 from fat_fish.memory.repository import MemoryRepository
 from fat_fish.memory.reply_guard import Delivery
 from fat_fish.memory.retrieval import CognitiveRetrieval
@@ -213,7 +213,7 @@ class CognitiveGatewayIngressTests(unittest.IsolatedAsyncioTestCase):
 
             async def generate(request):
                 for snippet in request[0]:
-                    yield snippe
+                    yield snippet
                 if request[1]:
                     await asyncio.to_thread(repository.erase, "source", scope,
                                             "removed fragment", 0, 15)
