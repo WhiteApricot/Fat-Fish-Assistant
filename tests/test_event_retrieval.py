@@ -154,6 +154,23 @@ class EventRetrievalTests(unittest.TestCase):
         self.assertEqual(result.reason, "supported_history")
         self.assertEqual([hit.event_id for hit in result.support], [event_id])
 
+    def test_open_question_with_particle_combines_matching_actions(self):
+        first, _ = self.add(self.public, "first", "乘渡船抵达河岸")
+        second, _ = self.add(self.public, "second", "步行上桥抵达河岸", time=DAY)
+        self.add(self.public, "adjacent", "渡船码头的维修结束", action="修理")
+        result = self.recall("你记得如何过河吗？")
+        self.assertEqual(result.reason, "supported_history")
+        self.assertEqual({hit.item_id for hit in result.support}, {first, second})
+
+    def test_date_bounds_are_applied_before_event_candidate_limit(self):
+        old, _ = self.add(self.public, "old", "蓝册转交给接班人", action="交付")
+        # One day advances at midnight in the configured local timezone.
+        today = NIGHT + 5 * 3600 * 1000
+        for index in range(48):
+            self.add(self.public, f"other-{index}", "交付周报", time=today + index, action="交付")
+        rows = self.repo.event_candidates(self.caller, NOW, occurred_window=(DAY - 8 * 3600000, today))
+        self.assertEqual({row["id"] for row in rows}, {old})
+
     def test_evening_disambiguates_while_unstated_time_does_not(self):
         evening, _ = self.add(self.public, "north", "巡查了北泉出水口", action="巡查")
         self.add(self.public, "south", "巡查了南井出水口", time=DAY, action="巡查")

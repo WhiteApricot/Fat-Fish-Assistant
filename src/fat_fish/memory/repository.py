@@ -476,7 +476,7 @@ class MemoryRepository:
 
 
     def event_candidates(self, audience: Audience, now: int, *, actor=None, phase=None, limit=48,
-                         preferred_ids=(), public_only=False):
+                         preferred_ids=(), public_only=False, occurred_window=None):
         """Return only events that support a currently visible revision."""
         if not 1 <= limit <= 48:
             raise ValueError("Invalid event candidate budget")
@@ -492,6 +492,10 @@ class MemoryRepository:
                 db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 250)
                 clauses = ", ".join(f"(:ag{i}, :ki{i}, :sc{i})" for i in range(len(allowed)))
                 binds = {"now": now, "actor": actor, "phase": phase, "limit": limit}
+                time_clause = ""
+                if occurred_window is not None:
+                    binds["earliest"], binds["latest"] = occurred_window
+                    time_clause = "AND ev.occurred_at>=:earliest AND ev.occurred_at<:latest"
                 preferred = tuple(dict.fromkeys(preferred_ids))[:16]
                 priority = "ev.occurred_at DESC"
                 if preferred:
@@ -514,6 +518,7 @@ class MemoryRepository:
                       AND (r.valid_from IS NULL OR r.valid_from<=:now)
                       AND (r.valid_to IS NULL OR r.valid_to>:now)
                       AND ev.known_at<=:now AND ev.occurred_at<=:now
+                      {time_clause}
                       AND (:actor IS NULL OR ev.actor_kind=:actor)
                       AND (:phase IS NULL OR ev.phase=:phase)
                       AND {VISIBLE_EVIDENCE}

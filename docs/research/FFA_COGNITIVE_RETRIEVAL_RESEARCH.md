@@ -33,4 +33,10 @@
 
 ## 路线
 
+### 扩容复测采用的机制
+
+- Hindsight 给不同检索通道各自的候选预算，随后才进行融合、预筛和重排。FFA 将证据组合与展示截断分开。组合遍历已通过权限核验的有界证据池，展示仍保留前十条。 [Hindsight 检索设计](https://github.com/vectorize-io/hindsight/blob/main/skills/hindsight-docs/references/developer/retrieval.md)
+- Graphiti 把事实有效时间与记录时间分开，并构造带时间及端点条件的查询。FFA 用已有事件发生时间应用明确日期约束，SQLite 在候选截断前执行该条件。证据有效期和撤回检查继续独立执行。 [Graphiti 查询过滤源码](https://github.com/getzep/graphiti/blob/main/graphiti_core/search/search_filters.py)
+- SQLite 的最后一个 WAL 连接关闭时会触发清理。WSL 的 Python 栈曾停在关闭连接，其他写线程等待写锁。借鉴 SQLite 的连接生命周期说明，隔离试验保留一个空闲连接，结果仍到达 45 秒诊断上限。证据不足以确认最后连接清理是根因，也不足以更改生产连接生命周期。 [SQLite WAL](https://www.sqlite.org/wal.html)
+
 先划分三种失败：候选缺失、排序错误与证据不足。第一步用原有 SQL 和索引保持可见性，第二步建确定性的 QueryIntent 并核查来源事件，第三步从候选融合出来的少量记录做证据判断，只有明确支持证据才回答。群、私人、来源撤销仍都覆盖全部通道。不能用普遍加前缀和调低全局阈值代替事件判断。

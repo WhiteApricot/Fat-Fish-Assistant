@@ -3,7 +3,7 @@
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 import re
 import sqlite3
 from time import perf_counter
@@ -68,7 +68,8 @@ class EventRetrieval:
         self.semantic_min = semantic_min
 
     async def recall(self, audience, query: str, now: int, variant="E"):
-        strict = variant == "E"
+        strict = variant in {"E", "Eprev"}
+        expanded = variant == "E"
         # Allow a question about which public survey happened, without forwarding
         # the sensitive phrase to the model or admitting private address evidence.
         public_survey = strict and bool(re.fullmatch(
@@ -79,15 +80,21 @@ class EventRetrieval:
         use_structure = variant != "no_structure"
         if strict and FIRST_PERSON_SUBJECT.match(query):
             return EventResult("abstain", "unsupported_subject", (), (), {})
-        use_rerank = variant in {"D", "E", "E0", "no_bm25", "no_time", "no_structure", "no_rrf"}
-        evidence_gate = variant in {"E", "E0", "no_bm25", "no_time", "no_structure", "no_rrf", "no_rerank"}
+        use_rerank = strict or variant in {"D", "E0", "no_bm25", "no_time", "no_structure", "no_rrf"}
+        evidence_gate = strict or variant in {"E0", "no_bm25", "no_time", "no_structure", "no_rrf", "no_rerank"}
         use_time = use_rerank and variant != "no_time"
         intent = parse_event_query(query)
         action = "验证" if public_survey else intent.action
         referent = strict and bool(REFERENT.search(query))
-        confirming = strict and not referent and bool(CONFIRM.search(query.rstrip()))
+        open_history = expanded and bool(re.search(
+            r"记得.{0,4}(?:如何|怎么)|(?:什么|哪些|有何).{0,8}(?:记录|资料|进展)|"
+            r"(?:记录|资料|进展).{0,8}(?:什么|哪些)", query
+        ))
+        confirming = strict and not referent and not open_history and bool(CONFIRM.search(query.rstrip()))
         direction = transfer_direction(query) if confirming and action == "交付" else None
-        history = strict and not confirming and bool(EVENT_LIST.search(query))
+        history = strict and not confirming and (
+            bool(EVENT_LIST.search(query)) or (open_history and not referent and bool(action))
+        )
         hours = event_hours(query) if strict else None
         phase = "succeeded" if public_survey else intent.phase
         if history and re.search(r"做(?:过|了)(?:什么|哪些)", query):
@@ -113,6 +120,10 @@ class EventRetrieval:
             elif periods == ["last_week"]:
                 monday = today - timedelta(days=today.weekday())
                 dates = (monday - timedelta(days=7), monday)
+        window = None
+        if expanded and dates:
+            window = tuple(int(datetime.combine(day, time.min, tzinfo=self.clock_zone).timestamp() * 1000)
+                           for day in dates)
         counts = tokens(query[:300])
         terms = tuple(sorted(counts, key=lambda word: (-len(word), -counts[word], word))[:12])
         timings = {}
@@ -156,6 +167,7 @@ class EventRetrieval:
                         actor=actor, phase=event_phase,
                         preferred_ids=(*lex_rank[:8], *sem_rank[:8]) if strict else (),
                         public_only=public_survey,
+                        occurred_window=window,
                     )
             except (TimeoutError, sqlite3.Error, LedgerError):
                 return EventResult("abstain", "evidence_recheck_unavailable", (), (), timings)
@@ -179,6 +191,11 @@ class EventRetrieval:
         anchors = _object_terms(query)
         topic = EVENT_LIST.sub(" ", query) if history else ""
         topic = re.sub(r"昨晚|昨天|今天|上周|上星期|那回|那次|这次|你在|肥鱼在|你|肥鱼|关于", " ", topic)
+        if expanded and open_history:
+            topic = re.sub(r"记得|如何|怎么|有什么|有何|哪些|什么|的|记录|资料|进展|[过吗]", " ", topic)
+            if action:
+                for alias in ACTIONS[action]:
+                    topic = topic.replace(alias, " ")
         topic_terms = tuple(word for word in re.findall(r"[\u3400-\u9fff]{2,}", topic)
                             if word not in {"情况", "经历", "事情", "活动"})
         ranked = []
@@ -249,15 +266,16 @@ class EventRetrieval:
             eligible = [hit for hit in eligible if {"action", "object", "source"} <= set(hit.matched)]
         if history:
             distinct = {}
-            for hit in candidates:
+            for _, hit in (ranked if expanded else ranked[:10]):
                 matched = set(hit.matched)
                 if "source" in matched and not hit.conflicts and (
                     "topic" in matched or (not topic_terms and {"date", "action"} <= matched)
+                    or (expanded and open_history and not topic_terms and "action" in matched)
                 ):
                     distinct.setdefault(hit.event_id, hit)
             if not distinct:
                 return EventResult("abstain", "history_topic_unresolved", candidates, (), timings)
-            if len(ranked) > len(candidates) or len(distinct) > 3:
+            if len(distinct) > 3 or (len(rows) == 48 if expanded else len(ranked) > len(candidates)):
                 return EventResult("clarify", "history_needs_narrower_scope", candidates, (), timings)
             return EventResult("answer", "supported_history", candidates, tuple(distinct.values()), timings)
         if referent:

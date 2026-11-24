@@ -114,7 +114,7 @@ def summarize(rows):
             "count": len(rows)}
 
 
-async def evaluate(dataset, vectors, variants, workspace):
+async def evaluate(dataset, vectors, variants, workspace, distractors=0):
     now = millis(dataset["query_time"])
     model = CachedModel(vectors)
     rows = {variant: [] for variant in variants}
@@ -127,7 +127,13 @@ async def evaluate(dataset, vectors, variants, workspace):
         public = ScopeRef("fish", ScopeKind.PUBLIC, "fish")
         caller = Audience("fish", "fixture", ScopeRef("fish", ScopeKind.PRIVATE, "fixture"), 1)
         names = {}
-        for doc in group["documents"]:
+        competing = [
+            doc for other in dataset["groups"]
+            if other["id"] != group["id"] and other["split"] == group["split"]
+            for doc in other["documents"]
+        ]
+        documents = [*group["documents"], *competing[:distractors]]
+        for doc in documents:
             item, rev, content_hash = seed(repository, public, doc)
             names[item] = doc["id"]
             repository.store_embedding(item, rev, content_hash, BASELINE_SPACE,
@@ -169,6 +175,7 @@ async def evaluate(dataset, vectors, variants, workspace):
                     }
                 rows[variant].append({**{k: case[k] for k in ("id", "gold", "clarification", "hard_negatives")},
                                       "split": group["split"], "ranking": ranking, "returned": returned,
+                                      "distractors": len(documents) - len(group["documents"]),
                                       "sqlite_ms": sqlite_ms,
                                       "trace": trace,
                                       "elapsed_ms": (time.perf_counter() - start) * 1000,
@@ -181,6 +188,7 @@ async def main(workspace):
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--vectors", required=True, type=Path)
     parser.add_argument("--dataset", type=Path, default=DATASET)
+    parser.add_argument("--distractors", type=int, choices=range(33), default=0)
     parser.add_argument("--variants", default="AB")
     args = parser.parse_args()
     dataset_bytes = args.dataset.read_bytes()
@@ -201,7 +209,7 @@ async def main(workspace):
                                              "dataset_sha256": dataset_hash,
                                              "vectors": vectors, "embedding_ms": latencies}), encoding="utf-8")
     variants = tuple(args.variants.split(",")) if "," in args.variants else tuple(args.variants)
-    rows = await evaluate(dataset, vectors, variants, workspace)
+    rows = await evaluate(dataset, vectors, variants, workspace, args.distractors)
     metrics = {name: {split: summarize([r for r in result if r["split"] == split])
                       for split in ("dev", "validation", "frozen")} for name, result in rows.items()}
     args.output.write_text(json.dumps({"metrics": metrics, "cases": rows, "dataset_sha256": dataset_hash,
