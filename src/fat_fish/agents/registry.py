@@ -118,12 +118,13 @@ class _Plugin:
 class AgentRegistry:
     def __init__(self, memory, *, environment, dependency_available, clock=time.time, timeout=30,
                  authenticate_approval=None, authorize_output=None, verify_outcome=None, protected_identities=None,
-                 agent_memory_id=None):
+                 agent_memory_id=None, verify_public_read=None):
         # These callbacks belong to the trusted host. A connector never supplies them.
         self.authenticate_approval = authenticate_approval
         self.authorize_output = authorize_output
         self.protected_identities = protected_identities
         self.verify_outcome = verify_outcome
+        self.verify_public_read = verify_public_read
         self._live_approvers = {}
         self.memory = memory
         self.agent_memory_id = agent_memory_id
@@ -254,15 +255,25 @@ class AgentRegistry:
         return self.memory.record(slot.access, activity, producer=self._producer(slot), source=slot.source,
                                   experience=self._experience(tool, state, summary), **options)
 
-    def observe(self, handle, tool_name, *, event_id, occurred, summary, evidence):
+    def observe(self, handle, tool_name, *, event_id, occurred, summary, evidence, public_id=None):
         slot = self._slot(handle)
         tool = self._tool(slot, tool_name)
         if tool.risk is not Risk.READ or not evidence:
             raise PermissionError("Observation requires an authorized read tool and evidence")
         activity = Activity("observed:" + event_id, tool.kind, ActivityState.OBSERVED,
                             occurred, summary, evidence)
+        material = None
+        if self.agent_memory_id and public_id and self.verify_public_read:
+            from fat_fish.memory.public_experience import PublicContent
+            slot.access.require(write=True)
+            verified = self.verify_public_read(slot.source, tool.name, event_id, public_id, evidence)
+            if verified is not None:
+                if not isinstance(verified, PublicContent) or verified.content_id != public_id:
+                    raise PermissionError("Public receipt does not identify the verified content")
+                material = (self.agent_memory_id, verified)
         return self.memory.record(slot.access, activity, producer=self._producer(slot), source=slot.source,
-                                  experience=self._experience(tool, ActivityState.OBSERVED, summary))
+                                  experience=self._experience(tool, ActivityState.OBSERVED, summary),
+                                  public_material=material)
 
     def plan(self, handle, tool_name, operation_id, arguments, summary):
         slot = self._slot(handle)

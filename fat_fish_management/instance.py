@@ -171,7 +171,7 @@ def _backup_locked(instance, destination):
                 continue
             if parts[:2] in {('private','config-history'),('private','index-repair-history'),('private','lifecycle-history')}:continue
             if parts[0]=='private' and path.suffix=='.log':continue
-            if parts==('private','install-origin.json'):continue
+            if parts==('private','install-origin.json') or parts[:2]==('private','memory-control'):continue
             if len(parts)==2 and parts[0]=='private' and parts[1] in {
                 'runtime-health.json','ffa-lark-latency','latency-traces.jsonl','latency-client.jsonl'
             }:continue
@@ -199,7 +199,7 @@ def _backup_locked(instance, destination):
     identity=json.loads((instance/'instance.json').read_text());identity.pop('release',None)
     (destination/'manifest.json').write_text(json.dumps({'schema':DATA_SCHEMA,'software':software,'instance_identity':identity,'files':rows,'integrity':integrity,'consistency':'cold instance; all managed writers stopped','private':True},indent=2))
 
-def restore(snapshot,destination,release,installation_root=None,*,erasure_ledger=None):
+def restore(snapshot,destination,release,installation_root=None,*,erasure_ledger=None,memory_controls=None):
     verify_release(release)
     if destination.exists():raise ValueError('Refusing to overwrite existing instance or newer chats')
     manifest=json.loads((snapshot/'manifest.json').read_text())
@@ -212,6 +212,10 @@ def restore(snapshot,destination,release,installation_root=None,*,erasure_ledger
         name=portable_name(row['path'])
         if name.casefold() in seen:raise ValueError('Duplicate snapshot path')
         seen.add(name.casefold())
+        if name.casefold().startswith('private/memory-control/'):
+            raise ValueError('Snapshot contains independent memory erasure controls')
+        if name.casefold() == 'private/ffa-cognitive-memory.sqlite3' and memory_controls is None:
+            raise ValueError('Independent memory erasure controls are required to restore cognitive memory')
         if name.casefold() in {'instance.json','private/running','private/dirty','private/stop','private/stopped','private/.instance-lock','private/.start-lock','private/migrated-out.json','private/upgrade-journal.json'}:
             raise ValueError('Snapshot contains forbidden runtime metadata')
         path=(snapshot/'payload'/row['path']).resolve()
@@ -265,6 +269,14 @@ def restore(snapshot,destination,release,installation_root=None,*,erasure_ledger
             MemoryService(stage/'private/ffa-memory.sqlite3').reapply_erasures(data.get("entries"))
         finally:
             sys.path.pop(0)
+    cognitive = stage / 'private/ffa-cognitive-memory.sqlite3'
+    if cognitive.is_file():
+        sys.path.insert(0, str(PROJECT / 'src'))
+        try:
+            from fat_fish.memory.recovery import replay_snapshot
+            replay_snapshot(cognitive, memory_controls, snapshot)
+        finally:
+            sys.path.pop(0)
     verify_plugins(stage,release)
     stage.rename(destination)
 
@@ -279,9 +291,10 @@ if __name__=='__main__':
     p.add_argument('--offline',action='store_true')
     p.add_argument('--installation-root',type=Path)
     p.add_argument('--erasure-ledger',type=Path)
+    p.add_argument('--memory-controls',type=Path)
     a=p.parse_args()
     if a.command=='materialize':materialize(a.destination.resolve(),a.cache,offline=a.offline)
     elif a.command=='init':initialize(a.destination.resolve(),a.release)
     elif a.command=='backup':backup(a.instance.resolve(),a.destination.resolve())
-    else:restore(a.snapshot.resolve(),a.destination.resolve(),a.release,a.installation_root,erasure_ledger=a.erasure_ledger)
+    else:restore(a.snapshot.resolve(),a.destination.resolve(),a.release,a.installation_root,erasure_ledger=a.erasure_ledger,memory_controls=a.memory_controls)
     print('Completed:',a.command)

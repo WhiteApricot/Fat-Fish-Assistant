@@ -726,10 +726,12 @@ def parser():
     conf=sub.add_parser('config');conf.add_argument('config_action',choices=['show','validate','apply','initialize-chat','initialize-onebot','initialize-experience','initialize-local-models']);conf.add_argument('--file',default='-');conf.add_argument('--onebot-port',type=int,default=6199);conf.add_argument('--model',choices=[DEFAULT_CHAT_MODEL],default=DEFAULT_CHAT_MODEL);conf.add_argument('--bot-id')
     backup=sub.add_parser('backup');backup.add_argument('--destination',required=True,type=Path)
     restore=sub.add_parser('restore');restore.add_argument('--snapshot',required=True,type=Path);restore.add_argument('--destination',type=Path);restore.add_argument('--erasure-ledger',type=Path)
+    restore.add_argument('--memory-controls',type=Path)
     upgrade=sub.add_parser('upgrade');upgrade.add_argument('--release',required=True,type=Path)
     recover=sub.add_parser('recover-upgrade')
     export=sub.add_parser('migration-export');export.add_argument('--destination',required=True,type=Path)
     migration=sub.add_parser('migration-import');migration.add_argument('--package',required=True,type=Path);migration.add_argument('--confirm-source-offline',action='store_true');migration.add_argument('--cache',type=Path);migration.add_argument('--offline',action='store_true')
+    migration.add_argument('--memory-controls',type=Path)
     resume=sub.add_parser('resume-source');resume.add_argument('--confirm-target-offline',action='store_true')
     register=sub.add_parser('register-external');register.add_argument('name',choices=list(COMPONENTS));register.add_argument('--path',required=True,type=Path);register.add_argument('--version',required=True)
     transport=sub.add_parser('snowluma')
@@ -818,6 +820,7 @@ def dispatch(args):
         else:
             argv+=['--package',args.package]
             if args.confirm_source_offline:argv+=['--confirm-source-offline']
+            if args.memory_controls:argv+=['--memory-controls',args.memory_controls.resolve(strict=True)]
             if args.cache:argv+=['--cache',args.cache]
             if args.offline:argv+=['--offline']
         return invoke(root,chat_python(root,record),'migration_cli.py',*argv,json_output=True,input_data=json.dumps({'password':password}))
@@ -887,6 +890,8 @@ def dispatch(args):
         destination=args.destination.resolve() if args.destination else root/'instance'
         if root not in destination.parents:raise Fault('read_only','Restore destination must be inside this managed root')
         erasure_options = ('--erasure-ledger', args.erasure_ledger.resolve(strict=True)) if args.erasure_ledger else ()
+        if args.memory_controls is not None:
+            erasure_options += ('--memory-controls', args.memory_controls.resolve(strict=True))
         result=invoke(root,chat_python(root,record),'instance.py','restore','--snapshot',args.snapshot.resolve(),'--destination',destination,'--release',resolve(root,record['release']),*erasure_options)
         record['instance']=rel(root,destination);atomic(root/'installation.json',record);return result
     if args.command=='upgrade':

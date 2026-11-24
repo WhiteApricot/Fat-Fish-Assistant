@@ -21,6 +21,7 @@ field 仅限 humor、banter、formality、directness、detail、warmth。
 不推断健康、政治、身份或其他私人事实到画像。玩笑不能算作明确同意攻击。
 群聊可提出 type='expression'、expression、meaning、confidence。只记录原文出现的群内用语和中性释义。
 拒绝昵称、身份指代、指令、辱骂、秘密、普通词和未确定的释义。私聊不得提出群内用语。
+仅当同一条证据明确将两个原词作为同一群内表达的别名时，可提出 type='expression_alias'、alias、canonical、confidence。
 卡片评分字段为 type='card'、importance、emotion、confidence。
 当前文本和一张候选卡片讲的是同一件已发生的事时，可以提出 type='card_merge'、card_id、confidence。
 主题相近不代表同一事件。只有时间、主体及具体事实一致时才合并。
@@ -36,6 +37,7 @@ status（hypothesis、done 或 rejected）、confidence（0 到 1）。
 
 FIELDS = {
     "expression": {"type", "expression", "meaning", "confidence"},
+    "expression_alias": {"type", "alias", "canonical", "confidence"},
     "theme": {"type", "kind", "label", "status", "confidence"},
     "card_merge": {"type", "card_id", "confidence"},
     "fact": {"type", "operation", "key", "text", "importance", "confidence"},
@@ -84,6 +86,12 @@ def parse(text, ref, *, public=False):
                 raise ValueError("Invalid fact proposal")
             if operation == "noop" or (operation not in {"conflict", "reinforce"} and not content.strip()):
                 continue
+        elif kind == "expression_alias":
+            alias, canonical = proposal["alias"], proposal["canonical"]
+            if (alias == canonical or any(not isinstance(value, str)
+                    or not re.fullmatch(r"[\w-]{2,18}", value) or sensitive_information(value)
+                    for value in (alias, canonical))):
+                raise ValueError("Invalid group alias")
         elif kind == "expression":
             term, meaning = proposal["expression"], proposal["meaning"]
             if (not isinstance(term, str) or not re.fullmatch(r"[\w-]{2,18}", term)
@@ -106,7 +114,7 @@ def parse(text, ref, *, public=False):
                 raise ValueError("Invalid social proposal")
         elif not probability(proposal["importance"]) or not probability(proposal["emotion"]):
             raise ValueError("Invalid card score")
-        if proposal["confidence"] >= (0.92 if kind in {"card_merge", "expression"} else 0.8):
+        if proposal["confidence"] >= (0.92 if kind in {"card_merge", "expression", "expression_alias"} else 0.8):
             clean.append(proposal)
     return clean
 

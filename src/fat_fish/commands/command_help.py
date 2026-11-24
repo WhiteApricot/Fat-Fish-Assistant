@@ -77,7 +77,7 @@ DESCRIPTIONS = {
 }
 
 
-def platform_memory_help(*, private, preferences, can_change=True):
+def platform_memory_help(*, private, preferences, can_change=True, owner=False):
     actions = MEMORY_PRIVATE if private else ()
     if private or preferences:
         actions += MEMORY_READ
@@ -90,6 +90,10 @@ def platform_memory_help(*, private, preferences, can_change=True):
     if can_change:
         actions += (MEMORY_RESET, ("analyze", "安排后台分析当前来源中已回复的对话"),
                     ("analysis-status", "查看当前来源的记忆分析队列"))
+    if private and can_change and owner:
+        actions += (("pin-public [公开内容 ID]", "置顶一条已验证的 Bot 公开经历"),
+                    ("forget-public [公开内容 ID]", "删除一条 Bot 公开经历及其索引"),
+                    ("focus [confirm|activate|complete|abandon] [主题]", "更新已由公开经历支持的关注"))
     return render_help("memory", actions)
 
 
@@ -167,7 +171,7 @@ def platform_help(private, admission, args, *, reminders, registry, global_featu
             )
     rendered = {name: render_help(name, actions) for name, actions in menus.items()}
     rendered["memory"] = platform_memory_help(private=private, preferences=True,
-                                             can_change=private or moderator)
+                                             can_change=private or moderator, owner=admission.role == Role.OWNER)
     extensions = registry.help(admission)
     if args:
         if len(args) != 1:

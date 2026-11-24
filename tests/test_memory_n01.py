@@ -56,6 +56,98 @@ class ProjectionTests(unittest.TestCase):
         lease, _, facts, _ = self.social.claim(origin, ref)
         return self.social.apply(origin, ref, lease, proposals, {item["key"]: item["revision"] for item in facts})
 
+    def test_verified_public_video_is_independent_of_requester_and_erasure_replays(self):
+        from fat_fish.agents.bili_whale import BiliWhaleObservations, MANIFEST
+        from fat_fish.agents.registry import AgentRegistry
+        from fat_fish.memory.public_experience import PublicContent
+
+        bvid = "BV1xx411c7mD"
+        content_id = "bilibili:" + bvid
+
+        def verify(source, tool, event_id, public_id, evidence):
+            if (tool, public_id, evidence) == ("video-content", content_id, "verified-host-receipt"):
+                return PublicContent(content_id, "bilibili", "悬崖景观",
+                                     "建筑与地形之间保留足够空间。", ("建筑设计",))
+
+        class Connector:
+            async def start(self):
+                return True
+
+        import asyncio
+        registry = AgentRegistry(self.memory, environment="dsh", dependency_available=lambda _: True,
+                                 agent_memory_id="feiyu", verify_public_read=verify)
+        handle = registry.register(MANIFEST, Connector(), self.qq, self.qq.source, allowed=("video-content",))
+        asyncio.run(registry.enable(handle))
+        bili = BiliWhaleObservations(registry, handle)
+
+        def submit(ident, evidence, title):
+            return bili.submit(command="video-content", receipt_id=ident, bvid=bvid,
+                               occurred=self.now, title=title, evidence=evidence)
+
+        submit("unverified", "unverified-receipt", "私聊用户评价")
+        lookup = self.social.snapshot
+        self.assertFalse(lookup(self.other, "feiyu", lambda *_: False, "悬崖景观")[1])
+        self.now += 1
+        submit("verified", "verified-host-receipt", "私聊用户评价")
+        self.now += 1
+        submit("reread", "verified-host-receipt", "又读了一次")
+        vector_row, = self.social.public_index_rows("feiyu", "unit-test", 2)
+        self.social.store_public_vector(vector_row, "unit-test", [1.0, 0.0])
+        self.memory.reset_scope(self.qq)
+        result, = lookup(self.other, "feiyu", lambda *_: False, "选址建议",
+                         model="unit-test", vector=[1.0, 0.0])[1]
+        self.assertEqual(result["ref"], content_id)
+        self.assertEqual(result["revision"], 1)
+        self.assertNotIn("私聊", result["summary"])
+        self.assertNotIn("principal", json.dumps(result))
+        backup = self.path.with_name("public-restore.sqlite3")
+        with closing(sqlite3.connect(self.path)) as live, closing(sqlite3.connect(backup)) as saved:
+            live.backup(saved)
+        with self.assertRaises(PermissionError):
+            self.social.forget_public("feiyu", content_id, lambda: False)
+        self.social.forget_public("feiyu", content_id, lambda: True)
+        restored = MemoryService(backup)
+        restored.reapply_erasures(self.memory.export_erasures())
+        for service in (self.memory, restored):
+            self.assertFalse(service.projections.snapshot(self.other, "feiyu", lambda *_: False, "悬崖景观")[1])
+            with service.transaction() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM memory_public_vectors").fetchone()[0], 0)
+
+    def test_public_interest_distinct_content_and_cold_index_lifecycle(self):
+        from fat_fish.memory.public_experience import DAY, PublicContent, write
+
+        def add(name, timestamp):
+            with self.memory.transaction(write=True) as db:
+                material = PublicContent("bilibili:" + name, "bilibili", name,
+                                         "江湾建筑", ("建筑", "建筑", "建筑"))
+                write(db, "agent", material, timestamp, "verified-" + name)
+
+        add("article-a", self.now)
+        self.assertEqual(self.social.snapshot(self.other, "agent", lambda *_: False, "建筑")[2], [])
+        self.now += DAY
+        for name in ("article-b", "article-c"):
+            add(name, self.now)
+        topic, = self.social.snapshot(self.other, "agent", lambda *_: False, "建筑")[2]
+        self.assertEqual(topic["status"], "sustained-interest")
+        self.assertEqual(len(topic["evidence"]), 3)
+        with self.assertRaises(PermissionError):
+            self.social.set_public_focus("agent", "建筑", "confirm", lambda: False)
+        with self.assertRaises(ValueError):
+            self.social.set_public_focus("agent", "建筑", "complete", lambda: True)
+        for action, expected in (("confirm", "confirmed"), ("activate", "active"), ("complete", "completed")):
+            self.assertEqual(self.social.set_public_focus("agent", "建筑", action, lambda: True), expected)
+        self.assertEqual(self.social.snapshot(self.other, "agent", lambda *_: False, "建筑")[2][0]["focus_revision"], 3)
+        rows = self.social.public_index_rows("agent", "fixture", 2)
+        for row in rows:
+            self.social.store_public_vector(row, "fixture", [1, 0])
+        self.social.pin_public("agent", "bilibili:article-a", lambda: True)
+        self.now += 181 * DAY
+        self.social.maintain_public("agent")
+        self.assertEqual(self.memory.status()["public_experience_index"], {"fixture": 1})
+        self.assertEqual(self.social.public_index_rows("agent", "fixture", 2), [])
+        self.assertEqual(self.social.snapshot(self.other, "agent", lambda *_: False, "建筑")[2], [])
+        self.assertTrue(self.social.snapshot(self.other, "agent", lambda *_: False, "江湾建筑")[1])
+
     def test_analysis_subcommands_are_registered_with_lookup_distinction(self):
         from fat_fish.commands.registry import CommandRegistry, ROUTES, is_lookup
 
@@ -121,6 +213,13 @@ class ProjectionTests(unittest.TestCase):
         ref = self.inbound("old-running")
         with self.memory.transaction(write=True) as db:
             db.execute("UPDATE memory_analysis SET state='running',released=NULL,lease='old' WHERE ref=?", (ref,))
+            db.execute("DROP INDEX memory_legacy_public_recent")
+            db.execute("DROP TRIGGER memory_group_alias_erasure")
+            db.execute("DROP TABLE memory_group_alias")
+            db.execute("DROP TABLE memory_public_vectors")
+            db.execute("DROP TABLE memory_public_terms")
+            db.execute("DROP TABLE memory_public_content")
+            db.execute("DROP TABLE memory_public_focus")
             db.execute("DROP TRIGGER memory_experience_changed")
             db.execute("DROP TABLE memory_experience_vectors")
             db.execute("PRAGMA user_version=16")
@@ -182,6 +281,23 @@ class ProjectionTests(unittest.TestCase):
         self.memory.retract_message(self.room.scope, self.room.principal, "old-dispute", lambda: True)
         self.assertEqual(self.social.group_expressions(self.room, "青灯", lambda *_: True),
                          [{"expression": "青灯", "meaning": "同意的意思"}])
+
+    def test_group_alias_requires_two_witnesses_and_follows_canonical_erasure(self):
+        witnesses = (self.room, access("principal-b", "lark", "room-a"))
+        for index, origin in enumerate(witnesses):
+            ident = f"alias-{index}"
+            activity = Activity("in:" + ident, ActivityKind.MESSAGE_RECEIVED, ActivityState.OBSERVED,
+                                self.now, "青灯也叫蓝纸，意思是集体验证", "native-message:" + ident)
+            ref = self.memory.record(origin, activity, turn_id=ident, analyze=True)[0]
+            self.complete(ref, [dict(type="expression_alias", alias="蓝纸", canonical="青灯", confidence=0.98),
+                                dict(type="expression", expression="青灯", meaning="集体验证", confidence=0.98)], origin)
+            self.now += 86401
+        answers = self.social.group_expressions(self.room, "今天安排蓝纸吗", lambda *_: True)
+        self.assertIn({"expression": "蓝纸", "meaning": "集体验证"}, answers)
+        elsewhere = access("principal-a", "qq", "room-a")
+        self.assertFalse(self.social.group_expressions(elsewhere, "蓝纸", lambda *_: True))
+        self.memory.retract_message(witnesses[1].scope, witnesses[1].principal, "alias-1", lambda: True)
+        self.assertFalse(self.social.group_expressions(self.room, "蓝纸", lambda *_: True))
 
     def test_group_expression_requires_multiple_members_and_days_and_revokes(self):
         second = access("principal-b", "lark", "room-a")
@@ -389,6 +505,12 @@ class ProjectionTests(unittest.TestCase):
         ledger = self.memory.export_erasures()
         self.assertTrue(ledger)
         with self.memory.transaction(write=True) as db:
+            db.execute("DROP TRIGGER memory_group_alias_erasure")
+            db.execute("DROP TABLE memory_group_alias")
+            db.execute("DROP TABLE memory_public_vectors")
+            db.execute("DROP TABLE memory_public_terms")
+            db.execute("DROP TABLE memory_public_content")
+            db.execute("DROP TABLE memory_public_focus")
             db.execute("DROP TRIGGER memory_experience_changed")
             db.execute("DROP TABLE memory_experience_vectors")
             for name in ("memory_projection_erasure", "memory_social_removed", "memory_agent_removed",
@@ -405,7 +527,7 @@ class ProjectionTests(unittest.TestCase):
         for _ in range(2):
             reopened = MemoryService(self.path)
             with reopened.transaction() as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 17)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 18)
                 self.assertEqual(db.execute("SELECT ref FROM activities ORDER BY ref").fetchone()[0], ref)
                 self.assertEqual(db.execute("SELECT redacted FROM activities WHERE ref=?", (deleted,)).fetchone()[0], 1)
                 self.assertFalse(db.execute("SELECT 1 FROM memory_analysis").fetchone())

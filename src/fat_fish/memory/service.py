@@ -15,7 +15,7 @@ import unicodedata
 
 from fat_fish.communication.model import identifier
 from fat_fish.memory.activity import ActivityKind, ActivityState, TRANSITIONS
-from fat_fish.memory import card
+from fat_fish.memory import card, public_experience
 from fat_fish.memory.projections import MemoryProjections, SCHEMA as PROJECTION_SCHEMA
 from fat_fish.memory.experience import contains_secret, sensitive_information
 
@@ -127,7 +127,7 @@ def validate_erasures(records):
         if not isinstance(address, list) or len(address) != 2 or encode(address) != scope:
             raise ValueError("Invalid erased memory scope")
         kind, subject = address
-        if kind not in {"private", "group"} or not isinstance(subject, str) or not subject:
+        if kind not in {"private", "group", "agent-public"} or not isinstance(subject, str) or not subject:
             raise ValueError("Invalid erased memory scope")
         validated.append((scope, digest))
     return validated
@@ -183,12 +183,12 @@ class MemoryService:
 
     @staticmethod
     def _migrate(db):
-        if db.execute("PRAGMA user_version").fetchone()[0] == 17:
+        if db.execute("PRAGMA user_version").fetchone()[0] == 18:
             return
         db.execute("PRAGMA journal_mode=WAL").fetchone()
         db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if not 0 <= version <= 17:
+        if not 0 <= version <= 18:
             raise ValueError("Unsupported memory database version")
         if version == 0:
             for statement in SCHEMA.strip().split(";"):
@@ -361,7 +361,11 @@ class MemoryService:
                 END""")
             db.execute("""UPDATE memory_analysis SET state='pending',lease=NULL,available=0
                 WHERE state='running' AND released IS NULL""")
-            db.execute("PRAGMA user_version=17")
+            version = 17
+        if version == 17:
+            for statement in public_experience.SCHEMA:
+                db.execute(statement)
+            db.execute("PRAGMA user_version=18")
         db.commit()
 
     def backfill_cards(self, owner_id, check_enabled, *, limit=200):
@@ -398,7 +402,7 @@ class MemoryService:
             access.require(write=True, moderate=moderate)
 
     def record(self, access, activity, *, producer="core", source=None, approval=None,
-               consume_approval=False, turn_id=None, write_limit=None, card_capture=None, analyze=False, after_reply=False, experience=None, timeout=10):
+               consume_approval=False, turn_id=None, write_limit=None, card_capture=None, analyze=False, after_reply=False, experience=None, public_material=None, timeout=10):
         access.require(write=True)
         identifier(producer)
         scope = access.scope.storage_key
@@ -501,6 +505,13 @@ class MemoryService:
                 self.projections.publish_experience(access, agent, receipt, ref, visibility=visibility,
                                                     verify_public=verify_public, _db=db, _origin=origin)
             access.require(write=True)
+            if public_material is not None:
+                agent, material = public_material
+                if (activity.kind not in (ActivityKind.READ, ActivityKind.BROWSE)
+                        or activity.state is not ActivityState.OBSERVED or not activity.evidence):
+                    raise PermissionError("Public material requires an observed read receipt")
+                public_experience.write(db, agent, material, activity.occurred, digest)
+                access.require(write=True)
             return ref, True
 
     @staticmethod
@@ -832,6 +843,10 @@ class MemoryService:
             for scope in scopes:
                 self._mark_erasure(db, scope)
                 erased = {row[0] for row in db.execute("SELECT digest FROM memory_erasures WHERE scope=?", (scope,))}
+                kind, subject = json.loads(scope)
+                if kind == "agent-public":
+                    public_experience.replay(db, subject, erased)
+                    continue
                 self.projections.replay(db, scope, erased)
                 inbound = db.execute("""SELECT ref,actor,event_id FROM activities WHERE scope=? AND producer='core'
                     AND kind='message_received' AND redacted=0""", (scope,)).fetchall()
@@ -1078,6 +1093,8 @@ class MemoryService:
                 "capacity_levels": dict(db.execute("SELECT level,COUNT(*) FROM memory_capacity_status GROUP BY level")),
                 "analysis": dict(db.execute("""SELECT CASE WHEN state='pending' AND released IS NULL
                     THEN 'awaiting_reply' ELSE state END AS phase,count(*) FROM memory_analysis GROUP BY phase""")),
+                "public_experiences": db.execute("SELECT count(*) FROM memory_public_content").fetchone()[0],
+                "public_experience_index": dict(db.execute("SELECT space,count(*) FROM memory_public_vectors GROUP BY space")),
                 "experience_index": dict(db.execute("SELECT model,count(*) FROM memory_experience_vectors GROUP BY model")),
                 "analysis_usage_utc": [dict(row) for row in db.execute(
                     "SELECT * FROM memory_analysis_usage ORDER BY day DESC LIMIT 7")],

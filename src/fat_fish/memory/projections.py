@@ -8,7 +8,7 @@ import re
 from uuid import uuid4
 
 from fat_fish.communication.model import identifier
-from fat_fish.memory import card
+from fat_fish.memory import card, public_experience
 from fat_fish.memory.activity import ActivityKind, ActivityState
 from fat_fish.memory.experience import sensitive_information
 
@@ -261,6 +261,12 @@ class MemoryProjections:
                         WHERE pinned=0 AND first_meet=0 AND initial=0 AND hidden=0 AND kind<>'merged' AND id IN (
                         SELECT card FROM memory_card_sources WHERE ref=?)""",
                                (round(proposal["importance"] * 100), round(proposal["emotion"] * 24), ref))
+                elif kind == "expression_alias":
+                    alias, canonical = proposal["alias"], proposal["canonical"]
+                    if (access.scope.kind == "group" and alias in evidence["summary"]
+                            and canonical in evidence["summary"]):
+                        db.execute("INSERT OR IGNORE INTO memory_group_alias VALUES (?,?,?)",
+                                   (ref, alias, canonical))
                 elif kind == "expression":
                     if access.scope.kind == "group" and proposal["expression"] in evidence["summary"]:
                         db.execute("INSERT OR IGNORE INTO memory_group_expression VALUES (?,?,?)",
@@ -367,11 +373,28 @@ class MemoryProjections:
         access.require_recall()
         with self.service.transaction() as db:
             epoch = self.epoch(db)
+            alias_evidence = db.execute("""SELECT DISTINCT g.alias,g.canonical,a.actor,a.source,
+                    CAST(a.occurred/86400 AS INTEGER) AS day
+                FROM memory_group_alias g JOIN activities a USING(ref)
+                WHERE a.scope=? AND a.redacted=0 AND a.occurred>=? AND instr(?,g.alias)>0""",
+                (access.scope.storage_key, self.service.clock() - 60 * 86400, query)).fetchall()
+            aliases = {}
+            for row in alias_evidence:
+                if source_allowed(row["actor"], access.scope.storage_key, row["source"]):
+                    aliases.setdefault(row["alias"], {}).setdefault(row["canonical"], []).append(row)
+            proven = {}
+            for alias, targets in aliases.items():
+                if len(targets) == 1:
+                    canonical, rows = next(iter(targets.items()))
+                    if len({row["actor"] for row in rows}) >= 2 and len({row["day"] for row in rows}) >= 2:
+                        proven[alias] = canonical
             evidence = db.execute("""SELECT DISTINCT g.expression,g.meaning,a.actor,a.source,CAST(a.occurred/86400 AS INTEGER) AS day
                 FROM memory_group_expression g JOIN activities a USING(ref)
-                WHERE a.scope=? AND a.redacted=0 AND a.occurred>=? AND instr(?,g.expression)>0
+                WHERE a.scope=? AND a.redacted=0 AND a.occurred>=?
+                  AND (instr(?,g.expression)>0 OR g.expression IN (SELECT value FROM json_each(?)))
                 ORDER BY day DESC""",
-                (access.scope.storage_key, self.service.clock() - 60 * 86400, query)).fetchall()
+                (access.scope.storage_key, self.service.clock() - 60 * 86400, query,
+                 json.dumps(sorted(set(proven.values()))))).fetchall()
         candidates = {}
         for row in evidence:
             if source_allowed(row["actor"], access.scope.storage_key, row["source"]):
@@ -383,6 +406,10 @@ class MemoryProjections:
             meaning, rows = next(iter(meanings.items()))
             if len({row["actor"] for row in rows}) >= 2 and len({row["day"] for row in rows}) >= 2:
                 result.append({"expression": expression, "meaning": meaning})
+        meanings = {item["expression"]: item["meaning"] for item in result}
+        for alias, canonical in proven.items():
+            if alias not in candidates and canonical in meanings:
+                result.append({"expression": alias, "meaning": meanings[canonical]})
         access.require_recall()
         with self.service.transaction() as db:
             return result[:4] if self.epoch(db) == epoch else []
@@ -403,6 +430,65 @@ class MemoryProjections:
                 ON CONFLICT(agent,receipt,model) DO UPDATE SET vector=excluded.vector""",
                 (model,json.dumps(vector),agent,row["receipt"],row["ref"],row["summary"]))
 
+    def public_index_rows(self, agent, space, dimensions, limit=4):
+        with self.service.transaction(timeout=0.25) as db:
+            active = public_experience.recent(db, agent)
+            ids = json.dumps([row["content_id"] for row in active])
+            return db.execute("""SELECT p.* FROM memory_public_content p
+                LEFT JOIN memory_public_vectors v ON v.agent=p.agent AND v.content_id=p.content_id AND v.space=?
+                WHERE p.agent=? AND p.content_id IN (SELECT value FROM json_each(?))
+                AND (p.occurred>=? OR p.pinned=1 OR p.importance>=0.75)
+                AND (v.vector IS NULL OR CASE WHEN json_valid(v.vector) THEN json_array_length(v.vector)<>? ELSE 1 END)
+                ORDER BY p.pinned DESC,p.importance DESC,p.occurred DESC,p.content_id LIMIT ?""",
+                (space,agent,ids,self.service.clock()-180*86400,dimensions,limit)).fetchall()
+
+    def store_public_vector(self, row, space, vector):
+        with self.service.transaction(write=True, timeout=0.25) as db:
+            db.execute("""INSERT INTO memory_public_vectors
+                SELECT agent,content_id,?,? FROM memory_public_content
+                WHERE agent=? AND content_id=? AND revision=?
+                ON CONFLICT(agent,content_id,space) DO UPDATE SET vector=excluded.vector""",
+                (space,json.dumps(vector),row["agent"],row["content_id"],row["revision"]))
+
+    def maintain_public(self, agent):
+        with self.service.transaction(write=True, timeout=0.25) as db:
+            db.execute("""DELETE FROM memory_public_vectors WHERE agent=? AND content_id IN (
+                SELECT v.content_id FROM memory_public_content p
+                JOIN memory_public_vectors v USING(agent,content_id)
+                WHERE p.agent=? AND p.occurred<? AND p.pinned=0 AND p.importance<0.75
+                ORDER BY p.occurred LIMIT 32)""", (agent,agent,self.service.clock()-180*86400))
+
+    def set_public_focus(self, agent, topic, action, authorized):
+        identifier(agent)
+        if not authorized():
+            raise PermissionError("Focus feedback requires current owner authority")
+        with self.service.transaction(write=True) as db:
+            if not authorized():
+                raise PermissionError("Focus feedback authorization changed")
+            return public_experience.set_focus(db, agent, topic, action, self.service.clock())
+
+    def pin_public(self, agent, content_id, authorized):
+        identifier(agent)
+        identifier(content_id)
+        if not authorized():
+            raise PermissionError("Public experience pin requires current owner authority")
+        with self.service.transaction(write=True) as db:
+            if not authorized():
+                raise PermissionError("Public experience pin authorization changed")
+            if not db.execute("UPDATE memory_public_content SET pinned=1 WHERE agent=? AND content_id=?",
+                              (agent,content_id)).rowcount:
+                raise ValueError("Public experience not found")
+
+    def forget_public(self, agent, content_id, authorized):
+        identifier(agent)
+        identifier(content_id)
+        if not authorized():
+            raise PermissionError("Public experience deletion requires current owner authority")
+        with self.service.transaction(write=True) as db:
+            if not authorized():
+                raise PermissionError("Public experience deletion authorization changed")
+            public_experience.forget(db, agent, content_id)
+
     def snapshot(self, access, agent, source_allowed, query, *, public_only=False, model=None, vector=None):
         from fat_fish.memory.semantic import stored_vector
         from fat_fish.memory.service import bm25, normalize, terms as tokenize
@@ -414,14 +500,35 @@ class MemoryProjections:
                  if len(word) > 1 or ord(word) >= 0x3400}
         with self.service.transaction() as db:
             epoch = self.epoch(db)
-            projections = db.execute("""SELECT a.ref,a.scope,a.actor,a.kind,a.state,a.summary,a.occurred,a.source,
+            public_recent = public_experience.recent(db, agent)
+            public_rows = public_experience.search(db, agent, tokenize(query), model, public_recent)
+            interests = public_experience.interests(public_recent, self.service.clock())
+            for item in interests:
+                focus = db.execute("""SELECT state,revision FROM memory_public_focus
+                    WHERE agent=? AND topic=? ORDER BY revision DESC LIMIT 1""",
+                    (agent,item["topic"].strip().casefold())).fetchone()
+                if focus:
+                    item["focus_state"] = focus["state"]
+                    item["focus_revision"] = focus["revision"]
+            projections = db.execute("""WITH candidates AS (
+                SELECT ref FROM (
+                    SELECT a.ref FROM activities a INDEXED BY activities_scope_time
+                    JOIN memory_agent_experience e ON e.ref=a.ref
+                    WHERE ? AND a.scope=? AND a.actor=? AND e.agent=? AND e.visibility='source' AND a.redacted=0
+                    ORDER BY a.occurred DESC,a.ref DESC LIMIT 96)
+                UNION ALL
+                SELECT ref FROM (
+                    SELECT ref FROM memory_agent_experience
+                    WHERE agent=? AND visibility='public' ORDER BY ref DESC LIMIT 96)
+                )
+                SELECT a.ref,a.scope,a.actor,a.kind,a.state,a.summary,a.occurred,a.source,
                     e.visibility,e.authority,v.vector
-                FROM memory_agent_experience e JOIN activities a USING(ref)
+                FROM candidates c JOIN activities a USING(ref)
+                JOIN memory_agent_experience e ON e.ref=a.ref AND e.agent=?
                 LEFT JOIN memory_experience_vectors v ON v.agent=e.agent AND v.receipt=e.receipt AND v.model=?
-                WHERE e.agent=? AND a.redacted=0 AND a.summary NOT LIKE '通信适配器已返回%'
-                AND (e.visibility='public' OR (? AND a.scope=? AND a.actor=?))
+                WHERE a.redacted=0 AND a.summary NOT LIKE '通信适配器已返回%'
                 ORDER BY a.occurred DESC,a.ref DESC""",
-                (model, agent, not public_only, access.scope.storage_key, access.principal)).fetchall()
+                (not public_only, access.scope.storage_key, access.principal, agent, agent, agent, model)).fetchall()
             themes = [dict(row) for row in db.execute("""SELECT t.theme,t.kind,t.status,t.confidence,a.occurred,
                 a.actor,a.scope,e.authority FROM memory_agent_theme t
                 JOIN memory_agent_experience e USING(agent,receipt) JOIN activities a USING(ref)
@@ -452,6 +559,10 @@ class MemoryProjections:
             profile["familiarity"] = min(1, len(events) / 20)
         authorized = [row for row in projections
                       if source_allowed(row["actor"], row["scope"], row["authority"])]
+        detached = [dict(row) | {"ref": row["content_id"], "kind": "read", "state": "observed",
+                                  "visibility": "public", "summary": row["title"] + "。 " + row["summary"]}
+                    for row in public_rows]
+        authorized.extend(detached)
         texts = [normalize(row["summary"]) for row in authorized]
         lexical = bm25(tokenize(query), texts)
         experiences = []
@@ -461,10 +572,14 @@ class MemoryProjections:
             if not lexical_score and similarity < 0.60 and terms:
                 continue
             recency = 2 ** (-max(0, self.service.clock()-row["occurred"]) / (90*86400))
-            importance = 1.0 if row["state"] == "succeeded" else 0.6
+            detached = isinstance(row, dict)
+            importance = row["importance"] * row["confidence"] if detached else (
+                1.0 if row["state"] == "succeeded" else 0.6)
             score = 0.56*max(0, similarity) + 0.30*lexical_score/(1+lexical_score) + 0.08*recency + 0.06*importance
             item = {key: row[key] for key in ("ref", "kind", "state", "summary", "occurred", "visibility")}
-            item["platform"] = json.loads(row["source"])["platform"]
+            item["platform"] = row["platform"] if detached else json.loads(row["source"])["platform"]
+            if detached:
+                item["revision"] = row["revision"]
             item["reason"] = ("hybrid" if lexical_score else "semantic") if similarity >= .60 else (
                 "lexical-match" if lexical_score else "recent-receipt")
             experiences.append((score, text, item, row))
@@ -473,7 +588,7 @@ class MemoryProjections:
         results = []
         confirmed = lru_cache(maxsize=16)(verify_source)
         for _, text, item, row in experiences:
-            if text not in seen and confirmed(row["actor"], row["scope"], row["authority"]):
+            if text not in seen and (isinstance(row, dict) or confirmed(row["actor"], row["scope"], row["authority"])):
                 seen.add(text)
                 results.append(item)
             if len(results) == 3:
@@ -501,7 +616,8 @@ class MemoryProjections:
         with self.service.transaction() as db:
             if self.epoch(db) != epoch:
                 return {}, [], []
-        return profile, results, relevant_goals[:4]
+        interests = [item for item in interests if item.get("focus_state") != "abandoned"]
+        return profile, results, interests + relevant_goals[:max(0,4-len(interests))]
 
     @staticmethod
     def epoch(db):

@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 from datetime import datetime
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -70,6 +71,8 @@ async def prepare_vectors(dataset, model):
 
 
 def percentile(values, percentile):
+    if not values:
+        return None
     ordered = sorted(values)
     return round(ordered[max(0, math.ceil(len(ordered) * percentile) - 1)], 3)
 
@@ -177,25 +180,32 @@ async def main(workspace):
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--vectors", required=True, type=Path)
+    parser.add_argument("--dataset", type=Path, default=DATASET)
     parser.add_argument("--variants", default="AB")
     args = parser.parse_args()
-    dataset = json.loads(DATASET.read_text(encoding="utf-8"))
+    dataset_bytes = args.dataset.read_bytes()
+    dataset = json.loads(dataset_bytes)
+    dataset_hash = hashlib.sha256(dataset_bytes).hexdigest()
     model = LocalEmbeddingProvider("http://127.0.0.1:6387/v1", "feiyu-bge-small-zh",
                                    "bge-small-zh-v1.5-gguf@5bf683e6", 512, "")
     if args.vectors.exists():
         cache = json.loads(args.vectors.read_text(encoding="utf-8"))
         if cache["version"] != dataset["version"] or cache["model"] != model.revision:
             raise ValueError("Evaluation cache does not match the dataset and model")
+        if cache.get("dataset_sha256", dataset_hash) != dataset_hash:
+            raise ValueError("Evaluation cache does not match the dataset content")
         vectors, latencies = cache["vectors"], cache["embedding_ms"]
     else:
         vectors, latencies = await prepare_vectors(dataset, model)
         args.vectors.write_text(json.dumps({"version": dataset["version"], "model": model.revision,
+                                             "dataset_sha256": dataset_hash,
                                              "vectors": vectors, "embedding_ms": latencies}), encoding="utf-8")
     variants = tuple(args.variants.split(",")) if "," in args.variants else tuple(args.variants)
     rows = await evaluate(dataset, vectors, variants, workspace)
     metrics = {name: {split: summarize([r for r in result if r["split"] == split])
                       for split in ("dev", "validation", "frozen")} for name, result in rows.items()}
-    args.output.write_text(json.dumps({"metrics": metrics, "cases": rows,
+    args.output.write_text(json.dumps({"metrics": metrics, "cases": rows, "dataset_sha256": dataset_hash,
+                                      "model_revision": model.revision, "seed": dataset.get("seed"),
                                       "embedding_p50_ms": percentile(latencies, .5),
                                       "embedding_p95_ms": percentile(latencies, .95)}, ensure_ascii=False,
                                      indent=2), encoding="utf-8")

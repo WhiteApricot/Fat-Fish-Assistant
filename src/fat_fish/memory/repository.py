@@ -71,6 +71,8 @@ class MemoryRepository:
             self._ready = False
             records, mark, _ = self.ledger.read(trusted)
             with self._connect() as db:
+                if db.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
+                    raise sqlite3.OperationalError("Cognitive memory could not enable WAL")
                 initialize(db, mark.installation, uuid.uuid4().hex)
                 if db.execute("PRAGMA foreign_key_check").fetchone():
                     raise LedgerError("Memory database has invalid evidence references")
@@ -379,17 +381,17 @@ class MemoryRepository:
         """Return bounded term hits with scope and active-evidence filtering in SQL."""
         if not query or not 1 <= limit <= 48:
             return ()
-        if not self._gate.acquire(timeout=0.01):
-            raise sqlite3.OperationalError("Memory recall writer-busy budget exhausted")
         deadline = time.monotonic() + 0.10
         candidates = Counter()
-        try:
-            self._require_open()
-            with self._connect(read_only=True) as db:
-                db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 250)
-                for ref in audience.scopes():
-                    for term in query[:12]:
-                        rows = db.execute(f"""SELECT i.id FROM scope s
+        self._require_open()
+        # The posting scan yields only opaque IDs from a committed WAL snapshot.
+        # Readable bodies still come from authorized_documents under the live gate.
+        with self._connect(read_only=True) as db:
+            db.execute("BEGIN")
+            db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 250)
+            for ref in audience.scopes():
+                for term in query[:12]:
+                    rows = db.execute(f"""SELECT i.id FROM scope s
                             JOIN posting p ON p.scope_id=s.id AND p.term=:term
                             JOIN search_doc d ON d.id=p.doc_id AND d.scope_id=s.id
                             JOIN item i ON i.id=d.item_id AND i.current_rev=d.rev
@@ -402,9 +404,7 @@ class MemoryRepository:
                             ORDER BY p.doc_id DESC LIMIT 12""",
                                           {"agent": ref.agent, "kind": ref.kind.value,
                                            "scope": ref.key, "now": now, "term": term})
-                        candidates.update(row[0] for row in rows)
-        finally:
-            self._gate.release()
+                    candidates.update(row[0] for row in rows)
         return self.authorized_documents(audience, now, limit=limit,
                                          item_ids=tuple(item_id for item_id, _ in candidates.most_common(limit)),
                                          deadline=deadline)
@@ -476,11 +476,13 @@ class MemoryRepository:
 
 
     def event_candidates(self, audience: Audience, now: int, *, actor=None, phase=None, limit=48,
-                         preferred_ids=()):
+                         preferred_ids=(), public_only=False):
         """Return only events that support a currently visible revision."""
         if not 1 <= limit <= 48:
             raise ValueError("Invalid event candidate budget")
         allowed = audience.scopes()
+        if public_only:
+            allowed = tuple(scope for scope in allowed if scope.kind == ScopeKind.PUBLIC)
         if not self._gate.acquire(timeout=.01):
             raise sqlite3.OperationalError("Memory event writer-busy budget exhausted")
         deadline = time.monotonic() + .085

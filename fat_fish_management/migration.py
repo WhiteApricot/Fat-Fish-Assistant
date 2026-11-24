@@ -143,7 +143,7 @@ def export(root,record,destination,password):
                 c.atomic(target/'private/MIGRATED-OUT.json',{'time':time.time(),'sha256':result['sha256'],'reason':'Source suspended; activate only one host at a time'})
                 return result
 
-def import_package(root,package,password,confirm_source_offline=False,cache=None,offline=False):
+def import_package(root,package,password,confirm_source_offline=False,cache=None,offline=False,*,memory_controls=None):
     if not confirm_source_offline:raise ValueError('Confirm source remains stopped before importing')
     if c.state(root).get('instance') or (root/'instance').exists():raise ValueError('Target already has an instance; choose a new empty installation root')
     with tempfile.TemporaryDirectory(prefix='migration-import-',dir=root) as tmp:
@@ -163,7 +163,9 @@ def import_package(root,package,password,confirm_source_offline=False,cache=None
             software={item['name']:item['commit'] for item in c.read(release/'release.json')['vendor']}
             if manifest.get('software')!=software:raise ValueError('软件/数据版本不兼容：迁移已拒绝，没有创建目标实例。')
             destination=root/'instance'
-            c.invoke(root,c.chat_python(root,record),'instance.py','restore','--snapshot',snapshot,'--destination',destination,'--release',release,'--installation-root',root)
+            options = ('--memory-controls', memory_controls.resolve(strict=True)) if memory_controls else ()
+            c.invoke(root,c.chat_python(root,record),'instance.py','restore','--snapshot',snapshot,
+                     '--destination',destination,'--release',release,'--installation-root',root,*options)
             record['instance']='instance'
             for name in ['embedding']:
                 if record['components'].get(name,{}).get('installed'):record['components'][name]['path']='instance'

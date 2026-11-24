@@ -37,7 +37,8 @@ class BiliWhaleObservations:
         event_id = hashlib.sha256(key(command, receipt_id, bvid).encode()).hexdigest()
         label = {"browse": "浏览发现", "video-content": "读取视频", "diary": "记录日记"}[command]
         return self.registry.observe(self.handle, command, event_id=event_id, occurred=occurred,
-                                     summary=f"{label} {bvid} {title[:300]}", evidence=evidence)
+                                     summary=f"{label} {bvid} {title[:300]}", evidence=evidence,
+                                     public_id="bilibili:" + bvid if command == "video-content" else None)
 
 
     def submit_diary(self, row, *, receipt_id, evidence):

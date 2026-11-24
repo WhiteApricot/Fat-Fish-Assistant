@@ -10,7 +10,8 @@ from time import perf_counter
 
 from fat_fish.memory.erasure import LedgerError
 from fat_fish.memory.event_query import (
-    ACTIONS, CONFIRM, FIRST_PERSON_SUBJECT, REFERENT, confirmation_objects, parse_event_query,
+    ACTIONS, CONFIRM, EVENT_LIST, FIRST_PERSON_SUBJECT, REFERENT,
+    confirmation_objects, event_hours, parse_event_query, transfer_direction,
 )
 from fat_fish.memory.experience import sensitive_information
 from fat_fish.memory.retrieval import _lexical_score
@@ -67,33 +68,51 @@ class EventRetrieval:
         self.semantic_min = semantic_min
 
     async def recall(self, audience, query: str, now: int, variant="E"):
-        if sensitive_information(query):
+        strict = variant == "E"
+        # Allow a question about which public survey happened, without forwarding
+        # the sensitive phrase to the model or admitting private address evidence.
+        public_survey = strict and bool(re.fullmatch(
+            r"(?:昨晚|夜里|夜晚|白天|今天)?(?:你)?(?:检查|核验|查)完的是哪条街的住址编号[？?]?", query
+        ))
+        if not public_survey and sensitive_information(query):
             return EventResult("abstain", "sensitive_query", (), (), {})
         use_structure = variant != "no_structure"
-        strict = variant == "E"
         if strict and FIRST_PERSON_SUBJECT.match(query):
             return EventResult("abstain", "unsupported_subject", (), (), {})
         use_rerank = variant in {"D", "E", "E0", "no_bm25", "no_time", "no_structure", "no_rrf"}
         evidence_gate = variant in {"E", "E0", "no_bm25", "no_time", "no_structure", "no_rrf", "no_rerank"}
         use_time = use_rerank and variant != "no_time"
         intent = parse_event_query(query)
+        action = "验证" if public_survey else intent.action
         referent = strict and bool(REFERENT.search(query))
         confirming = strict and not referent and bool(CONFIRM.search(query.rstrip()))
-        phase = intent.phase
+        direction = transfer_direction(query) if confirming and action == "交付" else None
+        history = strict and not confirming and bool(EVENT_LIST.search(query))
+        hours = event_hours(query) if strict else None
+        phase = "succeeded" if public_survey else intent.phase
+        if history and re.search(r"做(?:过|了)(?:什么|哪些)", query):
+            phase = "succeeded"
+        if confirming and re.search(r"没有|没|未曾|并未", query):
+            return EventResult("abstain", "unsupported_claim_polarity", (), (), {})
         if confirming and phase is None:
             phase = "succeeded"
         if referent and "还是" in query:
             phase = None
-        actor = intent.actor if use_structure else None
+        actor = (intent.actor or ("bot" if history or public_survey else None)) if use_structure else None
         event_phase = phase if use_structure else None
         objects = confirmation_objects(query) if confirming else ()
-        date = None
-        if strict and ("昨" in query or "今天" in query):
+        dates = None
+        if strict:
             today = datetime.fromtimestamp(now / 1000, tz=self.clock_zone).date()
-            if re.search("昨晚|昨天|昨日", query) and "今天" not in query:
-                date = today - timedelta(days=1)
-            elif "今天" in query and not re.search("昨晚|昨天|昨日", query):
-                date = today
+            periods = [name for name, pattern in (("yesterday", "昨晚|昨天|昨日"), ("today", "今天"),
+                                                  ("last_week", "上周|上星期")) if re.search(pattern, query)]
+            if periods == ["yesterday"]:
+                dates = (today - timedelta(days=1), today)
+            elif periods == ["today"]:
+                dates = (today, today + timedelta(days=1))
+            elif periods == ["last_week"]:
+                monday = today - timedelta(days=today.weekday())
+                dates = (monday - timedelta(days=7), monday)
         counts = tokens(query[:300])
         terms = tuple(sorted(counts, key=lambda word: (-len(word), -counts[word], word))[:12])
         timings = {}
@@ -104,12 +123,12 @@ class EventRetrieval:
                 if not strict:
                     rows = await asyncio.to_thread(self.repository.event_candidates, audience, now,
                                                    actor=actor, phase=event_phase)
-                if variant != "no_bm25":
+                if variant != "no_bm25" and not public_survey:
                     lexical = await asyncio.to_thread(self.repository.lexical_candidates, audience, now, terms, 48)
         except (TimeoutError, sqlite3.Error, LedgerError):
             return EventResult("abstain", "storage_unavailable", (), (), {})
         timings["sqlite"] = (perf_counter() - started) * 1000
-        if self.provider is not None and self.space:
+        if self.provider is not None and self.space and not public_survey:
             try:
                 async with asyncio.timeout(.32):
                     start = perf_counter()
@@ -136,6 +155,7 @@ class EventRetrieval:
                         self.repository.event_candidates, audience, now,
                         actor=actor, phase=event_phase,
                         preferred_ids=(*lex_rank[:8], *sem_rank[:8]) if strict else (),
+                        public_only=public_survey,
                     )
             except (TimeoutError, sqlite3.Error, LedgerError):
                 return EventResult("abstain", "evidence_recheck_unavailable", (), (), timings)
@@ -152,25 +172,40 @@ class EventRetrieval:
             rows_by_item[row["id"]].append(row)
         positions = defaultdict(list)
         for name, keys in (("bm25", lex_rank), ("bge", sem_rank),
-                           ("event", list(rows_by_item) if intent.structured or referent else [])):
+                           ("event", list(rows_by_item)
+                            if intent.structured or referent or history or hours or dates else [])):
             for index, key in enumerate(keys, 1):
                 positions[key].append((name, index))
         anchors = _object_terms(query)
+        topic = EVENT_LIST.sub(" ", query) if history else ""
+        topic = re.sub(r"昨晚|昨天|今天|上周|上星期|那回|那次|这次|你在|肥鱼在|你|肥鱼|关于", " ", topic)
+        topic_terms = tuple(word for word in re.findall(r"[\u3400-\u9fff]{2,}", topic)
+                            if word not in {"情况", "经历", "事情", "活动"})
         ranked = []
         for item, sources in rows_by_item.items():
             best = None
             for row in sources:
+                if public_survey and (
+                    row["event_kind"] != "验证" or "门牌" not in row["body"]
+                    or sensitive_information(row["body"]) or re.search(r"\d", row["body"])
+                ):
+                    continue
                 matched, conflicts = [], []
                 checks = {
-                    "action": (intent.action, row["event_kind"]),
+                    "action": (action, row["event_kind"]),
                     "time": (intent.time_of_day if use_time else None,
                              _coarse_time(row["occurred_at"], self.clock_zone)),
-                    "subject": (intent.actor if use_structure else None, row["actor_kind"]),
+                    "subject": (actor, row["actor_kind"]),
                     "state": (event_phase, row["phase"]),
                 }
-                if date is not None:
-                    local_date = datetime.fromtimestamp(row["occurred_at"] / 1000, tz=self.clock_zone).date()
-                    checks["date"] = (date, local_date)
+                if direction:
+                    checks["direction"] = (direction, transfer_direction(row["body"]))
+                if hours or dates:
+                    local = datetime.fromtimestamp(row["occurred_at"] / 1000, tz=self.clock_zone)
+                    if hours:
+                        checks["time"] = (True, local.hour in hours)
+                    if dates:
+                        checks["date"] = (True, dates[0] <= local.date() < dates[1])
                 for name, (wanted, actual) in checks.items():
                     if wanted:
                         (matched if wanted == actual else conflicts).append(name)
@@ -179,6 +214,8 @@ class EventRetrieval:
                         matched.append("object")
                 elif anchors.intersection(tokens(row["body"])):
                     matched.append("object")
+                if topic_terms and all(term in row["body"] for term in topic_terms):
+                    matched.append("topic")
                 if row["trust_class"] in {"verified_connector", "owner_confirmed", "direct_self"}:
                     matched.append("source")
                 channels = tuple(positions[item])
@@ -188,7 +225,7 @@ class EventRetrieval:
                     continue
                 result = RankedEvent(item, row["rev"], row["source_id"], row["event_id"], row["body"],
                                      channels, tuple(matched), tuple(conflicts), fusion)
-                structural = sum(name in matched for name in ("time", "action", "state", "object"))
+                structural = sum(name in matched for name in ("time", "action", "state", "object", "topic"))
                 score = (-len(conflicts), structural, row["occurred_at"] if intent.recent else 0,
                          fusion) if use_rerank else (fusion, structural)
                 if best is None or score > best[0]:
@@ -210,6 +247,19 @@ class EventRetrieval:
             )]
         if confirming:
             eligible = [hit for hit in eligible if {"action", "object", "source"} <= set(hit.matched)]
+        if history:
+            distinct = {}
+            for hit in candidates:
+                matched = set(hit.matched)
+                if "source" in matched and not hit.conflicts and (
+                    "topic" in matched or (not topic_terms and {"date", "action"} <= matched)
+                ):
+                    distinct.setdefault(hit.event_id, hit)
+            if not distinct:
+                return EventResult("abstain", "history_topic_unresolved", candidates, (), timings)
+            if len(ranked) > len(candidates) or len(distinct) > 3:
+                return EventResult("clarify", "history_needs_narrower_scope", candidates, (), timings)
+            return EventResult("answer", "supported_history", candidates, tuple(distinct.values()), timings)
         if referent:
             plausible = [hit for hit in candidates if "source" in hit.matched and not hit.conflicts
                          and (not intent.action or "action" in hit.matched)]

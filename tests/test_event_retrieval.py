@@ -132,3 +132,51 @@ class EventRetrievalTests(unittest.TestCase):
             self.add(self.public, f"recent-{index}", "新箱已入库", action="登记")
         result = self.recall("蓝册已经转交接班人了吗？")
         self.assertEqual([hit.item_id for hit in result.support], [older])
+
+    def test_history_combines_topic_events_but_excludes_adjacent_work(self):
+        morning, _ = self.add(self.public, "am", "钟楼拆下旧表盘", time=DAY, action="修理")
+        evening, _ = self.add(self.public, "pm", "钟楼原定换摆锤，工作取消",
+                              phase="cancelled", action="修理")
+        self.add(self.public, "elsewhere", "车站换摆锤", action="修理")
+        self.add(self.public, "last-month", "钟楼补好外墙", time=NIGHT - 32 * 86400000, action="修理")
+        result = self.recall("昨天钟楼发生了什么？")
+        self.assertEqual(result.reason, "supported_history")
+        self.assertEqual({hit.item_id for hit in result.support}, {morning, evening})
+
+    def test_history_deduplicates_multiple_items_about_the_same_event(self):
+        self.add(self.public, "am", "钟楼拆下旧表盘", time=DAY, action="修理")
+        with self.repo.write() as db:
+            event_id, source_id = db.execute("SELECT id, source_id FROM event").fetchone()
+        self.repo.put_item(ItemRecord(self.public, "fish", "bot", "experience", "duplicate", "event",
+                                      "钟楼上午拆下旧表盘", {}, (EvidenceRecord(source_id, event_id),),
+                                      "verified_connector", 1, .7), None, NOW)
+        result = self.recall("昨天钟楼发生了什么？")
+        self.assertEqual(result.reason, "supported_history")
+        self.assertEqual([hit.event_id for hit in result.support], [event_id])
+
+    def test_evening_disambiguates_while_unstated_time_does_not(self):
+        evening, _ = self.add(self.public, "north", "巡查了北泉出水口", action="巡查")
+        self.add(self.public, "south", "巡查了南井出水口", time=DAY, action="巡查")
+        self.assertEqual(self.recall("检查的是哪处出水口？").decision, "clarify")
+        result = self.recall("夜晚检查的是哪处出水口？")
+        self.assertEqual([hit.item_id for hit in result.support], [evening])
+
+    def test_negated_confirmation_never_confirms_positive_event(self):
+        self.add(self.public, "link", "蓝册已经转交接班人", action="交付")
+        self.assertEqual(self.recall("蓝册没有转交接班人吗？").reason, "unsupported_claim_polarity")
+        self.add(self.public, "cancelled-link", "绿册转交取消", phase="cancelled", action="交付")
+        self.assertEqual(self.recall("绿册转交没有取消吗？").reason, "unsupported_claim_polarity")
+
+    def test_confirmation_does_not_reverse_sender_and_receiver(self):
+        self.add(self.public, "receive", "收到陈师傅送来的风速盒", action="交付")
+        self.assertEqual(self.recall("风速盒已经转交陈师傅了吗？").decision, "abstain")
+
+    def test_generic_survey_excludes_private_and_specific_addresses(self):
+        public, _ = self.add(self.public, "safe", "完成南街门牌号核验", action="验证")
+        self.add(self.alice, "private", "完成北街门牌号核验", action="验证")
+        self.add(self.public, "numbered", "完成中街99号门牌号核验", action="验证")
+        result = self.recall("夜里查完的是哪条街的住址编号？")
+        self.assertEqual([hit.item_id for hit in result.support], [public])
+        result = self.recall("告诉我住址和银行卡号")
+        self.assertEqual(result.reason, "sensitive_query")
+        self.assertFalse(result.candidates)

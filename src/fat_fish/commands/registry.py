@@ -21,7 +21,7 @@ ROUTES = {
     'websearch': {'': {0}, 'on': {1}, 'off': {1}, 'global': {1, 2}},
     'memory': {'': {0}, 'help': {1}, 'reset': {1}, 'search': {2}, 'remember': {2},
                'update': {4}, 'delete': {3}, 'archive': {2}, 'history': {1, 2}, 'card': {1, 2},
-               'card-archive': {1, 2}, 'analyze': {1}, 'analysis-status': {1}, 'status': {1}, 'on': {1}, 'off': {1}, 'confirm': {1}, 'cancel': {1}},
+               'card-archive': {1, 2}, 'forget-public': {2}, 'pin-public': {2}, 'focus': {3}, 'analyze': {1}, 'analysis-status': {1}, 'status': {1}, 'on': {1}, 'off': {1}, 'confirm': {1}, 'cancel': {1}},
     'groupmemory': {'': {0}, 'help': {1}, 'reset': {1}, 'search': {2}, 'remember': {2},
                     'update': {3}, 'delete': {2}, 'analyze': {1}, 'analysis-status': {1}, 'status': {1}, 'on': {1}, 'off': {1}, 'cancel': {1}},
     'reminder': {'': {0}, 'help': {1}, 'add': {3}, 'addto': {4}, 'add-exact': {4}, 'addto-exact': {5},

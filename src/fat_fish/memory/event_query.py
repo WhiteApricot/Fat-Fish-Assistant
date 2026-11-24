@@ -16,6 +16,32 @@ REFERENT = re.compile(r"还是|哪[一]?(?:次|回|款|处|份|批|扇|箱|笔|�
 FIRST_PERSON_SUBJECT = re.compile(r"^\s*(?:请问[，,：:\s]*)?我(?!记得|想问|想知道|听说)")
 LEGACY_CONFIRM = re.compile(r"(?:吧|了吗|过吗|过没有)[？?]?$|是不是")
 HISTORY = re.compile("哪些|有什么|发生过什么|有何|进展|做了什么")
+EVENT_LIST = re.compile(r"发生(?:过|了)?什么|有哪些|做过什么|做了什么|做了哪些|分别做了什么")
+DAY_PARTS = (
+    (r"凌晨", 0, 6), (r"清晨|早晨|早上", 6, 9), (r"上午", 6, 12),
+    (r"中午|正午", 11, 14), (r"下午", 12, 18), (r"傍晚|黄昏", 17, 20),
+    (r"昨晚|昨天晚上|夜晚|夜里|夜间|晚间|晚上|夜班|天黑|天色暗|太阳落山", 18, 6),
+    (r"白天|白日|日间", 6, 18),
+)
+
+
+def transfer_direction(text: str) -> str | None:
+    incoming = bool(re.search(r"收到|收到了|接到|交给你|转交给你|送给你", text))
+    outgoing = bool(re.search(r"送给|送到|转交|交付|交给|交还|归还", text)
+                    and not re.search(r"(?:交给|送给)你", text))
+    if incoming != outgoing:
+        return "incoming" if incoming else "outgoing"
+    return None
+
+
+def event_hours(text: str) -> frozenset[int] | None:
+    """An unspecified or mixed time phrase does not impose a time constraint."""
+    ranges = [(start, end) for pattern, start, end in DAY_PARTS if re.search(pattern, text)]
+    if len(ranges) != 1:
+        return None
+    start, end = ranges[0]
+    return frozenset(hour for hour in range(24)
+                     if (start <= hour < end if start < end else hour >= start or hour < end))
 ACTIONS = {
     "验证": ("验证", "测定", "测完", "标定", "化验", "核验", "核实", "试验", "检测", "评估"),
     "回看": ("回看", "翻出", "翻旧", "旧记录"),

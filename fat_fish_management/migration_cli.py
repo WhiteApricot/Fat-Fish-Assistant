@@ -20,7 +20,7 @@ if __name__=='__main__':
     try:
         with contextlib.redirect_stdout(sys.stderr):
             if args.command=='migration-export':result=migration.export(root,c.state(root),args.destination.resolve(),password)
-            else:result=migration.import_package(root,args.package.resolve(),password,args.confirm_source_offline,args.cache,args.offline)
+            else:result=migration.import_package(root,args.package.resolve(),password,args.confirm_source_offline,args.cache,args.offline,memory_controls=args.memory_controls)
     except (InvalidTag,zipfile.BadZipFile):
         print(json.dumps({'kind':'integrity','user_error':'迁移密码错误或迁移包损坏；没有恢复任何用户数据，请确认密码及文件完整性。'}));raise SystemExit(23)
     except (ValueError,FileExistsError,c.Fault) as exc:
