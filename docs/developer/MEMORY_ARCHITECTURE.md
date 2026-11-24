@@ -24,3 +24,9 @@ FFA-N01 新增同库的经历、画像和后台分析任务。经历依赖已验
 [记忆分析与迁移](MEMORY_ANALYSIS.md) · [记忆桥](../../src/fat_fish/memory/gateway_bridge.py) · [用户指南](../MEMORY.md)
 
 Bot 经历投影现在使用独立的 SQLite 模型空间进行混合召回。维护、权限、降级与版本 17 迁移见[记忆分析与迁移](MEMORY_ANALYSIS.md)。
+
+## 显式经历检索实验
+
+`EventRetrieval` 是独立的实验入口，当前 Gateway 尚未调用。调用方传入由可信准入生成的 `Audience`、问句和检索时刻。SQLite 先限定可见范围，再读取有当前修订和有效支持来源的事件。词法与 BGE 候选按顺位融合。事件发生时间、主体、状态和对象影响排序或阻止回答。等待向量期间若撤回来源，候选发布前的复查会剔除失效事件。结果区分 `answer`、`clarify`、`abstain`，并给出条目修订、事件和证据 ID。
+
+模型超时时可继续使用词法与事件候选。存储或证据复查不可用时返回拒答。该入口仍有错误确认和指代歧义问题。见[认知检索报告](../research/FFA_COGNITIVE_RETRIEVAL_REPORT.md)。
