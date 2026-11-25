@@ -2,7 +2,7 @@
 
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DATABASE_NAME = "ffa-cognitive-memory.sqlite3"
 
 DDL = """
@@ -343,6 +343,35 @@ TRIGGERS = "\n".join(
 )
 
 
+GRAPH_DDL = (
+    """CREATE TABLE memory_node (
+        id INTEGER PRIMARY KEY,
+        scope_id INTEGER NOT NULL REFERENCES scope(id),
+        kind TEXT NOT NULL CHECK (kind IN ('entity','episode')),
+        created_at INTEGER NOT NULL,
+        UNIQUE(scope_id,id)
+    )""",
+    """CREATE TABLE memory_mention (
+        scope_id INTEGER NOT NULL,
+        node_id INTEGER NOT NULL,
+        item_id INTEGER NOT NULL,
+        rev INTEGER NOT NULL,
+        label TEXT NOT NULL CHECK(length(label) BETWEEN 1 AND 64),
+        PRIMARY KEY(item_id,rev,node_id,label),
+        FOREIGN KEY(scope_id,node_id) REFERENCES memory_node(scope_id,id) ON DELETE CASCADE,
+        FOREIGN KEY(scope_id,item_id) REFERENCES item(scope_id,id),
+        FOREIGN KEY(item_id,rev) REFERENCES revision(item_id,rev) ON DELETE CASCADE
+    )""",
+    "CREATE INDEX memory_mention_node ON memory_mention(scope_id,node_id,item_id,rev)",
+    """CREATE TRIGGER cleanup_memory_node AFTER DELETE ON memory_mention
+        BEGIN
+            DELETE FROM memory_node WHERE id=OLD.node_id AND NOT EXISTS (
+                SELECT 1 FROM memory_mention WHERE scope_id=OLD.scope_id AND node_id=OLD.node_id
+            );
+        END""",
+)
+
+
 def initialize(db: sqlite3.Connection, installation: str, database_id: str) -> None:
     """Initialize an empty database. Reject foreign and legacy databases."""
     if db.in_transaction:
@@ -351,7 +380,7 @@ def initialize(db: sqlite3.Connection, installation: str, database_id: str) -> N
     try:
         db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version == SCHEMA_VERSION:
+        if version in (1, SCHEMA_VERSION):
             row = db.execute("SELECT value FROM meta WHERE key='installation'").fetchone()
             if row is None or row[0] != installation:
                 raise ValueError("Memory database installation mismatch")
@@ -373,6 +402,9 @@ def initialize(db: sqlite3.Connection, installation: str, database_id: str) -> N
                 ("ledger_applied_seq", "0"), ("index_generation", "0"),
                 ("policy_generation", "0"), ("search_backend", "posting"),
             ))
+        if version < SCHEMA_VERSION:
+            for statement in GRAPH_DDL:
+                db.execute(statement)
             db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         db.commit()
     except BaseException:

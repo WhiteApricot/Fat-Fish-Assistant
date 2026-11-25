@@ -73,6 +73,9 @@ class GatewayMemory:
         self._capture_queue = asyncio.Queue(maxsize=64)
         self._capture_task = None
         self._capture_dropped = 0
+        self._completed_replies = asyncio.Queue(maxsize=64)
+        self._completed_task = None
+        self._completed_dropped = 0
         self._review_pending = OrderedDict()
         self._analysis_requests = OrderedDict()
 
@@ -258,7 +261,7 @@ class GatewayMemory:
             finally:
                 self._capture_queue.task_done()
 
-    async def prepare(self, event, *, media_ready=None):
+    async def prepare(self, event, *, media_ready=None, defer_capture=False):
         try:
             options = self.options()
             memory_command = self.command(event)
@@ -302,41 +305,77 @@ class GatewayMemory:
             owner = admission.role == Role.OWNER
             direct = access.scope.kind == "private" or message.conversation.bot in message.mentions
             turn = event.get_extra("_ffa_chat_turn")
-            if turn is not None and len(turn.items) > 1 and not command:
-                for part in turn.items:
-                    previous = part.message
-                    if previous.event_id == message.event_id:
-                        continue
-                    body = "收到消息"
-                    if (options.get("capture_text") and not previous.reply_to and not previous.media
-                            and not event.get_extra("_ffa_material") and not sensitive_information(previous.text)):
-                        body = previous.text[:1500]
-                    previous_activity = Activity("in:" + previous.event_id, ActivityKind.MESSAGE_RECEIVED,
-                                                 ActivityState.OBSERVED, previous.timestamp, body,
-                                                 "native-message:" + previous.event_id)
-                    await self._record_chat(access, previous_activity, turn_id=message.event_id)
+            turn_items = tuple(turn.items) if turn is not None else ()
             semantic = self._analysis_enabled(options)
-            eligible = (semantic and options["capture_text"] and not command and not message.reply_to
-                        and not message.media and not event.get_extra("_ffa_material")
-                        and not sensitive_information(message.text) and bool(message.text.strip()) and not GREETING.fullmatch(message.text.strip()))
-            if command:
-                ref, _ = await self._capture_io(self.memory().record, access, activity,
-                                                 turn_id=message.event_id, timeout=2)
+
+            async def persist():
+                if len(turn_items) > 1 and not command:
+                    for part in turn_items:
+                        previous = part.message
+                        if previous.event_id == message.event_id:
+                            continue
+                        body = "收到消息"
+                        if (options.get("capture_text") and not previous.reply_to and not previous.media
+                                and not event.get_extra("_ffa_material") and not sensitive_information(previous.text)):
+                            body = previous.text[:1500]
+                        previous_activity = Activity("in:" + previous.event_id, ActivityKind.MESSAGE_RECEIVED,
+                                                     ActivityState.OBSERVED, previous.timestamp, body,
+                                                     "native-message:" + previous.event_id)
+                        await self._record_chat(access, previous_activity, turn_id=message.event_id)
+                eligible = (semantic and options["capture_text"] and not command and not message.reply_to
+                            and not message.media and not event.get_extra("_ffa_material")
+                            and not sensitive_information(message.text) and bool(message.text.strip()) and not GREETING.fullmatch(message.text.strip()))
+                if command:
+                    ref, _ = await self._capture_io(self.memory().record, access, activity,
+                                                     turn_id=message.event_id, timeout=2)
+                else:
+                    ref, _ = await self._record_chat(access, activity, turn_id=message.event_id,
+                                                     card_capture=(owner, direct), analyze=eligible, after_reply=True)
+                event.set_extra("_ffa_memory_receipt", ref)
+                if (ref and not semantic and safe_input and options["auto_extract"]
+                        and not sensitive_information(message.text)):
+                    candidate = self._extract(message.text)
+                    if candidate:
+                        category, subject, value, importance = candidate
+                        await self._capture_io(self.memory().remember, access, category, subject, value, importance, ref)
+                        event.set_extra("_ffa_auto_fact", normalize(value))
+                    if options["reflect"] and not UNRELIABLE.search(message.text):
+                        self.reflection.observe(access, ref, message.text, message.timestamp)
+
+            if defer_capture and not command:
+                event.set_extra("_ffa_pending_memory_capture", persist)
             else:
-                ref, _ = await self._record_chat(access, activity, turn_id=message.event_id,
-                                                 card_capture=(owner, direct), analyze=eligible, after_reply=True)
-            event.set_extra("_ffa_memory_receipt", ref)
-            if (ref and not semantic and safe_input and options["auto_extract"]
-                    and not sensitive_information(message.text)):
-                candidate = self._extract(message.text)
-                if candidate:
-                    category, subject, value, importance = candidate
-                    await self._capture_io(self.memory().remember, access, category, subject, value, importance, ref)
-                    event.set_extra("_ffa_auto_fact", normalize(value))
-                if options["reflect"] and not UNRELIABLE.search(message.text):
-                    self.reflection.observe(access, ref, message.text, message.timestamp)
+                await persist()
         except (*STORAGE_FAILURES, PermissionError, AttributeError, RuntimeError) as exc:
             logger.warning("FFA memory capture skipped (%s)", type(exc).__name__)
+
+    def enqueue_completed_reply(self, event, replies):
+        """Handoff after the complete AstrBot response; never wait for storage."""
+        persist = event.get_extra("_ffa_pending_memory_capture")
+        event.set_extra("_ffa_pending_memory_capture", None)
+        if persist is None or not replies:
+            return
+        try:
+            self._completed_replies.put_nowait((event, persist, replies))
+        except asyncio.QueueFull:
+            self._completed_dropped += 1
+            logger.warning("FFA completed reply memory queue full")
+            return
+        if self._completed_task is None or self._completed_task.done():
+            self._completed_task = asyncio.create_task(self._flush_completed_replies())
+
+    async def _flush_completed_replies(self):
+        while not self._completed_replies.empty():
+            event, persist, replies = self._completed_replies.get_nowait()
+            try:
+                await persist()
+                for text in replies:
+                    await self.sent(event, streamed_text=text)
+            except (*STORAGE_FAILURES, PermissionError, AttributeError, RuntimeError) as exc:
+                self._completed_dropped += 1
+                logger.warning("FFA completed reply memory rejected (%s)", type(exc).__name__)
+            finally:
+                self._completed_replies.task_done()
 
     @staticmethod
     def _extract(text):
@@ -408,8 +447,14 @@ class GatewayMemory:
     async def provider_retracted(self, notice, principal, allowed):
         room = notice.conversation
         scope = Scope("private", principal) if room.kind is ChatKind.PRIVATE else Scope("group", room.storage_key)
+        turn = self.gateway.chat_turns.active.get((room.storage_key, notice.actor.storage_key))
+        context_digest = None
+        if turn is not None and turn.principal == principal:
+            text = next((item.message.text for item in turn.items if item.message.event_id == notice.event_id), "")
+            if text and not sensitive_information(text):
+                context_digest = MemoryService._retracted_context_digest(room.storage_key, text)
         return await asyncio.to_thread(self.memory().retract_message, scope, principal,
-                                       notice.event_id, allowed)
+                                       notice.event_id, allowed, context_digest=context_digest)
 
     async def provider_sent(self, runtime, actor, room, operation_id, *, proactive):
         options = self.options()
@@ -737,7 +782,9 @@ class GatewayMemory:
             pending = {"index": len(self.index.tasks), "index_retries": len(self.index.backoff),
                        "reflection": len(self.reflection.tasks), "embedding": self.embedding.lane.snapshot(),
                        "experience_semantic_hits": self._semantic_experience_hits,
-                       "capture_retries": self._capture_queue.qsize(), "capture_dropped": self._capture_dropped}
+                       "capture_retries": self._capture_queue.qsize(), "capture_dropped": self._capture_dropped,
+                       "completed_replies": self._completed_replies.qsize(),
+                       "completed_replies_dropped": self._completed_dropped}
             try:
                 failure = self.maintenance_error or self.index.last_failure
                 await asyncio.to_thread(memory.record_maintenance_run, pending, failure)
@@ -745,6 +792,8 @@ class GatewayMemory:
                 logger.warning("FFA maintenance diagnostics deferred (%s)", type(exc).__name__)
 
     async def stop_maintenance(self):
+        if self._completed_task is not None:
+            await asyncio.gather(self._completed_task, return_exceptions=True)
         tasks = (*self.index.tasks.values(), *self.reflection.tasks.values())
         if self._analysis_task is not None:
             tasks += (self._analysis_task,)

@@ -14,7 +14,7 @@ from fat_fish.memory.records import EventRecord, SourceRecord
 from fat_fish.memory.reply_guard import Dependency, ProtectedReply, ReplyStamp
 from fat_fish.memory.retrieval import CognitiveRetrieval
 from fat_fish.memory.semantic_query import RecallDecision, select, understand
-from fat_fish.memory.structured_memory import extract
+from fat_fish.memory.structured_memory import extract, infer_observations
 
 
 class CognitiveMemoryGateway:
@@ -35,32 +35,32 @@ class CognitiveMemoryGateway:
         return Audience(self.agent, principal, self._scope(event.conversation, principal),
                         authorization_revision)
 
-    def on_inbound(self, event: MessageEvent, principal: str, verify) -> bool:
+    def _incoming(self, event, principal):
         scope = self._scope(event.conversation, principal)
-        occurred = int(event.timestamp * 1000)
-        provider = event.conversation.provider
-        source = SourceRecord(scope, event.event_id, "platform_message",
-                              key(provider.platform, provider.instance), "direct_self",
-                              event.event_id, occurred, author=principal)
-        text = event.text[:1500] if event.text and not sensitive_information(event.text) else None
-        return self.queue.offer(EventRecord(source, event.event_id, "inbound", "observed", "user",
-                                            occurred, text, actor_ref=principal), verify)
-
-    async def capture_inbound(self, event: MessageEvent, principal: str, verify) -> int:
-        """Commit admitted private input and its extraction job together."""
-        scope = self._scope(event.conversation, principal)
-        if scope.kind != ScopeKind.PRIVATE:
-            raise PermissionError("Durable chat extraction requires private admission")
         occurred = int(event.timestamp * 1000)
         provider = event.conversation.provider
         source = SourceRecord(scope, event.event_id, "platform_message",
                               key(provider.platform, provider.instance), "direct_self",
                               event.event_id, occurred, author=principal)
         snippet = event.text[:1500] if event.text and not sensitive_information(event.text) else None
-        record = EventRecord(source, event.event_id, "inbound", "observed", "user",
-                             occurred, snippet, actor_ref=principal)
-        return await asyncio.to_thread(self.queue.repository.record_event, record,
-                                       self.queue.clock(), authorize=verify, extract=True)
+        return EventRecord(source, event.event_id, "inbound", "observed", "user",
+                           occurred, snippet, actor_ref=principal)
+
+    def on_inbound(self, event: MessageEvent, principal: str, verify) -> bool:
+        return self.queue.offer(self._incoming(event, principal), verify)
+
+    async def capture_inbound(self, event: MessageEvent, principal: str, verify) -> int:
+        return (await self.capture_completed_turn((event,), principal, verify))[0]
+
+    async def capture_completed_turn(self, events, principal: str, verify):
+        """The caller provides admitted messages only after successful delivery."""
+        events = tuple(events)
+        if not events or any(event.conversation != events[0].conversation or event.sender != events[0].sender
+                             for event in events):
+            raise ValueError("Capture inputs must belong to one admitted turn")
+        records = tuple(self._incoming(event, principal) for event in events)
+        return await asyncio.to_thread(self.queue.repository.record_completed_turn, records,
+                                       self.queue.clock(), authorize=verify)
 
     async def extract_next(self, provider_for, authorize):
         """Process one lease. Provider choice and current admission remain caller-owned."""
@@ -68,17 +68,29 @@ class CognitiveMemoryGateway:
         job = await asyncio.to_thread(repository.claim_extraction, self.queue.clock())
         if job is None:
             return False
+        stage = "authorization"
+        reason = "AuthorizationChanged"
         try:
             if await asyncio.to_thread(authorize, job):
                 async with asyncio.timeout(24):
+                    stage = "extraction"
                     provider = await provider_for(job)
-                    claims = await extract(provider, job["snippet"], job["occurred_at"])
+                    candidates = await asyncio.to_thread(repository.extraction_candidates, job, self.queue.clock())
+                    if not await asyncio.to_thread(authorize, job):
+                        raise PermissionError("Extraction source is no longer authorized")
+                    claims = await extract(provider, job["snippet"], job["occurred_at"], candidates=candidates)
+                    observations = ()
+                    if claims and len(candidates) >= 2 and await asyncio.to_thread(authorize, job):
+                        stage = "observation"
+                        observations = await infer_observations(provider, job["snippet"], candidates)
+                stage = "publication"
                 if await asyncio.to_thread(repository.apply_extraction, job, claims, self.queue.clock(),
-                                           authorize=lambda: authorize(job)):
+                                           authorize=lambda: authorize(job), candidates=candidates,
+                                           observations=observations):
                     return True
-        except (TimeoutError, ValueError, RuntimeError, OSError, sqlite3.Error):
-            pass
-        await asyncio.to_thread(repository.retry_extraction, job, self.queue.clock())
+        except (TimeoutError, ValueError, RuntimeError, OSError, sqlite3.Error) as exc:
+            reason = f"{stage}:{type(exc).__name__}"
+        await asyncio.to_thread(repository.retry_extraction, job, self.queue.clock(), reason=reason)
         return True
 
     async def semantic_snapshot(self, event, principal, authorization_revision, history_revision,
@@ -105,7 +117,13 @@ class CognitiveMemoryGateway:
                                                         self.queue.clock(), item_ids=tuple(expected))
                     by_id = {row["id"]: row for row in documents
                              if expected[row["id"]] == (row["rev"], row["content_hash"])}
-                    candidates[target] = tuple(by_id[item] for item in expected if item in by_id)
+                    ordered = tuple(by_id[item] for item in expected if item in by_id)
+                    try:
+                        related = await asyncio.to_thread(repository.graph_candidates, audience, self.queue.clock(),
+                                                          tuple(row["id"] for row in ordered[:4]), limit=4)
+                    except (sqlite3.Error, LedgerError):
+                        related = ()
+                    candidates[target] = (*ordered, *(row for row in related if row["id"] not in by_id))
                 if not all(candidates.values()):
                     available = tuple(row for rows in candidates.values() for row in rows)
                     return RecallDecision("abstain", available, ()), empty_stamp

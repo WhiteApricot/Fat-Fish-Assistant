@@ -20,6 +20,7 @@ class DualPlatformTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.gateway = PlatformGateway(private=Path(self.tmp.name))
+        self.addAsyncCleanup(self.gateway.memory_bridge.stop_maintenance)
         self.runtime = self.gateway.communication()
         self.ids = self.runtime.identities
         self.owner = Account(QQ, '31')

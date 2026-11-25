@@ -970,6 +970,7 @@ class ChatMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.private = Path(tmp.name)
         self.config = self.private / "ffa-memory.json"
         self.gateway = PlatformGateway(private=self.private)
+        self.addAsyncCleanup(self.gateway.memory_bridge.stop_maintenance)
         self.runtime = self.gateway.communication()
         self.lark = ProviderId("lark", "office")
         for address in (QQ, self.lark):
@@ -1070,17 +1071,46 @@ class ChatMemoryTests(unittest.IsolatedAsyncioTestCase):
         await self.gateway.run(replay, reply)
         self.assertEqual(replay.sent, [])
 
-    async def test_sensitive_chat_is_metadata_only_and_failed_send_is_not_history(self):
+    async def test_sensitive_chat_waits_for_every_send_before_metadata_capture(self):
         self.config.write_text('{"schema":1,"enabled":true,"capture_text":true}')
         value = "fake-" + "a" * 20
         event = NativeEvent(sender=self.lark_user.subject, text="password: " + value)
+        bridge = self.gateway.memory_bridge
+
         async def downstream():
-            raise ConnectionError("adapter disconnected")
+            access = event.get_extra("_ffa_memory_access")
+            self.assertEqual(bridge.memory().history(access), [])
+            await event.send("part one")
+            self.assertEqual(bridge.memory().history(access), [])
+            await event.send("part two")
+            self.assertEqual(bridge.memory().history(access), [])
+
         await self.gateway.run(event, downstream)
-        access = event.get_extra("_ffa_memory_access")
-        history = self.gateway.memory_bridge.memory().history(access)
-        self.assertEqual([row["kind"] for row in history], ["message_received"])
+        await bridge._completed_replies.join()
+        history = bridge.memory().history(event.get_extra("_ffa_memory_access"))
+        self.assertCountEqual([row["kind"] for row in history],
+                              ["message_received", "message_sent", "message_sent"])
         self.assertNotIn(value, json.dumps(history))
+
+    async def test_incomplete_multisegment_reply_is_not_persisted(self):
+        self.config.write_text('{"schema":1,"enabled":true,"capture_text":true}')
+        event = NativeEvent(sender=self.lark_user.subject, text="实验室仪表校准")
+        native_send = event.send
+
+        async def fail_second(part):
+            return False if part == "failed part" else await native_send(part)
+
+        event.send = fail_second
+
+        async def downstream():
+            await event.send("part one")
+            await event.send("failed part")
+
+        await self.gateway.run(event, downstream)
+        bridge = self.gateway.memory_bridge
+        await bridge._completed_replies.join()
+        self.assertEqual(event.sent, ["part one"])
+        self.assertEqual(bridge.memory().history(event.get_extra("_ffa_memory_access")), [])
 
     async def test_outbound_revalidates_after_adapter_wait_and_reconciles_unknown(self):
         provider = self.runtime.connections[self.lark].provider

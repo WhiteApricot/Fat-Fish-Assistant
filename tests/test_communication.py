@@ -159,6 +159,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.gateway = PlatformGateway(private=Path(tmp.name))
+        self.addAsyncCleanup(self.gateway.memory_bridge.stop_maintenance)
         self.gateway.chat_settings.save({"global_features": {"naturalcommand": True}})
         self.runtime = self.gateway.communication()
         self.ids = self.runtime.identities
@@ -184,6 +185,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
             await event.send("response")
 
         await self.gateway.run(event, downstream)
+        await self.gateway.memory_bridge._completed_replies.join()
         return event
 
     async def test_command_receipts_reach_later_chat(self):
@@ -1126,6 +1128,7 @@ class VerifiedIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.gateway.retract(owner.provider, native))
 
         restarted = PlatformGateway(private=self.gateway.path.parent)
+        self.addAsyncCleanup(restarted.memory_bridge.stop_maintenance)
         restarted.communication().register(RetractionProvider(owner.provider))
         await restarted.communication().enable(owner.provider)
         self.gateway = restarted
@@ -1475,6 +1478,7 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
         private = Path(tmp.name)
         self.private = private
         self.gateway = PlatformGateway(private=private)
+        self.addAsyncCleanup(self.gateway.memory_bridge.stop_maintenance)
         self.runtime = self.gateway.communication()
         self.ids = self.runtime.identities
         self.owner = Account(QQ, "31")

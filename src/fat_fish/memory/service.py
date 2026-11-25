@@ -700,7 +700,7 @@ class MemoryService:
                              (scope.storage_key, principal, "in:" + event_id)).fetchone()
         return bool(row and json.loads(row["source"]) == asdict(source))
 
-    def retract_message(self, scope, principal, event_id, allowed):
+    def retract_message(self, scope, principal, event_id, allowed, *, context_digest=None):
         """Remember a verified withdrawal even when the inbound evidence has not arrived."""
         if not allowed():
             raise PermissionError("Retraction authorization revoked")
@@ -708,6 +708,8 @@ class MemoryService:
         with self.transaction(write=True) as db:
             recorded = db.execute("INSERT OR IGNORE INTO memory_erasures VALUES (?,?)",
                                   (scope.storage_key, self._retraction_digest(principal, inbound_id))).rowcount
+            if context_digest is not None:
+                db.execute("INSERT OR IGNORE INTO memory_erasures VALUES (?,?)", (scope.storage_key, context_digest))
             row = db.execute("""SELECT ref,turn_id FROM activities a WHERE producer='core'
                 AND scope=? AND actor=? AND event_id=? AND kind='message_received' AND (
                     redacted=0 OR EXISTS (SELECT 1 FROM activities reply WHERE reply.scope=a.scope

@@ -72,7 +72,7 @@
   {
     "path": "astrbot/core/pipeline/scheduler.py",
     "before": "dfdb757e1ec30ebc84fa6c98d4ab7de3b4c5f967a5b57a4055c7ec307cc882a2",
-    "after": "73a7dfe5215e7feb5532e5f708a14445e8344eeb53ef6e5414c1f3be1f8994be",
+    "after": "a1f064b0198c56cfa6162706d0445f4545daaf1ec22edd7cc74fab0a811b179f",
     "edits": [
       {
         "start": 0,
@@ -84,14 +84,28 @@
       },
       {
         "start": 95,
-        "end": 96,
+        "end": 101,
         "old": [
-          "            await self._process_stages(event)\n"
+          "            await self._process_stages(event)\n",
+          "\n",
+          "            # Send the closing frame before the event is marked complete.\n",
+          "            if isinstance(event, WebChatMessageEvent | WecomAIBotMessageEvent):\n",
+          "                await event.send(None)\n",
+          "\n"
         ],
         "new": [
           "            from astrbot.core.fat_fish_gateway import gateway\n",
           "            gateway.context=self.ctx.plugin_manager.context\n",
-          "            await gateway.run(event, lambda: self._process_stages(event))\n"
+          "            event.set_extra(\"_ffa_native_pipeline_handoff\", True)\n",
+          "            completed = False\n",
+          "            try:\n",
+          "                await gateway.run(event, lambda: self._process_stages(event))\n",
+          "                if isinstance(event, WebChatMessageEvent | WecomAIBotMessageEvent):\n",
+          "                    await event.send(None)\n",
+          "                completed = True\n",
+          "            finally:\n",
+          "                gateway.finish_pipeline_memory(event, completed)\n",
+          "\n"
         ]
       }
     ]

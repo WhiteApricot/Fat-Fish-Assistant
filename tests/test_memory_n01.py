@@ -657,6 +657,7 @@ class GatewayAnalysisTests(unittest.IsolatedAsyncioTestCase):
         await gateway.run(event, reply)
         model.text_chat.assert_not_awaited()
         self.assertEqual(event.sent, ["收到"])
+        await bridge._completed_replies.join()
         await bridge._capture_queue.join()
         await bridge._run_analysis(bridge.memory(), target=event.get_extra("_ffa_memory_access"))
         self.assertEqual(model.text_chat.await_count, 1, bridge.memory().status()["analysis"])

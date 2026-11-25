@@ -960,6 +960,15 @@ class PlatformGateway:
         finally:
             self.chat_turns.resolve(item)
 
+    def finish_pipeline_memory(self, event, succeeded):
+        """Called by the native scheduler after its closing frames are complete."""
+        replies = event.get_extra("_ffa_finished_memory_replies", ())
+        event.set_extra("_ffa_finished_memory_replies", None)
+        if succeeded and replies:
+            self.memory_bridge.enqueue_completed_reply(event, replies)
+        else:
+            event.set_extra("_ffa_pending_memory_capture", None)
+
     async def _qq_friend_notice(self, runtime, event, message):
         event.stop_event()
         _, role = await asyncio.to_thread(runtime.identities.resolve_principal, message.sender)
@@ -1131,6 +1140,9 @@ class PlatformGateway:
         turn = None
         schedule = None
         memory_task = None
+        reply_texts = []
+        reply_failed = False
+        reply_pipeline_done = False
         persona_result = None
 
         async def ready_to_submit():
@@ -1182,13 +1194,19 @@ class PlatformGateway:
                     return None
 
             async def send(_):
-                nonlocal submitted
+                nonlocal submitted, reply_failed
                 if not current_context():
                     raise Superseded("FFA reply source changed")
                 submitted = True
                 native_reply = getattr(slot.provider, "reply_native", None)
-                response = (await native_reply(event, message.conversation, result, original_send)
-                            if native_reply else await original_send(result))
+                try:
+                    response = (await native_reply(event, message.conversation, result, original_send)
+                                if native_reply else await original_send(result))
+                except BaseException:
+                    reply_failed = True
+                    raise
+                if response is False:
+                    reply_failed = True
                 if receipt:
                     event.set_extra("_ffa_management_receipt_acked", response is not False)
                 text = result.get_plain_text() if hasattr(result, "get_plain_text") else result
@@ -1197,7 +1215,10 @@ class PlatformGateway:
                     if words:
                         self._record_command(receipt_key, words, text.removeprefix("【系统】"))
                 if response is not False and not (receipt or progress):
-                    await self.memory_bridge.sent(event, result)
+                    if event.get_extra("_ffa_reply_is_command"):
+                        await self.memory_bridge.sent(event, result)
+                    else:
+                        reply_texts.append(text if isinstance(text, str) else "")
                     if event.get_extra("_ffa_original_input") is None:
                         self._record_group_reply(message, admission, event,
                                                  result.get_plain_text() if hasattr(result, "get_plain_text") else "")
@@ -1212,6 +1233,7 @@ class PlatformGateway:
             sequence += 1
 
             async def send(authorize):
+                nonlocal reply_failed
                 streamed = False
                 preview = ""
                 guard = getattr(slot.provider, "guard_stream", None)
@@ -1241,10 +1263,16 @@ class PlatformGateway:
                             preview += text[:1500 - len(preview)]
                         yield part
 
-                with guard(event, check_submission) if guard else nullcontext():
-                    result = await original_stream(guarded(), *args, **kwargs)
+                try:
+                    with guard(event, check_submission) if guard else nullcontext():
+                        result = await original_stream(guarded(), *args, **kwargs)
+                except BaseException:
+                    reply_failed = True
+                    raise
+                if result is False:
+                    reply_failed = True
                 if streamed and result is not False:
-                    await self.memory_bridge.sent(event, streamed_text=preview)
+                    reply_texts.append(preview)
                     if event.get_extra("_ffa_original_input") is None:
                         self._record_group_reply(message, admission, event, preview)
                 return result
@@ -1342,7 +1370,7 @@ class PlatformGateway:
             if timeline is not None:
                 timeline.mark("memory_start")
             media_ready = asyncio.Event()
-            memory_task = asyncio.create_task(self.memory_bridge.prepare(event, media_ready=media_ready))
+            memory_task = asyncio.create_task(self.memory_bridge.prepare(event, media_ready=media_ready, defer_capture=True))
             media = getattr(slot.provider, "prepare_media", None)
             def author_allowed(subject):
                 if subject == message.conversation.bot:
@@ -1454,6 +1482,7 @@ class PlatformGateway:
                     await checked_send(persona_result)
             elif not submitted and management is not None and management.feedback and await asyncio.to_thread(allowed):
                 await self._send_command_receipt(event, None, management.feedback, management=True)
+            reply_pipeline_done = True
             completed = True
             return result
         except (ConnectionError, TimeoutError):
@@ -1482,5 +1511,12 @@ class PlatformGateway:
             state = ("completed" if completed else "unknown"
                      if submitted or event.get_extra("_ffa_mutating_tool_started") else "retryable")
             await asyncio.to_thread(runtime.finish_receive, message, state)
+            if reply_pipeline_done and not reply_failed:
+                if event.get_extra("_ffa_native_pipeline_handoff"):
+                    event.set_extra("_ffa_finished_memory_replies", tuple(reply_texts))
+                else:
+                    self.memory_bridge.enqueue_completed_reply(event, tuple(reply_texts))
+            else:
+                event.set_extra("_ffa_pending_memory_capture", None)
             if timeline is not None:
                 timeline.log()
