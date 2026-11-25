@@ -14,7 +14,7 @@ import uuid
 
 from fat_fish.memory.erasure import Erasure, ErasureLedger, LedgerError, target_digest, Watermark
 from fat_fish.memory.policy import Audience, ScopeKind, ScopeRef
-from fat_fish.memory.records import EventRecord, ItemRecord
+from fat_fish.memory.records import EventRecord, EvidenceRecord, ItemRecord
 from fat_fish.memory.reply_guard import PolicyFence
 from fat_fish.memory.schema import initialize
 from fat_fish.memory.search_text import TOKENIZER_VERSION, tokens
@@ -53,6 +53,7 @@ class MemoryRepository:
         self.fence = PolicyFence()
         self._gate = Lock()
         self._ready = False
+        self._read_epoch = 0
 
     @contextmanager
     def _connect(self, *, read_only=False):
@@ -69,6 +70,7 @@ class MemoryRepository:
         """Replay a verified ledger before permitting reads of this database."""
         with self.fence.mutation(), self._gate:
             self._ready = False
+            self._read_epoch += 1
             records, mark, _ = self.ledger.read(trusted)
             with self._connect() as db:
                 if db.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
@@ -126,7 +128,7 @@ class MemoryRepository:
                 return True
         return False
 
-    def record_event(self, event: EventRecord, now: int, *, authorize=lambda: True) -> int:
+    def record_event(self, event: EventRecord, now: int, *, authorize=lambda: True, extract=False) -> int:
         source = event.source
         if not all((event.key, source.key, source.producer, source.receipt_digest)):
             raise ValueError("An event requires stable source and receipt identifiers")
@@ -169,6 +171,9 @@ class MemoryRepository:
             if not authorize():
                 raise PermissionError("Memory capture authorization changed")
             if row:
+                if (extract and event.snippet and source.scope.kind == ScopeKind.PRIVATE
+                        and source.author == source.scope.key and source.trust == "direct_self"):
+                    self._queue_extraction(db, scope, registered["id"], row[0], now)
                 return row[0]
             old = db.execute("""SELECT id, actor_kind, actor_ref, event_kind, occurred_at, snippet, payload_json
                 FROM event WHERE scope_id=? AND source_id=? AND correlation_key=? AND phase=?""",
@@ -178,58 +183,147 @@ class MemoryRepository:
             return old[0]
 
     def put_item(self, item: ItemRecord, expected_revision: int | None, now: int) -> tuple[int, int]:
+        with self.write() as db:
+            return self._put_item(db, item, expected_revision, now)
+
+    def _put_item(self, db, item, expected_revision, now):
         if not item.evidence or not any(e.role == "support" for e in item.evidence):
             raise ValueError("Every memory revision requires supporting evidence")
         value_json = json.dumps(item.value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         body_hash = hashlib.sha256((item.body + "\0" + value_json).encode()).hexdigest()
-        with self.write() as db:
-            scope = self.scope_id(db, item.scope)
-            if self._blocked(db, item.scope, "item", item.slot, now):
-                raise PermissionError("Memory item was erased")
-            key = (scope, item.observer, item.subject, item.kind, item.slot, item.variant)
-            prior = db.execute("""SELECT id,state,current_rev,last_rev FROM item
-                WHERE scope_id=? AND observer_ref=? AND subject_ref=? AND kind=? AND slot_key=? AND variant_key=?""",
-                               key).fetchone()
-            if prior is None:
-                if expected_revision is not None:
-                    raise ValueError("Memory revision no longer exists")
-                item_id = db.execute("""INSERT INTO item(scope_id, observer_ref, subject_ref, kind,
-                    slot_key, variant_key, state, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 'candidate', ?, ?)""", (*key, now, now)).lastrowid
-                new = 1
-            else:
-                if prior["current_rev"] != expected_revision or prior["state"] == "deleted":
-                    raise ValueError("Memory revision is stale")
-                item_id = prior["id"]
-                new = max(prior["last_rev"], prior["current_rev"] or 0) + 1
+        scope = self.scope_id(db, item.scope)
+        if self._blocked(db, item.scope, "item", item.slot, now):
+            raise PermissionError("Memory item was erased")
+        key = (scope, item.observer, item.subject, item.kind, item.slot, item.variant)
+        prior = db.execute("""SELECT id,state,current_rev,last_rev FROM item
+            WHERE scope_id=? AND observer_ref=? AND subject_ref=? AND kind=? AND slot_key=? AND variant_key=?""",
+                           key).fetchone()
+        if prior is None:
             if expected_revision is not None:
-                db.execute("""UPDATE revision SET known_to=? WHERE item_id=? AND rev=?""",
-                           (now, item_id, expected_revision))
-                db.execute("DELETE FROM search_doc WHERE item_id=? AND rev=?", (item_id, expected_revision))
-                db.execute("DELETE FROM profile WHERE source_item_id=? AND rev=?", (item_id, expected_revision))
-            db.execute("""INSERT INTO revision(item_id,rev,body,value_json,valid_from,valid_to,known_from,
-                confidence,importance,trust_class,content_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                       (item_id, new, item.body, value_json, item.valid_from, item.valid_to,
-                        now, item.confidence, item.importance, item.trust, body_hash))
-            db.executemany("INSERT INTO evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                           ((item_id, new, e.source_id, e.event_id, e.role, e.grant_id,
-                             e.weight, e.independence_key) for e in item.evidence))
-            db.execute("UPDATE item SET state='active',current_rev=?,last_rev=?,updated_at=? WHERE id=?",
-                       (new, new, now, item_id))
-            posting = tokens(item.body)
-            doc_id = db.execute("""INSERT INTO search_doc(item_id, rev, scope_id, kind, terms_text,
-                norm_version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                                (item_id, new, scope, item.kind, " ".join(posting), TOKENIZER_VERSION, now)).lastrowid
-            db.executemany("INSERT INTO posting VALUES (?, ?, ?, ?)",
-                           ((scope, word, doc_id, count) for word, count in posting.items()))
-            return item_id, new
+                raise ValueError("Memory revision no longer exists")
+            item_id = db.execute("""INSERT INTO item(scope_id, observer_ref, subject_ref, kind,
+                slot_key, variant_key, state, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'candidate', ?, ?)""", (*key, now, now)).lastrowid
+            new = 1
+        else:
+            if prior["current_rev"] != expected_revision or prior["state"] == "deleted":
+                raise ValueError("Memory revision is stale")
+            item_id = prior["id"]
+            new = max(prior["last_rev"], prior["current_rev"] or 0) + 1
+        if expected_revision is not None:
+            db.execute("""UPDATE revision SET known_to=? WHERE item_id=? AND rev=?""",
+                       (now, item_id, expected_revision))
+            db.execute("DELETE FROM search_doc WHERE item_id=? AND rev=?", (item_id, expected_revision))
+            db.execute("DELETE FROM profile WHERE source_item_id=? AND rev=?", (item_id, expected_revision))
+        db.execute("""INSERT INTO revision(item_id,rev,body,value_json,valid_from,valid_to,known_from,
+            confidence,importance,trust_class,content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (item_id, new, item.body, value_json, item.valid_from, item.valid_to,
+                    now, item.confidence, item.importance, item.trust, body_hash))
+        db.executemany("INSERT INTO evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                       ((item_id, new, e.source_id, e.event_id, e.role, e.grant_id,
+                         e.weight, e.independence_key) for e in item.evidence))
+        db.execute("UPDATE item SET state='active',current_rev=?,last_rev=?,updated_at=? WHERE id=?",
+                   (new, new, now, item_id))
+        posting = tokens(item.body)
+        doc_id = db.execute("""INSERT INTO search_doc(item_id, rev, scope_id, kind, terms_text,
+            norm_version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            (item_id, new, scope, item.kind, " ".join(posting), TOKENIZER_VERSION, now)).lastrowid
+        db.executemany("INSERT INTO posting VALUES (?, ?, ?, ?)",
+                       ((scope, word, doc_id, count) for word, count in posting.items()))
+        return item_id, new
+
+    @staticmethod
+    def _queue_extraction(db, scope_id, source_id, event_id, now):
+        job_id = db.execute("""INSERT INTO job(scope_id,kind,dedup_key,priority,status,
+            eligible_at,scope_gen,created_at,updated_at)
+            SELECT id,'extract',?,0,'ready',?,generation,?,? FROM scope WHERE id=?
+            RETURNING id""", (str(event_id), now, now, now, scope_id)).fetchone()[0]
+        db.execute("INSERT INTO job_input VALUES (?,?,?)", (job_id, source_id, event_id))
+
+    @staticmethod
+    def _extraction_source(db, job_id, now, nonce):
+        return db.execute("""SELECT j.*, sc.agent, sc.scope_key, src.author_principal, src.producer,
+                src.source_key, src.id AS source_id, ev.id AS event_id, ev.snippet, ev.occurred_at
+            FROM job j JOIN scope sc ON sc.id=j.scope_id
+            JOIN job_input ji ON ji.job_id=j.id
+            JOIN source src ON src.id=ji.source_id AND src.scope_id=sc.id
+            JOIN event ev ON ev.id=ji.event_id AND ev.source_id=src.id
+            WHERE j.id=? AND j.kind='extract' AND j.status='leased'
+              AND j.lease_nonce=? AND j.lease_until>?
+              AND sc.enabled=1 AND sc.kind='private' AND sc.generation=j.scope_gen
+              AND src.author_principal=sc.scope_key AND src.trust_class='direct_self'
+              AND src.revoked_at IS NULL AND (src.expires_at IS NULL OR src.expires_at>?)
+              AND ev.snippet IS NOT NULL""", (job_id, nonce, now, now)).fetchone()
+
+    def claim_extraction(self, now):
+        with self.write() as db:
+            db.execute("""UPDATE job SET status='dead-letter',lease_nonce=NULL,lease_until=NULL,updated_at=?
+                WHERE kind='extract' AND status='leased' AND lease_until<=? AND attempts>=4""",
+                       (now, now))
+            nonce = uuid.uuid4().hex
+            job = db.execute("""UPDATE job SET status='leased',lease_nonce=?,lease_until=?,
+                    attempts=attempts+1,updated_at=?
+                WHERE id=(SELECT id FROM job WHERE kind='extract' AND attempts<4 AND
+                    ((status IN ('ready','retry') AND eligible_at<=?)
+                      OR (status='leased' AND lease_until<=?))
+                    ORDER BY eligible_at,id LIMIT 1) RETURNING id""",
+                             (nonce, now + 30_000, now, now, now)).fetchone()
+            if not job:
+                return None
+            source = self._extraction_source(db, job[0], now, nonce)
+            if not source:
+                db.execute("""UPDATE job SET status='cancelled',lease_nonce=NULL,
+                    lease_until=NULL WHERE id=?""", (job[0],))
+                return None
+            return dict(source)
+
+    def retry_extraction(self, job, now):
+        with self.write() as db:
+            db.execute("""UPDATE job SET status=CASE WHEN attempts>=4 THEN 'dead-letter' ELSE 'retry' END,
+                eligible_at=?,updated_at=?,lease_nonce=NULL,lease_until=NULL
+                WHERE id=? AND kind='extract' AND status='leased' AND lease_nonce=?""",
+                       (now + 1_000 * 2 ** job["attempts"], now, job["id"], job["lease_nonce"]))
+
+    def apply_extraction(self, job, claims, now, *, authorize):
+        with self.write() as db:
+            source = self._extraction_source(db, job["id"], now, job["lease_nonce"])
+            if source is None or not authorize():
+                return False
+            scope = ScopeRef(source["agent"], ScopeKind.PRIVATE, source["scope_key"])
+            proof = EvidenceRecord(source["source_id"], source["event_id"],
+                                   independence_key=str(source["source_id"]))
+            for claim in claims:
+                if claim.quote not in source["snippet"]:
+                    raise ValueError("Extraction quote is outside the claimed source")
+                slot = claim.fingerprint
+                if self._blocked(db, scope, "item", slot, now):
+                    continue
+                current = db.execute("""SELECT current_rev,state FROM item
+                    WHERE scope_id=? AND observer_ref=? AND subject_ref=? AND kind=? AND slot_key=?
+                    AND variant_key='claim'""",
+                                     (source["scope_id"], scope.agent, scope.key, claim.kind, slot)).fetchone()
+                if current and current["state"] in {"active", "deleted"}:
+                    continue
+                value = {"quote": claim.quote, "state": claim.state, "occurred_at": claim.occurred_at,
+                         "entities": claim.entities, "episode": claim.episode,
+                         "provenance": "user_report"}
+                item = ItemRecord(scope, scope.agent, scope.key, claim.kind, slot, "claim", claim.body,
+                                  value, (proof,), "direct_self", claim.confidence, .5,
+                                  claim.valid_from, claim.valid_to)
+                self._put_item(db, item, current["current_rev"] if current else None, now)
+            if not authorize():
+                raise PermissionError("Extraction authorization changed during publication")
+            db.execute("""UPDATE job SET status='done',lease_nonce=NULL,lease_until=NULL,updated_at=?
+                WHERE id=?""", (now, source["id"]))
+            return True
 
     def erase(self, kind: str, scope: ScopeRef, target: str, generation: int, now: int) -> Watermark:
         """Close reads during erasure. Return only after ledger and SQLite commit."""
         with self.fence.mutation(), self._gate:
             self._require_open()
             self._ready = False
+            self._read_epoch += 1
             mark = self.ledger.append(kind, scope.identity, target, generation, now)
             records, _, _ = self.ledger.read(mark)
             with self._connect() as db, db:
@@ -342,37 +436,39 @@ class MemoryRepository:
         if deadline <= time.monotonic():
             return ()
         allowed = audience.scopes()
-        if not self._gate.acquire(timeout=0.01):
-            raise sqlite3.OperationalError("Memory recall writer-busy budget exhausted")
-        try:
-            self._require_open()
-            with self._connect(read_only=True) as db:
-                db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 250)
-                clauses = ", ".join(f"(:agent{i}, :kind{i}, :key{i})" for i in range(len(allowed)))
-                params = {"now": now, "limit": limit}
-                for i, ref in enumerate(allowed):
-                    params.update({f"agent{i}": ref.agent, f"kind{i}": ref.kind.value, f"key{i}": ref.key})
-                item_filter = ""
-                if item_ids is not None:
-                    keys = ", ".join(f":item{i}" for i in range(len(item_ids)))
-                    item_filter = f"AND i.id IN ({keys})"
-                    params.update({f"item{i}": item_id for i, item_id in enumerate(item_ids)})
-                rows = db.execute(f"""WITH allowed(agent, kind, scope_key) AS (VALUES {clauses})
-                    SELECT i.id, r.rev, r.body, r.content_hash, i.scope_id, s.generation,
-                        CAST((SELECT value FROM meta WHERE key='ledger_applied_seq') AS INTEGER) AS ledger_seq
-                    FROM allowed a
-                    JOIN scope s USING(agent, kind, scope_key)
-                    JOIN item i ON i.scope_id=s.id
-                    JOIN revision r ON r.item_id=i.id AND r.rev=i.current_rev
-                    WHERE s.enabled=1 AND i.state='active'
-                      AND (r.valid_from IS NULL OR r.valid_from <= :now)
-                      AND (r.valid_to IS NULL OR r.valid_to > :now)
-                      AND {VISIBLE_EVIDENCE}
-                      {item_filter}
-                    ORDER BY i.updated_at DESC, i.id DESC LIMIT :limit""",
-                                  params).fetchall()
-        finally:
-            self._gate.release()
+        epoch = self._read_epoch
+        self._require_open()
+        # WAL readers can use an independent committed snapshot during ordinary
+        # writes. An overlapping ledger replay invalidates the whole snapshot.
+        with self._connect(read_only=True) as db:
+            db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 250)
+            clauses = ", ".join(f"(:agent{i}, :kind{i}, :key{i})" for i in range(len(allowed)))
+            params = {"now": now, "limit": limit}
+            for i, ref in enumerate(allowed):
+                params.update({f"agent{i}": ref.agent, f"kind{i}": ref.kind.value, f"key{i}": ref.key})
+            item_filter = ""
+            if item_ids is not None:
+                keys = ", ".join(f":item{i}" for i in range(len(item_ids)))
+                item_filter = f"AND i.id IN ({keys})"
+                params.update({f"item{i}": item_id for i, item_id in enumerate(item_ids)})
+            rows = db.execute(f"""WITH allowed(agent, kind, scope_key) AS (VALUES {clauses})
+                SELECT i.id, r.rev, r.body, r.content_hash, i.scope_id, s.generation,
+                    i.kind, i.subject_ref, r.value_json, r.trust_class,
+                    r.known_from, r.valid_from, r.valid_to,
+                    CAST((SELECT value FROM meta WHERE key='ledger_applied_seq') AS INTEGER) AS ledger_seq
+                FROM allowed a
+                JOIN scope s USING(agent, kind, scope_key)
+                JOIN item i ON i.scope_id=s.id
+                JOIN revision r ON r.item_id=i.id AND r.rev=i.current_rev
+                WHERE s.enabled=1 AND i.state='active'
+                  AND (r.valid_from IS NULL OR r.valid_from <= :now)
+                  AND (r.valid_to IS NULL OR r.valid_to > :now)
+                  AND {VISIBLE_EVIDENCE}
+                  {item_filter}
+                ORDER BY i.updated_at DESC, i.id DESC LIMIT :limit""",
+                              params).fetchall()
+        if epoch != self._read_epoch or not self._ready:
+            raise LedgerError("Erasure overlapped memory recall")
         return tuple(dict(row) for row in rows)
 
 
@@ -404,7 +500,10 @@ class MemoryRepository:
                             ORDER BY p.doc_id DESC LIMIT 12""",
                                           {"agent": ref.agent, "kind": ref.kind.value,
                                            "scope": ref.key, "now": now, "term": term})
-                    candidates.update(row[0] for row in rows)
+                    rows = rows.fetchall()
+                    # An exact rare term should survive common-term posting caps.
+                    for row in rows:
+                        candidates[row[0]] += 1 / len(rows)
         return self.authorized_documents(audience, now, limit=limit,
                                          item_ids=tuple(item_id for item_id, _ in candidates.most_common(limit)),
                                          deadline=deadline)

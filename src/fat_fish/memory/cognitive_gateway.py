@@ -1,5 +1,6 @@
 """Admission and native receipt mapping for the replacement memory path."""
 
+import asyncio
 from hashlib import sha256
 import sqlite3
 from time import time
@@ -11,6 +12,9 @@ from fat_fish.memory.experience import sensitive_information
 from fat_fish.memory.policy import Audience, ScopeKind, ScopeRef
 from fat_fish.memory.records import EventRecord, SourceRecord
 from fat_fish.memory.reply_guard import Dependency, ProtectedReply, ReplyStamp
+from fat_fish.memory.retrieval import CognitiveRetrieval
+from fat_fish.memory.semantic_query import RecallDecision, select, understand
+from fat_fish.memory.structured_memory import extract
 
 
 class CognitiveMemoryGateway:
@@ -41,6 +45,76 @@ class CognitiveMemoryGateway:
         text = event.text[:1500] if event.text and not sensitive_information(event.text) else None
         return self.queue.offer(EventRecord(source, event.event_id, "inbound", "observed", "user",
                                             occurred, text, actor_ref=principal), verify)
+
+    async def capture_inbound(self, event: MessageEvent, principal: str, verify) -> int:
+        """Commit admitted private input and its extraction job together."""
+        scope = self._scope(event.conversation, principal)
+        if scope.kind != ScopeKind.PRIVATE:
+            raise PermissionError("Durable chat extraction requires private admission")
+        occurred = int(event.timestamp * 1000)
+        provider = event.conversation.provider
+        source = SourceRecord(scope, event.event_id, "platform_message",
+                              key(provider.platform, provider.instance), "direct_self",
+                              event.event_id, occurred, author=principal)
+        snippet = event.text[:1500] if event.text and not sensitive_information(event.text) else None
+        record = EventRecord(source, event.event_id, "inbound", "observed", "user",
+                             occurred, snippet, actor_ref=principal)
+        return await asyncio.to_thread(self.queue.repository.record_event, record,
+                                       self.queue.clock(), authorize=verify, extract=True)
+
+    async def extract_next(self, provider_for, authorize):
+        """Process one lease. Provider choice and current admission remain caller-owned."""
+        repository = self.queue.repository
+        job = await asyncio.to_thread(repository.claim_extraction, self.queue.clock())
+        if job is None:
+            return False
+        try:
+            if await asyncio.to_thread(authorize, job):
+                async with asyncio.timeout(24):
+                    provider = await provider_for(job)
+                    claims = await extract(provider, job["snippet"], job["occurred_at"])
+                if await asyncio.to_thread(repository.apply_extraction, job, claims, self.queue.clock(),
+                                           authorize=lambda: authorize(job)):
+                    return True
+        except (TimeoutError, ValueError, RuntimeError, OSError, sqlite3.Error):
+            pass
+        await asyncio.to_thread(repository.retry_extraction, job, self.queue.clock())
+        return True
+
+    async def semantic_snapshot(self, event, principal, authorization_revision, history_revision,
+                                provider, *, dialogue=(), embedding=None, space=None):
+        """Build a bounded, revision-stamped snapshot for an explicit lookback."""
+        message = event.text
+        empty_stamp = _reply_stamp(event, authorization_revision, history_revision, ())
+        if not message or sensitive_information(message):
+            return RecallDecision("abstain", (), ()), empty_stamp
+        audience = self.audience(event, principal, authorization_revision)
+        repository = self.queue.repository
+        retrieval = CognitiveRetrieval(repository, embedding, space=space)
+        try:
+            async with asyncio.timeout(4):
+                plan = await understand(provider, message, dialogue)
+                if plan.route != "deep":
+                    return RecallDecision(plan.route, (), ()), empty_stamp
+                candidates = {}
+                for target in plan.targets:
+                    now = self.queue.clock()
+                    result = await retrieval.recall(audience, target, now, deep=True)
+                    expected = {hit.item_id: (hit.revision, hit.digest) for hit in result.hits}
+                    documents = await asyncio.to_thread(repository.authorized_documents, audience,
+                                                        self.queue.clock(), item_ids=tuple(expected))
+                    by_id = {row["id"]: row for row in documents
+                             if expected[row["id"]] == (row["rev"], row["content_hash"])}
+                    candidates[target] = tuple(by_id[item] for item in expected if item in by_id)
+                if not all(candidates.values()):
+                    available = tuple(row for rows in candidates.values() for row in rows)
+                    return RecallDecision("abstain", available, ()), empty_stamp
+                decision = await select(provider, message, candidates)
+                rows = decision.support
+                stamp = _reply_stamp(event, authorization_revision, history_revision, rows)
+                return decision, stamp
+        except (TimeoutError, ValueError, RuntimeError, OSError, sqlite3.Error):
+            return RecallDecision("abstain", (), ()), empty_stamp
 
     async def on_receipt(self, event: MessageEvent, principal: str, receipt: str, state: str,
                          occurred: int, verify) -> int:
@@ -73,13 +147,15 @@ class CognitiveMemoryGateway:
 
         def current_dependencies(stamp):
             identity = admission()
-            if (identity is None or identity[0] != principal or stamp.destination != address
+            if (identity is None or identity[0] != principal or identity[1] != stamp.authorization_revision
+                    or stamp.destination != address
                     or stamp.turn_id != event.event_id or stamp.history_revision != history_revision()):
                 return False
             audience = self.audience(event, principal, identity[1])
             try:
                 rows = repository.authorized_documents(
-                    audience, now(), item_ids=tuple(dep.item_id for dep in stamp.dependencies)
+                    audience, now(), limit=max(12, len(stamp.dependencies)),
+                    item_ids=tuple(dep.item_id for dep in stamp.dependencies)
                 )
             except (PermissionError, LedgerError, sqlite3.Error):
                 return False
@@ -97,8 +173,12 @@ class CognitiveMemoryGateway:
         """Return current snippets with the exact revisions to recheck on handoff."""
         audience = self.audience(event, principal, authorization_revision)
         rows = self.queue.repository.authorized_documents(audience, now)
-        stamp = ReplyStamp(event.event_id, event.conversation.storage_key, authorization_revision,
-                           tuple(sorted({(row["scope_id"], row["generation"]) for row in rows})),
-                           rows[0]["ledger_seq"] if rows else 0, history_revision,
-                           tuple(Dependency(row["id"], row["rev"], row["content_hash"]) for row in rows))
-        return tuple(row["body"] for row in rows), stamp
+        return tuple(row["body"] for row in rows), _reply_stamp(
+            event, authorization_revision, history_revision, rows)
+
+
+def _reply_stamp(event, authorization_revision, history_revision, rows):
+    return ReplyStamp(event.event_id, event.conversation.storage_key, authorization_revision,
+                      tuple(sorted({(row["scope_id"], row["generation"]) for row in rows})),
+                      rows[0]["ledger_seq"] if rows else 0, history_revision,
+                      tuple(Dependency(row["id"], row["rev"], row["content_hash"]) for row in rows))

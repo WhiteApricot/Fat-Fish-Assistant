@@ -4,14 +4,11 @@ import asyncio
 from dataclasses import dataclass
 import math
 import sqlite3
-import time
 
 from fat_fish.memory.erasure import LedgerError
 from fat_fish.memory.experience import sensitive_information
 from fat_fish.memory.search_text import tokens
 from fat_fish.memory.semantic import unit_vector
-
-LOOKBACK_WORDS = ("上次", "之前", "以前", "昨晚", "记得", "哪次", "previous", "last time")
 
 
 @dataclass(frozen=True)
@@ -60,9 +57,9 @@ class CognitiveRetrieval:
         self.space = space
         self.semantic_min = semantic_min
 
-    async def recall(self, audience, query: str, now: int, *, deep=None) -> RecallResult:
+    async def recall(self, audience, query: str, now: int, *, deep=False) -> RecallResult:
         sensitive = sensitive_information(query)
-        permitted = deep if deep is not None else any(word in query.casefold() for word in LOOKBACK_WORDS)
+        permitted = deep
         word_counts = tokens(query[:300]) if not sensitive else {}
         words = tuple(sorted(word_counts, key=lambda term: (-len(term), -word_counts[term], term))[:12])
         if not words:

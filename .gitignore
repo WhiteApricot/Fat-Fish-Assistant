@@ -36,6 +36,7 @@ models/
 !/tests/test_event_retrieval.py
 !/tests/test_cognitive_memory_storage.py
 !/tests/test_cognitive_memory_reply.py
+!/tests/test_structured_memory_flow.py
 !/tests/test_native_media.py
 !/tests/test_native_lark.py
 !/tests/test_dual_platform.py
