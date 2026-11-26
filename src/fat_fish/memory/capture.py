@@ -82,3 +82,66 @@ class CaptureQueue:
 
     def counts(self) -> dict[str, int]:
         return dict(self._counts)
+
+
+class ExtractionWorker:
+    """One bounded consumer of the durable extraction queue per runtime."""
+
+    def __init__(self, gateway, provider_for, authorize, *, poll_interval=1.0):
+        if poll_interval <= 0:
+            raise ValueError("Worker poll interval must be positive")
+        self.gateway = gateway
+        self.provider_for = provider_for
+        self.authorize = authorize
+        self.poll_interval = poll_interval
+        self._wake = asyncio.Event()
+        self.ready = asyncio.Event()
+        self._stop = False
+        self._task = None
+
+    def start(self):
+        if self._task is None or self._task.done():
+            self._stop = False
+            self.ready.clear()
+            self._task = asyncio.create_task(self._run())
+
+    def notify(self):
+        self._wake.set()
+
+    async def stop(self):
+        self._stop = True
+        self.notify()
+        if self._task is not None:
+            await self._task
+            self._task = None
+
+    async def _run(self):
+        repository = self.gateway.queue.repository
+        while not self._stop:
+            self._wake.clear()
+            try:
+                with repository.keep_wal_open():
+                    self.ready.set()
+                    await self._consume(repository)
+            except (OSError, sqlite3.Error, LedgerError) as exc:
+                self.ready.clear()
+                logger.warning("FFA extraction worker could not open WAL (%s)", type(exc).__name__)
+                try:
+                    await asyncio.wait_for(self._wake.wait(), self.poll_interval)
+                except TimeoutError:
+                    pass
+
+    async def _consume(self, repository):
+        while not self._stop:
+            self._wake.clear()
+            try:
+                now = self.gateway.queue.clock()
+                due = await asyncio.to_thread(repository.extraction_due, now)
+                if due and not self._stop and await self.gateway.extract_next(self.provider_for, self.authorize):
+                    continue
+            except (OSError, sqlite3.Error, LedgerError) as exc:
+                logger.warning("FFA extraction worker will retry (%s)", type(exc).__name__)
+            try:
+                await asyncio.wait_for(self._wake.wait(), self.poll_interval)
+            except TimeoutError:
+                pass

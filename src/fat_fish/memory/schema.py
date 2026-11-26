@@ -2,7 +2,7 @@
 
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 DATABASE_NAME = "ffa-cognitive-memory.sqlite3"
 
 DDL = """
@@ -372,6 +372,53 @@ GRAPH_DDL = (
 )
 
 
+LINK_PROOF_DDL = (
+    "ALTER TABLE memory_mention ADD COLUMN linked_source_id INTEGER REFERENCES source(id)",
+    "ALTER TABLE memory_mention ADD COLUMN anchor_item_id INTEGER REFERENCES item(id)",
+    "ALTER TABLE memory_mention ADD COLUMN anchor_rev INTEGER",
+    "CREATE INDEX memory_mention_source ON memory_mention(linked_source_id)",
+    "CREATE INDEX memory_mention_anchor ON memory_mention(anchor_item_id,anchor_rev)",
+    """CREATE TRIGGER cleanup_graph_anchor BEFORE DELETE ON revision
+        BEGIN
+            DELETE FROM memory_mention WHERE anchor_item_id=OLD.item_id AND anchor_rev=OLD.rev;
+        END""",
+)
+
+
+CONJUNCTION_DDL = """
+CREATE TABLE evidence_dependency (
+    scope_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    rev INTEGER NOT NULL,
+    parent_item INTEGER NOT NULL,
+    parent_rev INTEGER NOT NULL,
+    PRIMARY KEY(item_id,rev,parent_item),
+    CHECK (item_id <> parent_item),
+    FOREIGN KEY(scope_id,item_id) REFERENCES item(scope_id,id),
+    FOREIGN KEY(scope_id,parent_item) REFERENCES item(scope_id,id),
+    FOREIGN KEY(item_id,rev) REFERENCES revision(item_id,rev) ON DELETE CASCADE,
+    FOREIGN KEY(parent_item,parent_rev) REFERENCES revision(item_id,rev) ON DELETE CASCADE
+)
+"""
+
+
+MENTION_PROOF_DDL = """
+CREATE TABLE memory_mention_proof (
+    item_id INTEGER NOT NULL,
+    rev INTEGER NOT NULL,
+    node_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    source_id INTEGER NOT NULL REFERENCES source(id),
+    anchor_item INTEGER NOT NULL,
+    anchor_rev INTEGER NOT NULL,
+    PRIMARY KEY(item_id,rev,node_id,label,source_id,anchor_item,anchor_rev),
+    FOREIGN KEY(item_id,rev,node_id,label) REFERENCES memory_mention(item_id,rev,node_id,label)
+        ON DELETE CASCADE,
+    FOREIGN KEY(anchor_item,anchor_rev) REFERENCES revision(item_id,rev) ON DELETE CASCADE
+)
+"""
+
+
 def initialize(db: sqlite3.Connection, installation: str, database_id: str) -> None:
     """Initialize an empty database. Reject foreign and legacy databases."""
     if db.in_transaction:
@@ -380,7 +427,7 @@ def initialize(db: sqlite3.Connection, installation: str, database_id: str) -> N
     try:
         db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version in (1, SCHEMA_VERSION):
+        if version in (1, 2, 3, 4, SCHEMA_VERSION):
             row = db.execute("SELECT value FROM meta WHERE key='installation'").fetchone()
             if row is None or row[0] != installation:
                 raise ValueError("Memory database installation mismatch")
@@ -402,9 +449,28 @@ def initialize(db: sqlite3.Connection, installation: str, database_id: str) -> N
                 ("ledger_applied_seq", "0"), ("index_generation", "0"),
                 ("policy_generation", "0"), ("search_backend", "posting"),
             ))
-        if version < SCHEMA_VERSION:
+        if version < 2:
             for statement in GRAPH_DDL:
                 db.execute(statement)
+        if version < 3:
+            if version == 2:
+                # Shared v2 mentions lack association provenance. Keep statements and
+                # discard the derived graph instead of promoting unverifiable links.
+                db.execute("DELETE FROM memory_mention")
+            for statement in LINK_PROOF_DDL:
+                db.execute(statement)
+        if version < 4:
+            db.execute(CONJUNCTION_DDL)
+            db.execute("CREATE INDEX evidence_dependency_parent ON evidence_dependency(parent_item,parent_rev)")
+        if version < 5:
+            db.execute(MENTION_PROOF_DDL)
+            db.execute("CREATE INDEX mention_proof_source ON memory_mention_proof(source_id)")
+            db.execute("CREATE INDEX mention_proof_anchor ON memory_mention_proof(anchor_item,anchor_rev)")
+            db.execute("""INSERT INTO memory_mention_proof SELECT m.item_id,m.rev,m.node_id,m.label,
+                m.linked_source_id,m.anchor_item_id,m.anchor_rev FROM memory_mention m
+                JOIN revision r ON r.item_id=m.anchor_item_id AND r.rev=m.anchor_rev
+                WHERE m.linked_source_id IS NOT NULL""")
+            db.execute("DROP TRIGGER cleanup_graph_anchor")
             db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         db.commit()
     except BaseException:

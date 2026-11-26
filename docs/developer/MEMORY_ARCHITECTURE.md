@@ -58,3 +58,5 @@ Episode 元数据随可信事件写入现有 `event.payload_json`。生产者可
 本轮复用现有 JSON 列，无数据库版本迁移。旧记录缺少 Episode 元数据时仍可使用既有证据路径。别名用于主题定位，当前没有全局实体表或自动实体归并。真实 QQ、飞书和外链连接器提供可信 Episode 的接线仍待验收。
 
 [N01 认知记忆重构审计与验证记录](MEMORY_REDESIGN_STATUS.md)列出发布候选的调用链及后续实现的验收范围。
+
+[正式接管与准出审计](MEMORY_FINALIZATION_AUDIT.md)记录当前分支的双时间检索、关系证明、来源入库与验收缺口。

@@ -18,6 +18,9 @@ class Dependency:
     item_id: int
     revision: int
     evidence_digest: str
+    valid_at: int | None = None
+    known_at: int | None = None
+    valid_window: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -60,18 +63,27 @@ class PolicyFence:
             return mark_revoked()
 
     def validate(self, allowed, valid):
-        with self._gate:
+        if not self._gate.acquire(blocking=False):
+            return Delivery.STALE
+        try:
             if not allowed():
                 return Delivery.REVOKED
             return None if valid() else Delivery.STALE
+        finally:
+            self._gate.release()
 
     def submit(self, allowed, valid, handoff):
-        with self._gate:
+        # Do not block the native event loop on a persistent SQLite commit.
+        if not self._gate.acquire(blocking=False):
+            return Delivery.STALE
+        try:
             if not allowed():
                 return Delivery.REVOKED
             if not valid():
                 return Delivery.STALE
             return handoff()
+        finally:
+            self._gate.release()
 
 
 class DraftBuffer:

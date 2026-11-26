@@ -72,7 +72,7 @@
   {
     "path": "astrbot/core/pipeline/scheduler.py",
     "before": "dfdb757e1ec30ebc84fa6c98d4ab7de3b4c5f967a5b57a4055c7ec307cc882a2",
-    "after": "a1f064b0198c56cfa6162706d0445f4545daaf1ec22edd7cc74fab0a811b179f",
+    "after": "9eb1359d4e94189cd1d8fe7fb4e65621957952e14d86a09318f02fd1e6eaf0ae",
     "edits": [
       {
         "start": 0,
@@ -100,9 +100,8 @@
           "            completed = False\n",
           "            try:\n",
           "                await gateway.run(event, lambda: self._process_stages(event))\n",
-          "                if isinstance(event, WebChatMessageEvent | WecomAIBotMessageEvent):\n",
-          "                    await event.send(None)\n",
-          "                completed = True\n",
+          "                terminal_frame = isinstance(event, WebChatMessageEvent | WecomAIBotMessageEvent)\n",
+          "                completed = not terminal_frame or (await event.send(None)) is not False\n",
           "            finally:\n",
           "                gateway.finish_pipeline_memory(event, completed)\n",
           "\n"

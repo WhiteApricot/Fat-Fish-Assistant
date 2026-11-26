@@ -88,7 +88,7 @@ def benchmark(root, size, samples, seed_batch, embedding=None):
             try:
                 key = f"concurrent-{i}"
                 source = SourceRecord(scope, key, "platform_message", "sim", "direct_self", key, now, scope.key)
-                repository.record_event(EventRecord(source, key, "inbound", "observed", "user", now, key),
+                repository.record_event(EventRecord(source, key, "inbound", "observed", "user", now, key, actor_ref=scope.key),
                                         now, extract=True)
             except sqlite3.OperationalError:
                 busy += 1

@@ -43,7 +43,47 @@ VISIBLE_EVIDENCE = f"""
     EXISTS (SELECT 1 {EVIDENCE_SOURCES} AND e.role='support' AND NOT ({SOURCE_INELIGIBLE}))
     AND ((i.variant_key='claim' AND json_extract(r.value_json,'$.evidence_mode')='independent')
          OR NOT EXISTS (SELECT 1 {EVIDENCE_SOURCES} AND ({SOURCE_INELIGIBLE})))
+    AND (i.variant_key<>'conjunction' OR (
+        (SELECT count(*) FROM evidence_dependency dep WHERE dep.item_id=i.id AND dep.rev=r.rev)>=2
+        AND NOT EXISTS (
+            SELECT 1 FROM evidence_dependency dep JOIN item parent ON parent.id=dep.parent_item
+            JOIN revision parent_version ON parent_version.item_id=parent.id AND parent_version.rev=dep.parent_rev
+            WHERE dep.item_id=i.id AND dep.rev=r.rev
+              AND (parent.state<>'active' OR parent.current_rev IS NOT dep.parent_rev
+                   OR parent_version.valid_from>:now OR parent_version.valid_to<=:now)
+        )))
 """
+
+
+def _temporal_query(now, valid_at, known_at, valid_window):
+    if known_at is not None and (type(known_at) is not int or not 0 <= known_at <= now):
+        raise ValueError("Invalid knowledge time")
+    if valid_at is not None and (type(valid_at) is not int or valid_at < 0):
+        raise ValueError("Invalid effective time")
+    params = {"now": now, "valid_at": now if valid_at is None else valid_at, "known_at": known_at}
+    validity = """({revision}.valid_from IS NULL OR {revision}.valid_from<=:valid_at)
+        AND ({revision}.valid_to IS NULL OR {revision}.valid_to>:valid_at)"""
+    if valid_window is not None:
+        if valid_at is not None or not isinstance(valid_window, tuple) or len(valid_window) != 2:
+            raise ValueError("Invalid effective time window")
+        start, end = valid_window
+        if type(start) is not int or type(end) is not int or not 0 <= start < end:
+            raise ValueError("Invalid effective time window")
+        params.update(window_start=start, window_end=end)
+        validity = """({revision}.valid_from IS NOT NULL OR {revision}.valid_to IS NOT NULL)
+            AND ({revision}.valid_from IS NULL OR {revision}.valid_from<:window_end)
+            AND ({revision}.valid_to IS NULL OR {revision}.valid_to>:window_start)"""
+    revision = "r.rev=i.current_rev"
+    if known_at is not None:
+        revision = "r.known_from<=:known_at AND (r.known_to IS NULL OR r.known_to>:known_at)"
+    elif valid_at is not None or valid_window is not None:
+        eligible = validity.format(revision="eligible")
+        revision = f"""r.rev=(
+            SELECT eligible.rev FROM revision eligible WHERE eligible.item_id=i.id
+              AND {eligible}
+            ORDER BY eligible.known_from DESC,eligible.rev DESC LIMIT 1
+        )"""
+    return revision, validity.format(revision="r"), params
 
 
 class MemoryRepository:
@@ -54,6 +94,7 @@ class MemoryRepository:
         self._gate = Lock()
         self._ready = False
         self._read_epoch = 0
+        self._write_revision = 0
 
     @contextmanager
     def _connect(self, *, read_only=False):
@@ -65,6 +106,14 @@ class MemoryRepository:
             yield db
         finally:
             db.close()
+
+    @contextmanager
+    def keep_wal_open(self):
+        """Keep an idle reader while a worker uses short-lived connections."""
+        self._require_open()
+        with self._connect(read_only=True) as db:
+            db.execute("SELECT key FROM meta LIMIT 1").fetchall()
+            yield
 
     def open(self, trusted: Watermark) -> Watermark:
         """Replay a verified ledger before permitting reads of this database."""
@@ -86,8 +135,22 @@ class MemoryRepository:
 
     @contextmanager
     def write(self):
-        with self.fence.mutation(), self._write() as db:
-            yield db
+        with self.fence.mutation():
+            try:
+                with self._write() as db:
+                    yield db
+            finally:
+                self._write_revision += 1
+
+    def provider_snapshot(self):
+        """Track whether local writes overlap an evidence check spanning several reads."""
+        self._require_open()
+        return self._read_epoch, self._write_revision
+
+    def require_provider_snapshot(self, snapshot):
+        verdict = self.fence.validate(lambda: self._ready, lambda: self.provider_snapshot() == snapshot)
+        if verdict is not None:
+            raise PermissionError("Memory evidence changed before model dispatch")
 
     @contextmanager
     def _write(self):
@@ -114,6 +177,18 @@ class MemoryRepository:
         return db.execute("SELECT id FROM scope WHERE agent=? AND kind=? AND scope_key=?",
                           (ref.agent, ref.kind.value, ref.key)).fetchone()[0]
 
+    def set_group_memory(self, scope, enabled, *, authorize):
+        if scope.kind != ScopeKind.GROUP or type(enabled) is not bool:
+            raise ValueError("Group memory requires a group policy decision")
+        with self.write() as db:
+            if not authorize():
+                raise PermissionError("Group memory policy change is unauthorized")
+            scope_id = self.scope_id(db, scope)
+            db.execute("""UPDATE scope SET enabled=?,generation=generation+1
+                WHERE id=? AND enabled<>?""", (enabled, scope_id, enabled))
+            if not authorize():
+                raise PermissionError("Group memory policy authorization changed")
+
     def _blocked(self, db, ref, target_kind, target, observed_at):
         for key_id, key in self.ledger.keys.items():
             scope_hmac = target_digest(key, self.ledger.installation, "scope", ref.identity)
@@ -132,14 +207,22 @@ class MemoryRepository:
         with self.write() as db:
             return self._record_event(db, event, now, authorize, extract)
 
-    def record_completed_turn(self, records, now, *, authorize):
-        """Atomically persist a bounded completed private turn and extraction jobs."""
-        records = tuple(records)
-        if (not 1 <= len(records) <= 16 or records[0].source.scope.kind != ScopeKind.PRIVATE
-                or any(record.source.scope != records[0].source.scope or record.kind != "inbound"
-                       for record in records)):
-            raise ValueError("A completed capture must contain admitted input from one private scope")
+    def record_completed_turn(self, records, now, *, authorize, deliveries=()):
+        """Atomically persist the completed input, send receipts and extraction jobs."""
+        records, deliveries = tuple(records), tuple(deliveries)
+        if not 1 <= len(records) <= 16 or len(deliveries) > 64:
+            raise ValueError("Completed turn exceeds the capture limit")
+        scope, author = records[0].source.scope, records[0].source.author
+        if (scope.kind not in {ScopeKind.PRIVATE, ScopeKind.GROUP} or not author
+                or any(record.source.scope != scope or record.kind != "inbound"
+                       or record.source.author != author or record.actor_ref != author for record in records)
+                or any(receipt.source.scope != scope or receipt.kind != "delivery"
+                       or receipt.phase != "submitted" or receipt.source.trust != "verified_connector"
+                       for receipt in deliveries)):
+            raise ValueError("Completed capture needs one authorized scope and subject")
         with self.write() as db:
+            for receipt in deliveries:
+                self._record_event(db, receipt, now, authorize, False)
             return tuple(self._record_event(db, record, now, authorize, True) for record in records)
 
     def _record_event(self, db, event, now, authorize, extract):
@@ -157,7 +240,10 @@ class MemoryRepository:
         scope = self.scope_id(db, source.scope)
         if not db.execute("SELECT enabled FROM scope WHERE id=?", (scope,)).fetchone()[0]:
             raise PermissionError("Memory capture scope is disabled")
-        if self._blocked(db, source.scope, "source", source.key, event.time):
+        if (self._blocked(db, source.scope, "source", source.key, event.time)
+                or (source.scope.kind == ScopeKind.PUBLIC and event.kind == "content_experience"
+                and self._blocked(db, source.scope, "public_asset",
+                                  self.public_asset_key(source.producer, event.key), event.time))):
             raise PermissionError("Event source was erased")
         db.execute("""INSERT INTO source(scope_id, source_key, kind, author_principal, producer,
             observed_at, ingested_at, trust_class, receipt_digest, expires_at)
@@ -184,8 +270,10 @@ class MemoryRepository:
         if not authorize():
             raise PermissionError("Memory capture authorization changed")
         if row:
-            if (extract and event.snippet and source.scope.kind == ScopeKind.PRIVATE
-                    and source.author == source.scope.key and source.trust == "direct_self"):
+            if (extract and event.snippet and event.kind == "inbound"
+                    and source.trust == "direct_self" and source.author == event.actor_ref
+                    and (source.scope.kind == ScopeKind.PRIVATE and source.author == source.scope.key
+                         or source.scope.kind == ScopeKind.GROUP and source.author is not None)):
                 self._queue_extraction(db, scope, registered["id"], row[0], now)
             return row[0]
         old = db.execute("""SELECT id, actor_kind, actor_ref, event_kind, occurred_at, snippet, payload_json
@@ -195,9 +283,111 @@ class MemoryRepository:
             raise ValueError("Conflicting replay of event")
         return old[0]
 
+    def publish_verified_event(self, event, build_item, now, *, authorize):
+        """Commit a connector receipt and its evidence-backed projection together."""
+        with self.write() as db:
+            event_id = self._record_event(db, event, now, authorize, False)
+            origin = db.execute("SELECT scope_id,source_id FROM event WHERE id=?", (event_id,)).fetchone()
+            item = build_item(EvidenceRecord(origin["source_id"], event_id,
+                                             independence_key=event.source.receipt_digest))
+            if item.scope != event.source.scope:
+                raise PermissionError("Projection scope differs from its verified receipt")
+            prior = db.execute("""SELECT id,current_rev,state FROM item WHERE scope_id=? AND observer_ref=?
+                AND subject_ref=? AND kind=? AND slot_key=? AND variant_key=?""",
+                (origin["scope_id"], item.observer, item.subject, item.kind, item.slot, item.variant)).fetchone()
+            if prior is not None:
+                if prior["state"] != "active":
+                    raise PermissionError("Verified receipt projection is no longer active")
+                return prior["id"], prior["current_rev"]
+            if event.kind in {"work_plan", "work_receipt"}:
+                prerequisites = self._advance_work(db, event, origin["scope_id"], event_id, now)
+                item = replace(item, evidence=(*item.evidence, *prerequisites))
+            published = self._put_item(db, item, None, now)
+            if not authorize():
+                raise PermissionError("Verified receipt authorization changed")
+            return published
+
+    def _advance_work(self, db, event, scope_id, event_id, now):
+        prior = db.execute(f"""SELECT op.revision,e.payload_json,e.occurred_at,i.id,r.rev FROM operation op
+            JOIN event e ON e.id=op.latest_event_id JOIN source s ON s.id=e.source_id
+            JOIN evidence own ON own.event_id=e.id
+            JOIN item i ON i.id=own.item_id AND i.current_rev=own.rev AND i.state='active'
+            JOIN revision r ON r.item_id=i.id AND r.rev=own.rev
+            WHERE op.scope_id=:scope AND op.producer=:producer AND op.operation_key=:key
+              AND i.slot_key=s.source_key AND s.revoked_at IS NULL AND {VISIBLE_EVIDENCE}""",
+            {"scope":scope_id, "producer":event.source.producer, "key":event.key, "now":now}).fetchone()
+        phase = event.payload["phase"]
+        expected = {"running":"planned", "submitted":"running", "tool_succeeded":"submitted",
+                    "verified":"tool_succeeded"}
+        previous_payload = json.loads(prior["payload_json"]) if prior else {}
+        previous = previous_payload.get("phase")
+        if prior and (previous_payload.get("project") != event.payload["project"]
+                or (previous_payload.get("approval") is not None
+                    and previous_payload["approval"] != event.payload["approval"])):
+            raise ValueError("Work receipt changed an operation's project or approval")
+        if phase in {"failed", "cancelled"}:
+            allowed = previous in {"planned", "running", "submitted", "tool_succeeded"}
+        else:
+            allowed = previous == expected.get(phase) and (phase in expected or phase == "planned")
+        if not allowed or (prior is not None and event.time < prior["occurred_at"]):
+            raise ValueError("Work receipt does not follow the recorded operation")
+        db.execute("""INSERT INTO operation(scope_id,producer,operation_key,phase,latest_event_id,revision,updated_at)
+            VALUES (?,?,?,?,?,?,?) ON CONFLICT(scope_id,producer,operation_key) DO UPDATE SET
+                phase=excluded.phase,latest_event_id=excluded.latest_event_id,
+                revision=excluded.revision,updated_at=excluded.updated_at""",
+            (scope_id, event.source.producer, event.key, event.phase, event_id,
+             prior["revision"]+1 if prior else 1, event.time))
+        if prior is None:
+            return ()
+        return self._independent_evidence(db, prior["id"], prior["rev"], now)
+
     def put_item(self, item: ItemRecord, expected_revision: int | None, now: int) -> tuple[int, int]:
         with self.write() as db:
             return self._put_item(db, item, expected_revision, now)
+
+    def publish_conjunction(self, scope, *, slot, body, parents, expected_revision, now, authorize):
+        """Publish a model-inferred conclusion whose components are jointly required."""
+        if scope.kind != ScopeKind.PRIVATE or not 2 <= len(parents) <= 8:
+            raise ValueError("Joint evidence requires a bounded private claim set")
+        if len({item_id for item_id, _ in parents}) != len(parents):
+            raise ValueError("Repeated joint evidence component")
+        from fat_fish.memory.experience import sensitive_information
+        if sensitive_information(body):
+            raise ValueError("Sensitive conclusion")
+        with self.write() as db:
+            if not authorize():
+                raise PermissionError("Joint evidence authorization changed")
+            scope_id = self.scope_id(db, scope)
+            proofs = {}
+            confidence = 1.0
+            component_roots = []
+            for item_id, revision in parents:
+                row = db.execute(f"""SELECT r.confidence FROM item i JOIN revision r
+                    ON r.item_id=i.id AND r.rev=i.current_rev
+                    WHERE i.id=:item AND r.rev=:revision AND i.scope_id=:scope
+                      AND i.subject_ref=:subject AND i.kind IN ('fact','event') AND i.state='active'
+                      AND (r.valid_from IS NULL OR r.valid_from<=:now)
+                      AND (r.valid_to IS NULL OR r.valid_to>:now)
+                      AND {VISIBLE_EVIDENCE}""",
+                    {"item": item_id, "revision": revision, "scope": scope_id,
+                     "subject": scope.key, "now": now}).fetchone()
+                roots = self._independent_evidence(db, item_id, revision, now) if row else ()
+                if not roots:
+                    raise ValueError("Joint evidence component is missing or stale")
+                component_roots.append({proof.source_id for proof in roots})
+                proofs.update((proof.source_id, proof) for proof in roots)
+                confidence = min(confidence, row["confidence"])
+            if len(set().union(*component_roots)) < 2:
+                raise ValueError("Joint evidence must include independent sources")
+            item = ItemRecord(scope, scope.agent, scope.key, "derived_claim", slot, "conjunction",
+                              body, {"provenance": "model_inference"}, tuple(proofs.values()),
+                              "inference", confidence, .5)
+            item_id, revision = self._put_item(db, item, expected_revision, now)
+            db.executemany("INSERT INTO evidence_dependency VALUES (?,?,?,?,?)",
+                           ((scope_id, item_id, revision, parent, parent_rev) for parent, parent_rev in parents))
+            if not authorize():
+                raise PermissionError("Joint evidence authorization changed")
+            return item_id, revision
 
     def _put_item(self, db, item, expected_revision, now):
         if not item.evidence or not any(e.role == "support" for e in item.evidence):
@@ -229,7 +419,8 @@ class MemoryRepository:
             now = max(now, previous_time + 1)
             db.execute("UPDATE revision SET known_to=? WHERE item_id=? AND rev=?",
                        (now, item_id, expected_revision))
-            db.execute("DELETE FROM search_doc WHERE item_id=? AND rev=?", (item_id, expected_revision))
+            db.execute("DELETE FROM embedding WHERE doc_id IN (SELECT id FROM search_doc WHERE item_id=? AND rev=?)",
+                       (item_id, expected_revision))
             db.execute("DELETE FROM profile WHERE source_item_id=? AND rev=?", (item_id, expected_revision))
         db.execute("""INSERT INTO revision(item_id,rev,body,value_json,valid_from,valid_to,known_from,
             confidence,importance,trust_class,content_hash)
@@ -259,18 +450,38 @@ class MemoryRepository:
 
     @staticmethod
     def _extraction_source(db, job_id, now, nonce):
-        return db.execute("""SELECT j.*, sc.agent, sc.scope_key, src.author_principal, src.producer,
-                src.source_key, src.id AS source_id, ev.id AS event_id, ev.snippet, ev.occurred_at
+        return db.execute("""SELECT j.*, sc.agent, sc.scope_key, sc.kind AS scope_kind, src.author_principal, src.producer,
+                src.source_key, src.id AS source_id, ev.id AS event_id, ev.snippet, ev.occurred_at, ev.payload_json
             FROM job j JOIN scope sc ON sc.id=j.scope_id
             JOIN job_input ji ON ji.job_id=j.id
             JOIN source src ON src.id=ji.source_id AND src.scope_id=sc.id
             JOIN event ev ON ev.id=ji.event_id AND ev.source_id=src.id
             WHERE j.id=? AND j.kind='extract' AND j.status='leased'
               AND j.lease_nonce=? AND j.lease_until>?
-              AND sc.enabled=1 AND sc.kind='private' AND sc.generation=j.scope_gen
-              AND src.author_principal=sc.scope_key AND src.trust_class='direct_self'
+              AND sc.enabled=1 AND sc.generation=j.scope_gen
+              AND ((sc.kind='private' AND src.author_principal=sc.scope_key)
+                   OR (sc.kind='group' AND src.author_principal=ev.actor_ref))
+              AND src.trust_class='direct_self'
               AND src.revoked_at IS NULL AND (src.expires_at IS NULL OR src.expires_at>?)
               AND ev.snippet IS NOT NULL""", (job_id, nonce, now, now)).fetchone()
+
+    def current_extraction(self, job, now):
+        """Confirm the leased source still exists before a model call."""
+        epoch = self._read_epoch
+        self._require_open()
+        with self._connect(read_only=True) as db:
+            row = self._extraction_source(db, job["id"], now, job["lease_nonce"])
+        if epoch != self._read_epoch or not self._ready:
+            return None
+        return dict(row) if row is not None else None
+
+    def extraction_due(self, now):
+        self._require_open()
+        with self._connect(read_only=True) as db:
+            return db.execute("""SELECT 1 FROM job
+                WHERE kind='extract' AND (
+                    (status IN ('ready','retry') AND eligible_at<=?)
+                    OR (status='leased' AND lease_until<=?)) LIMIT 1""", (now, now)).fetchone() is not None
 
     def claim_extraction(self, now):
         with self.write() as db:
@@ -303,8 +514,8 @@ class MemoryRepository:
 
     def extraction_candidates(self, job, now):
         """Return bounded same-subject revisions for semantic equivalence judgment."""
-        scope = ScopeRef(job["agent"], ScopeKind.PRIVATE, job["scope_key"])
-        audience = Audience(scope.agent, scope.key, scope, 0)
+        scope = ScopeRef(job["agent"], ScopeKind(job["scope_kind"]), job["scope_key"])
+        audience = Audience(scope.agent, job["author_principal"], scope, 0)
         ranked = tokens(job["snippet"])
         terms = tuple(sorted(ranked, key=lambda term: (-len(term), -ranked[term], term))[:12])
         lexical = self.lexical_candidates(audience, now, terms, 12)
@@ -314,7 +525,8 @@ class MemoryRepository:
             for row in rows:
                 if len(selected) >= capacity:
                     break
-                if row["scope_id"] == job["scope_id"] and row["variant_key"] == "claim":
+                if (row["scope_id"] == job["scope_id"] and row["variant_key"] == "claim"
+                        and row["subject_ref"] == job["author_principal"]):
                     selected.setdefault(row["id"], row)
         current = self.authorized_documents(audience, now, item_ids=tuple(selected))
         by_id = {row["id"]: row for row in current
@@ -331,15 +543,20 @@ class MemoryRepository:
             WHERE i.id=:item AND i.scope_id=:scope AND i.subject_ref=:subject
               AND i.variant_key='claim' AND i.kind=:kind AND i.state='active'
               AND r.rev=:revision AND r.content_hash=:digest AND {VISIBLE_EVIDENCE}""",
-            {"item": candidate["id"], "scope": source["scope_id"], "subject": source["scope_key"],
+            {"item": candidate["id"], "scope": source["scope_id"], "subject": source["author_principal"],
              "kind": kind, "revision": candidate["rev"], "digest": candidate["content_hash"],
              "now": now}).fetchone()
 
     @staticmethod
     def _copy_mentions(db, item_id, previous, revision):
-        db.execute("""INSERT OR IGNORE INTO memory_mention(scope_id,node_id,item_id,rev,label)
-            SELECT scope_id,node_id,item_id,?,label FROM memory_mention WHERE item_id=? AND rev=?""",
+        db.execute("""INSERT OR IGNORE INTO memory_mention(scope_id,node_id,item_id,rev,label,
+                    linked_source_id,anchor_item_id,anchor_rev)
+            SELECT scope_id,node_id,item_id,?,label,linked_source_id,anchor_item_id,anchor_rev
+            FROM memory_mention WHERE item_id=? AND rev=?""",
                    (revision, item_id, previous))
+        db.execute("""INSERT OR IGNORE INTO memory_mention_proof
+            SELECT item_id,?,node_id,label,source_id,anchor_item,anchor_rev
+            FROM memory_mention_proof WHERE item_id=? AND rev=?""", (revision, item_id, previous))
 
     def _index_mentions(self, db, published, previous, claim, candidates, source, now):
         item_id, revision = published
@@ -354,8 +571,6 @@ class MemoryRepository:
             present = db.execute("""SELECT 1 FROM memory_mention m JOIN memory_node n ON n.id=m.node_id
                 WHERE m.scope_id=? AND m.item_id=? AND m.rev=? AND m.label=? AND n.kind=?""",
                                  bindings).fetchone()
-            if present:
-                continue
             target = requests.get((kind, label))
             linked = None
             if target is not None:
@@ -363,13 +578,20 @@ class MemoryRepository:
                 if candidate and self._equivalent_candidate(db, candidate, source, candidate["kind"], now):
                     linked = db.execute("""SELECT m.node_id FROM memory_mention m
                         JOIN memory_node n ON n.id=m.node_id AND n.scope_id=m.scope_id
-                        WHERE m.scope_id=? AND m.item_id=? AND m.rev=? AND m.label=? AND n.kind=?""",
+                        WHERE m.scope_id=? AND m.item_id=? AND m.rev=? AND m.label=? AND n.kind=?
+                          AND m.linked_source_id IS NULL""",
                         (source["scope_id"], target.target, candidate["rev"], target.target_label, kind)).fetchone()
+            if not linked and present:
+                continue
             node = linked[0] if linked else db.execute(
                 "INSERT INTO memory_node(scope_id,kind,created_at) VALUES(?,?,?) RETURNING id",
                 (source["scope_id"], kind, now)).fetchone()[0]
-            db.execute("INSERT INTO memory_mention VALUES(?,?,?,?,?)",
-                       (source["scope_id"], node, item_id, revision, label))
+            provenance = (source["source_id"], target.target, candidate["rev"]) if linked else (None, None, None)
+            db.execute("INSERT OR IGNORE INTO memory_mention VALUES(?,?,?,?,?,?,?,?)",
+                       (source["scope_id"], node, item_id, revision, label, *provenance))
+            if linked:
+                db.execute("INSERT OR IGNORE INTO memory_mention_proof VALUES(?,?,?,?,?,?,?)",
+                           (item_id, revision, node, label, *provenance))
 
     @staticmethod
     def _observation_confidence(evidence):
@@ -403,10 +625,10 @@ class MemoryRepository:
             return
         current = db.execute("""SELECT current_rev,state FROM item WHERE scope_id=? AND observer_ref=?
             AND subject_ref=? AND kind='observation' AND slot_key=? AND variant_key='inductive'""",
-            (source["scope_id"], scope.agent, scope.key, slot)).fetchone()
+            (source["scope_id"], scope.agent, source["author_principal"], slot)).fetchone()
         if current and current["state"] == "deleted":
             return
-        item = ItemRecord(scope, scope.agent, scope.key, "observation", slot, "inductive",
+        item = ItemRecord(scope, scope.agent, source["author_principal"], "observation", slot, "inductive",
                           observation.body, {"axis": observation.axis, "provenance": "model_inference"},
                           tuple(evidence.values()), "inference", confidence, .5)
         self._put_item(db, item, current["current_rev"] if current else None, now)
@@ -416,7 +638,7 @@ class MemoryRepository:
             source = self._extraction_source(db, job["id"], now, job["lease_nonce"])
             if source is None or not authorize():
                 return False
-            scope = ScopeRef(source["agent"], ScopeKind.PRIVATE, source["scope_key"])
+            scope = ScopeRef(source["agent"], ScopeKind(source["scope_kind"]), source["scope_key"])
             proof = EvidenceRecord(source["source_id"], source["event_id"],
                                    independence_key=str(source["source_id"]))
             offered = {row["id"]: row for row in candidates}
@@ -440,7 +662,7 @@ class MemoryRepository:
                     FROM item i LEFT JOIN revision r ON r.item_id=i.id AND r.rev=i.current_rev
                     WHERE i.scope_id=? AND i.observer_ref=? AND i.subject_ref=? AND i.kind=?
                       AND i.slot_key=? AND i.variant_key='claim'""",
-                    (source["scope_id"], scope.agent, scope.key, claim.kind, slot)).fetchone()
+                    (source["scope_id"], scope.agent, source["author_principal"], claim.kind, slot)).fetchone()
                 if current and current["state"] == "deleted":
                     continue
                 evidence = (proof,)
@@ -456,7 +678,7 @@ class MemoryRepository:
                     if any(row.independence_key == proof.independence_key for row in prior):
                         continue
                     evidence = (*prior, proof)
-                item = ItemRecord(scope, scope.agent, scope.key, claim.kind, slot, "claim", body,
+                item = ItemRecord(scope, scope.agent, source["author_principal"], claim.kind, slot, "claim", body,
                                   value, evidence, "direct_self", claim.confidence, .5,
                                   claim.valid_from, claim.valid_to)
                 previous = current["current_rev"] if current else None
@@ -513,11 +735,20 @@ class MemoryRepository:
             ref = ScopeRef(scope["agent"], ScopeKind(scope["kind"]), scope["scope_key"])
             if self._matches(record.scope_hmac, key, installation, "scope", ref.identity):
                 self._erase_scope_target(db, scope, ref, record, key)
+                db.execute("""DELETE FROM memory_mention WHERE linked_source_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM memory_mention_proof p WHERE p.item_id=memory_mention.item_id
+                     AND p.rev=memory_mention.rev AND p.node_id=memory_mention.node_id
+                     AND p.label=memory_mention.label
+                )""")
                 break
 
     @staticmethod
     def _matches(digest, key, installation, kind, *parts):
         return target_digest(key, installation, kind, *parts) == digest
+
+    @staticmethod
+    def public_asset_key(platform, content_id):
+        return json.dumps((platform, content_id), ensure_ascii=False, separators=(",", ":"))
 
     def _erase_scope_target(self, db, scope, ref, record, key):
         scope_id = scope["id"]
@@ -531,7 +762,13 @@ class MemoryRepository:
         elif record.kind in {"source", "public_asset"}:
             query = "SELECT id, source_key FROM source WHERE scope_id=?"
             matches = self._target_rows(db.execute(query, (scope_id,)), ref, record, key)
-            for source_id in matches:
+            if record.kind == "public_asset" and ref.kind == ScopeKind.PUBLIC:
+                assets = db.execute("""SELECT DISTINCT src.id,src.producer,ev.correlation_key
+                    FROM event ev JOIN source src ON src.id=ev.source_id
+                    WHERE ev.scope_id=? AND ev.event_kind='content_experience'""", (scope_id,))
+                identities = ((row[0], self.public_asset_key(row[1], row[2])) for row in assets)
+                matches.extend(self._target_rows(identities, ref, record, key))
+            for source_id in dict.fromkeys(matches):
                 self._revoke_sources(db, scope_id, source_id, record.requested_at)
         elif record.kind == "item":
             query = "SELECT id, slot_key FROM item WHERE scope_id=?"
@@ -557,8 +794,11 @@ class MemoryRepository:
         affected = db.execute(f"""SELECT DISTINCT e.item_id FROM evidence e
             WHERE e.source_id IN ({ids})""", params).fetchall()
         db.execute(f"UPDATE source SET revoked_at=? WHERE {criteria} AND revoked_at IS NULL", (now, *params))
+        db.execute(f"DELETE FROM memory_mention_proof WHERE source_id IN ({ids})", params)
         for row in affected:
             self._remove_source_provenance(db, row[0], now)
+        db.execute(f"DELETE FROM operation WHERE latest_event_id IN (SELECT id FROM event WHERE source_id IN ({ids}))",
+                   params)
         db.execute(f"UPDATE event SET snippet=NULL, payload_json=NULL WHERE source_id IN ({ids})", params)
         db.execute(f"""UPDATE job SET status='cancelled', lease_nonce=NULL, lease_until=NULL
             WHERE status NOT IN ('done','cancelled','dead-letter')
@@ -614,12 +854,9 @@ class MemoryRepository:
             db.execute("DELETE FROM revision WHERE item_id=?", (item_id,))
 
     def authorized_documents(self, audience: Audience, now: int, *, limit: int = 12, item_ids=None,
-                             deadline=None, valid_at=None, known_at=None):
+                             deadline=None, valid_at=None, known_at=None, valid_window=None):
         """Recall on two time axes while applying permissions and erasure at now."""
-        if known_at is not None and (type(known_at) is not int or not 0 <= known_at <= now):
-            raise ValueError("Invalid knowledge time")
-        if valid_at is not None and (type(valid_at) is not int or valid_at < 0):
-            raise ValueError("Invalid effective time")
+        revision_filter, validity, params = _temporal_query(now, valid_at, known_at, valid_window)
         if not 1 <= limit <= 48:
             raise ValueError("Invalid recall budget")
         if item_ids is not None and (not item_ids or len(item_ids) > limit):
@@ -637,11 +874,7 @@ class MemoryRepository:
         with self._connect(read_only=True) as db:
             db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 250)
             clauses = ", ".join(f"(:agent{i}, :kind{i}, :key{i})" for i in range(len(allowed)))
-            params = {"now": now, "limit": limit, "valid_at": now if valid_at is None else valid_at}
-            revision_filter = "r.rev=i.current_rev"
-            if known_at is not None:
-                params["known_at"] = known_at
-                revision_filter = "r.known_from<=:known_at AND (r.known_to IS NULL OR r.known_to>:known_at)"
+            params["limit"] = limit
             for i, ref in enumerate(allowed):
                 params.update({f"agent{i}": ref.agent, f"kind{i}": ref.kind.value, f"key{i}": ref.key})
             item_filter = ""
@@ -659,8 +892,7 @@ class MemoryRepository:
                 JOIN item i ON i.scope_id=s.id
                 JOIN revision r ON r.item_id=i.id AND {revision_filter}
                 WHERE s.enabled=1 AND i.state='active'
-                  AND (r.valid_from IS NULL OR r.valid_from <= :valid_at)
-                  AND (r.valid_to IS NULL OR r.valid_to > :valid_at)
+                  AND {validity}
                   AND {VISIBLE_EVIDENCE}
                   {item_filter}
                 ORDER BY i.updated_at DESC, i.id DESC LIMIT :limit""",
@@ -671,11 +903,13 @@ class MemoryRepository:
 
 
 
-    def lexical_candidates(self, audience: Audience, now: int, query: tuple[str, ...], limit: int):
+    def lexical_candidates(self, audience: Audience, now: int, query: tuple[str, ...], limit: int,
+                           *, valid_at=None, known_at=None, valid_window=None):
         """Return bounded term hits with scope and active-evidence filtering in SQL."""
         if not query or not 1 <= limit <= 48:
             return ()
         deadline = time.monotonic() + 0.10
+        revision, validity, bounds = _temporal_query(now, valid_at, known_at, valid_window)
         candidates = Counter()
         self._require_open()
         # The posting scan yields only opaque IDs from a committed WAL snapshot.
@@ -688,39 +922,81 @@ class MemoryRepository:
                     rows = db.execute(f"""SELECT i.id FROM scope s
                             JOIN posting p ON p.scope_id=s.id AND p.term=:term
                             JOIN search_doc d ON d.id=p.doc_id AND d.scope_id=s.id
-                            JOIN item i ON i.id=d.item_id AND i.current_rev=d.rev
+                            JOIN item i ON i.id=d.item_id
                             JOIN revision r ON r.item_id=i.id AND r.rev=d.rev
                             WHERE s.agent=:agent AND s.kind=:kind AND s.scope_key=:scope
                               AND s.enabled=1 AND i.state='active'
-                              AND (r.valid_from IS NULL OR r.valid_from<=:now)
-                              AND (r.valid_to IS NULL OR r.valid_to>:now)
+                              AND {revision}
+                              AND {validity}
                               AND {VISIBLE_EVIDENCE}
                             ORDER BY p.doc_id DESC LIMIT 12""",
                                           {"agent": ref.agent, "kind": ref.kind.value,
-                                           "scope": ref.key, "now": now, "term": term})
+                                           "scope": ref.key, "term": term, **bounds})
                     rows = rows.fetchall()
                     # An exact rare term should survive common-term posting caps.
                     for row in rows:
                         candidates[row[0]] += 1 / len(rows)
         return self.authorized_documents(audience, now, limit=limit,
                                          item_ids=tuple(item_id for item_id, _ in candidates.most_common(limit)),
-                                         deadline=deadline)
+                                         deadline=deadline, valid_at=valid_at, known_at=known_at,
+                                         valid_window=valid_window)
 
 
 
-    def graph_candidates(self, audience, now, seed_ids, *, limit=12):
-        """Expand verified current claims across shared entities or episodes."""
-        if not seed_ids or not 1 <= limit <= 12:
+    def graph_candidates(self, audience, now, seed_ids, *, limit=12, hops=1):
+        """Bounded traversal across currently attributable entities and episodes."""
+        if not seed_ids or not 1 <= limit <= 12 or not 1 <= hops <= 2:
             return ()
-        seeds = self.authorized_documents(audience, now, item_ids=tuple(dict.fromkeys(seed_ids))[:12])
+        epoch = self._read_epoch
+        deadline = time.monotonic() + .12
+        frontier = tuple(dict.fromkeys(seed_ids))[:12]
+        excluded = set(frontier)
+        result = {}
+        for level in range(hops):
+            if not frontier or time.monotonic() >= deadline or len(result) >= limit:
+                break
+            budget = limit - len(result)
+            if level == 0 and hops == 2:
+                budget = max(1, (budget + 1) // 2)
+            rows = self._graph_hop(audience, now, frontier, limit=min(12, budget + len(excluded)),
+                                   deadline=deadline)
+            frontier = tuple(row["id"] for row in rows if row["id"] not in excluded)[:budget]
+            accepted = set(frontier)
+            result.update((row["id"], row) for row in rows if row["id"] in accepted)
+            excluded.update(accepted)
+        if self._read_epoch != epoch or not self._ready:
+            raise LedgerError("Erasure overlapped graph traversal")
+        live = self.authorized_documents(audience, now, item_ids=tuple(result), limit=limit, deadline=deadline)
+        by_id = {row["id"]: row for row in live
+                 if (row["rev"], row["content_hash"]) == (result[row["id"]]["rev"],
+                                                          result[row["id"]]["content_hash"])}
+        return tuple(by_id[item] for item in result if item in by_id)
+
+    def _graph_hop(self, audience, now, seed_ids, *, limit, deadline):
+        seeds = self.authorized_documents(audience, now, item_ids=tuple(dict.fromkeys(seed_ids))[:12],
+                                          deadline=deadline)
         if not seeds:
             return ()
         epoch = self._read_epoch
         self._require_open()
-        values = ",".join("(?,?,?)" for _ in seeds)
         args = [value for row in seeds for value in (row["scope_id"], row["id"], row["rev"])]
+        def attributable(mention):
+            return f"""({mention}.linked_source_id IS NULL OR EXISTS (
+                SELECT 1 FROM memory_mention_proof p JOIN source link_source ON link_source.id=p.source_id
+                JOIN item i ON i.id=p.anchor_item
+                JOIN revision r ON r.item_id=i.id AND r.rev=p.anchor_rev
+                WHERE p.item_id={mention}.item_id AND p.rev={mention}.rev AND p.node_id={mention}.node_id
+                  AND p.label={mention}.label AND link_source.scope_id={mention}.scope_id
+                  AND link_source.revoked_at IS NULL
+                  AND (link_source.expires_at IS NULL OR link_source.expires_at>:now)
+                  AND i.scope_id={mention}.scope_id AND i.state='active' AND {VISIBLE_EVIDENCE}
+            ))"""
+
+        params = {f"seed{i}": value for i, value in enumerate(args)}
+        params.update(now=now, limit=limit)
+        values = ",".join(f"(:seed{i},:seed{i+1},:seed{i+2})" for i in range(0, len(args), 3))
         with self._connect(read_only=True) as db:
-            cutoff = time.monotonic() + .08
+            cutoff = min(deadline, time.monotonic() + .08)
             db.set_progress_handler(lambda: int(time.monotonic() >= cutoff), 250)
             rows = db.execute(f"""WITH seed(scope_id,item_id,rev) AS (VALUES {values})
                 SELECT neighbor.item_id, MAX(n.kind='episode') AS same_episode, count(*) AS shared
@@ -732,12 +1008,13 @@ class MemoryRepository:
                 JOIN memory_mention neighbor ON neighbor.scope_id=anchor.scope_id AND neighbor.node_id=anchor.node_id
                 JOIN item i ON i.id=neighbor.item_id AND i.current_rev=neighbor.rev AND i.state='active'
                 WHERE neighbor.item_id NOT IN (SELECT item_id FROM seed)
+                  AND {attributable("anchor")} AND {attributable("neighbor")}
                 GROUP BY neighbor.item_id
-                ORDER BY same_episode DESC,shared DESC,neighbor.item_id DESC LIMIT ?""", (*args, limit)).fetchall()
+                ORDER BY same_episode DESC,shared DESC,neighbor.item_id DESC LIMIT :limit""", params).fetchall()
         if epoch != self._read_epoch or not self._ready:
             raise LedgerError("Erasure overlapped graph recall")
         ordered = [row["item_id"] for row in rows]
-        allowed = self.authorized_documents(audience, now, item_ids=tuple(ordered), limit=limit)
+        allowed = self.authorized_documents(audience, now, item_ids=tuple(ordered), limit=limit, deadline=deadline)
         by_id = {row["id"]: row for row in allowed}
         if epoch != self._read_epoch or not self._ready:
             raise LedgerError("Erasure overlapped graph recall")

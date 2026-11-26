@@ -193,7 +193,7 @@ def _mention_links(rows, entities, episode, candidate_ids):
     return tuple(links.values())
 
 
-async def extract(provider, source, sent_at, *, candidates=()):
+async def extract(provider, source, sent_at, *, candidates=(), before_dispatch=None):
     payload = {"source": source, "sent_at_ms": sent_at}
     if candidates:
         payload["candidate_claims"] = [
@@ -201,7 +201,7 @@ async def extract(provider, source, sent_at, *, candidates=()):
              "metadata": json.loads(row["value_json"]), "valid_from": row["valid_from"],
              "valid_to": row["valid_to"]} for row in candidates
         ]
-    output = await request(provider, payload, INSTRUCTIONS, None, 1)
+    output = await request(provider, payload, INSTRUCTIONS, None, 1, before_dispatch=before_dispatch)
     return parse_claims(output, source, {row["id"] for row in candidates})
 
 
@@ -244,7 +244,7 @@ def parse_observations(output, source, candidate_ids):
     return tuple(observations)
 
 
-async def infer_observations(provider, source, candidates):
+async def infer_observations(provider, source, candidates, *, before_dispatch=None):
     packet = {"source": source, "claims": [
         {"id": row["id"], "kind": row["kind"], "body": row["body"],
          "metadata": json.loads(row["value_json"])} for row in candidates
@@ -252,5 +252,5 @@ async def infer_observations(provider, source, candidates):
     ]}
     if not packet["claims"]:
         return ()
-    raw = await request(provider, packet, OBSERVATION_INSTRUCTIONS, None, 1)
+    raw = await request(provider, packet, OBSERVATION_INSTRUCTIONS, None, 1, before_dispatch=before_dispatch)
     return parse_observations(raw, source, {row["id"] for row in packet["claims"]})

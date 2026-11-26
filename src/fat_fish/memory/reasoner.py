@@ -133,11 +133,13 @@ def packet(ref, summary, facts, cards):
     ]}
 
 
-async def request(provider, payload, instructions, meter, sources):
+async def request(provider, payload, instructions, meter, sources, *, before_dispatch=None):
     prompt = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     completion = usage = None
     try:
         async with asyncio.timeout(20):
+            if before_dispatch is not None:
+                before_dispatch()
             result = await provider.text_chat(prompt=prompt, contexts=[], func_tool=None,
                                               request_max_retries=1, system_prompt=instructions)
         completion = getattr(result, "completion_text", None)

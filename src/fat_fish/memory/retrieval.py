@@ -57,9 +57,12 @@ class CognitiveRetrieval:
         self.space = space
         self.semantic_min = semantic_min
 
-    async def recall(self, audience, query: str, now: int, *, deep=False) -> RecallResult:
+    async def recall(self, audience, query: str, now: int, *, deep=False,
+                     valid_at=None, known_at=None, valid_window=None) -> RecallResult:
         sensitive = sensitive_information(query)
         permitted = deep
+        historical = valid_at is not None or known_at is not None or valid_window is not None
+        temporal = dict(valid_at=valid_at, known_at=known_at, valid_window=valid_window) if historical else {}
         word_counts = tokens(query[:300]) if not sensitive else {}
         words = tuple(sorted(word_counts, key=lambda term: (-len(term), -word_counts[term], term))[:12])
         if not words:
@@ -71,11 +74,12 @@ class CognitiveRetrieval:
         try:
             async with asyncio.timeout(.12):
                 lexical = await asyncio.to_thread(self.repository.lexical_candidates,
-                                                  audience, now, words, 48 if permitted else 12)
+                                                  audience, now, words, 48 if permitted else 12,
+                                                  **temporal)
         except (TimeoutError, sqlite3.Error, LedgerError):
             reasons.append("lexical_unavailable")
         lexical_scores = _lexical_score(words, lexical)
-        if permitted and self.provider is not None and self.space:
+        if permitted and not historical and self.provider is not None and self.space:
             deadline = loop.time() + .33
             try:
                 async with asyncio.timeout_at(deadline):
@@ -86,7 +90,7 @@ class CognitiveRetrieval:
                     )
             except (TimeoutError, OSError, ValueError, sqlite3.Error, LedgerError):
                 reasons.append("semantic_unavailable")
-        elif permitted:
+        elif permitted and not historical:
             reasons.append("missing_model_space")
 
         docs = {doc["id"]: doc for doc in lexical}
